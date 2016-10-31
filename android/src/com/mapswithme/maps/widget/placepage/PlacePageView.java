@@ -97,7 +97,7 @@ public class PlacePageView extends RelativeLayout
   private static final String PREF_USE_DMS = "use_dms";
 
 //TODO: remove this after booking_api.cpp will be done
-  private static final boolean USE_OLD_BOOKING = false;
+  private static final boolean USE_OLD_BOOKING = true;
 
   private boolean mIsDocked;
   private boolean mIsFloating;
@@ -889,8 +889,12 @@ public class PlacePageView extends RelativeLayout
     UiUtils.showIf(sponsored, mSponsoredInfo);
     if (sponsored)
     {
-      UiUtils.setTextAndHideIfEmpty(mTvSponsoredRating, mSponsored.mRating);
-      UiUtils.setTextAndHideIfEmpty(mTvSponsoredPrice, mSponsoredPrice);
+      boolean isPriceEmpty = TextUtils.isEmpty(mSponsoredPrice);
+      boolean isRatingEmpty = TextUtils.isEmpty(mSponsored.mRating);
+      mTvSponsoredRating.setText(mSponsored.mRating);
+      UiUtils.showIf(!isPriceEmpty && !isRatingEmpty, mTvSponsoredRating);
+      mTvSponsoredPrice.setText(mSponsoredPrice);
+      UiUtils.showIf(!isPriceEmpty, mTvSponsoredPrice);
     }
   }
 

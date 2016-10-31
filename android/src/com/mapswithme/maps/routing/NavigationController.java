@@ -37,6 +37,7 @@ public class NavigationController
 
   private final View mFrame;
   private final View mBottomFrame;
+  private final View mSearchButtonFrame;
   private final NavMenu mNavMenu;
 
   private final ImageView mNextTurnImage;
@@ -110,7 +111,8 @@ public class NavigationController
     mDistanceUnits = (TextView) mBottomFrame.findViewById(R.id.distance_dimen);
     mRouteProgress = (FlatProgressView) mBottomFrame.findViewById(R.id.navigation_progress);
 
-    mSearchWheel = new SearchWheel(mFrame);
+    mSearchButtonFrame = activity.findViewById(R.id.search_button_frame);
+    mSearchWheel = new SearchWheel(mSearchButtonFrame);
   }
 
   public void onResume()
@@ -278,7 +280,10 @@ public class NavigationController
   public void show(boolean show)
   {
     UiUtils.showIf(show, mFrame);
+    UiUtils.showIf(show, mSearchButtonFrame);
     mNavMenu.show(show);
+    if (!show)
+      mSearchWheel.reset();
   }
 
   public NavMenu getNavMenu()
