@@ -1,35 +1,71 @@
 #include "drape_frontend/route_shape.hpp"
+#include "drape_frontend/batcher_bucket.hpp"
 #include "drape_frontend/line_shape_helper.hpp"
 #include "drape_frontend/shape_view_params.hpp"
 #include "drape_frontend/tile_utils.hpp"
+#include "drape_frontend/traffic_generator.hpp"
+#include "drape_frontend/visual_params.hpp"
+
+#include "shaders/programs.hpp"
 
 #include "drape/attribute_provider.hpp"
 #include "drape/batcher.hpp"
 #include "drape/glsl_func.hpp"
 #include "drape/glsl_types.hpp"
-#include "drape/shader_def.hpp"
 #include "drape/texture_manager.hpp"
 
+#include "geometry/mercator.hpp"
+
 #include "base/logging.hpp"
+#include "base/math.hpp"
 
 namespace df
 {
+std::vector<float> const kRouteHalfWidthInPixelCar =
+{
+  // 1   2     3     4     5     6     7     8     9     10
+  1.0f, 1.2f, 1.5f, 1.5f, 1.7f, 2.0f, 2.0f, 2.3f, 2.5f, 2.7f,
+  //11   12    13    14    15   16    17    18    19     20
+  3.0f, 3.5f, 4.5f, 5.5f, 7.0, 9.0f, 10.0f, 14.0f, 22.0f, 27.0f
+};
+
+std::vector<float> const kRouteHalfWidthInPixelTransit =
+{
+  // 1   2     3     4     5     6     7     8     9     10
+  1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.1f, 1.2f, 1.3f, 1.4f, 1.7f,
+  //11   12    13    14    15   16    17    18    19     20
+  1.8f, 2.1f, 2.5f, 2.8f, 3.5, 4.5f, 5.0f, 7.0f, 11.0f, 13.0f
+};
+
+std::vector<float> const kRouteHalfWidthInPixelOthers =
+{
+  // 1   2     3     4     5     6     7     8     9     10
+  1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.1f, 1.2f, 1.3f,
+  //11   12    13    14    15   16    17    18    19     20
+  1.5f, 1.7f, 2.3f, 2.7f, 3.5, 4.5f, 5.0f, 7.0f, 11.0f, 13.0f
+};
 
 namespace
 {
+float const kLeftSide = 1.0f;
+float const kCenter = 0.0f;
+float const kRightSide = -1.0f;
 
-float const kLeftSide = 1.0;
-float const kCenter = 0.0;
-float const kRightSide = -1.0;
+float const kRouteDepth = 99.0f;
+float const kMarkersDepth = 100.0f;
+float const kArrowsDepth = 200.0f;
+float const kDepthPerSubroute = 200.0f;
 
-void GetArrowTextureRegion(ref_ptr<dp::TextureManager> textures, dp::TextureManager::SymbolRegion & region)
+void GetArrowTextureRegion(ref_ptr<dp::TextureManager> textures,
+                           dp::TextureManager::SymbolRegion & region)
 {
   textures->GetSymbolRegion("route-arrow", region);
 }
 
-vector<m2::PointD> CalculatePoints(m2::PolylineD const & polyline, double start, double end)
+std::vector<m2::PointD> CalculatePoints(m2::PolylineD const & polyline,
+                                        double start, double end)
 {
-  vector<m2::PointD> result;
+  std::vector<m2::PointD> result;
   result.reserve(polyline.GetSize() / 4);
 
   auto addIfNotExist = [&result](m2::PointD const & pnt)
@@ -38,7 +74,7 @@ vector<m2::PointD> CalculatePoints(m2::PolylineD const & polyline, double start,
       result.push_back(pnt);
   };
 
-  vector<m2::PointD> const & path = polyline.GetPoints();
+  std::vector<m2::PointD> const & path = polyline.GetPoints();
   double len = 0;
   bool started = false;
   for (size_t i = 0; i + 1 < path.size(); i++)
@@ -75,21 +111,27 @@ vector<m2::PointD> CalculatePoints(m2::PolylineD const & polyline, double start,
   return result;
 }
 
-void GenerateJoinsTriangles(glsl::vec3 const & pivot, vector<glsl::vec2> const & normals,
-                            glsl::vec2 const & length, bool isLeft, RouteShape::TGeometryBuffer & joinsGeometry)
+float SideByNormal(glsl::vec2 const & normal, bool isLeft)
 {
   float const kEps = 1e-5;
-  size_t const trianglesCount = normals.size() / 3;
   float const side = isLeft ? kLeftSide : kRightSide;
-  for (int j = 0; j < trianglesCount; j++)
-  {
-    glsl::vec3 const len1 = glsl::vec3(length.x, length.y, glsl::length(normals[3 * j]) < kEps ? kCenter : side);
-    glsl::vec3 const len2 = glsl::vec3(length.x, length.y, glsl::length(normals[3 * j + 1]) < kEps ? kCenter : side);
-    glsl::vec3 const len3 = glsl::vec3(length.x, length.y, glsl::length(normals[3 * j + 2]) < kEps ? kCenter : side);
+  return glsl::length(normal) < kEps ? kCenter : side;
+}
 
-    joinsGeometry.push_back(RouteShape::RV(pivot, normals[3 * j], len1));
-    joinsGeometry.push_back(RouteShape::RV(pivot, normals[3 * j + 1], len2));
-    joinsGeometry.push_back(RouteShape::RV(pivot, normals[3 * j + 2], len3));
+void GenerateJoinsTriangles(glsl::vec3 const & pivot, std::vector<glsl::vec2> const & normals,
+                            glsl::vec4 const & color, glsl::vec2 const & length, bool isLeft,
+                            RouteShape::GeometryBuffer & joinsGeometry)
+{
+  size_t const trianglesCount = normals.size() / 3;
+  for (size_t j = 0; j < trianglesCount; j++)
+  {
+    glsl::vec3 const len1 = glsl::vec3(length.x, length.y, SideByNormal(normals[3 * j], isLeft));
+    glsl::vec3 const len2 = glsl::vec3(length.x, length.y, SideByNormal(normals[3 * j + 1], isLeft));
+    glsl::vec3 const len3 = glsl::vec3(length.x, length.y, SideByNormal(normals[3 * j + 2], isLeft));
+
+    joinsGeometry.emplace_back(pivot, normals[3 * j], len1, color);
+    joinsGeometry.emplace_back(pivot, normals[3 * j + 1], len2, color);
+    joinsGeometry.emplace_back(pivot, normals[3 * j + 2], len3, color);
   }
 }
 
@@ -104,42 +146,76 @@ glsl::vec2 GetUV(m2::RectF const & texRect, glsl::vec2 const & uv)
   return GetUV(texRect, uv.x, uv.y);
 }
 
-void GenerateArrowsTriangles(glsl::vec4 const & pivot, vector<glsl::vec2> const & normals,
-                             m2::RectF const & texRect, vector<glsl::vec2> const & uv,
-                             bool normalizedUV, RouteShape::TArrowGeometryBuffer & joinsGeometry)
+void GenerateArrowsTriangles(glsl::vec4 const & pivot, std::vector<glsl::vec2> const & normals,
+                             m2::RectF const & texRect, std::vector<glsl::vec2> const & uv,
+                             bool normalizedUV, RouteShape::ArrowGeometryBuffer & joinsGeometry)
 {
   size_t const trianglesCount = normals.size() / 3;
-  for (int j = 0; j < trianglesCount; j++)
+  for (size_t j = 0; j < trianglesCount; j++)
   {
-    joinsGeometry.push_back(RouteShape::AV(pivot, normals[3 * j],
-                            normalizedUV ? GetUV(texRect, uv[3 * j]) : uv[3 * j]));
-    joinsGeometry.push_back(RouteShape::AV(pivot, normals[3 * j + 1],
-                            normalizedUV ? GetUV(texRect, uv[3 * j + 1]) : uv[3 * j + 1]));
-    joinsGeometry.push_back(RouteShape::AV(pivot, normals[3 * j + 2],
-                            normalizedUV ? GetUV(texRect, uv[3 * j + 2]) : uv[3 * j + 2]));
+    joinsGeometry.emplace_back(pivot, normals[3 * j],
+                               normalizedUV ? GetUV(texRect, uv[3 * j]) : uv[3 * j]);
+    joinsGeometry.emplace_back(pivot, normals[3 * j + 1],
+                               normalizedUV ? GetUV(texRect, uv[3 * j + 1]) : uv[3 * j + 1]);
+    joinsGeometry.emplace_back(pivot, normals[3 * j + 2],
+                               normalizedUV ? GetUV(texRect, uv[3 * j + 2]) : uv[3 * j + 2]);
   }
 }
 
+glsl::vec3 MarkerNormal(float x, float y, float z, float cosAngle, float sinAngle)
+{
+  return glsl::vec3(x * cosAngle - y * sinAngle, x * sinAngle + y * cosAngle, z);
+}
 } // namespace
 
-void RouteShape::PrepareGeometry(vector<m2::PointD> const & path, m2::PointD const & pivot,
-                                 TGeometryBuffer & geometry, TGeometryBuffer & joinsGeometry,
-                                 double & outputLength)
+void Subroute::AddStyle(SubrouteStyle const & style)
+{
+  if (!m_style.empty() && m_style.back() == style)
+  {
+    m_style.back().m_endIndex = style.m_endIndex;
+  }
+  else
+  {
+    m_style.push_back(style);
+  }
+}
+
+void RouteShape::PrepareGeometry(std::vector<m2::PointD> const & path, m2::PointD const & pivot,
+                                 std::vector<glsl::vec4> const & segmentsColors, float baseDepth,
+                                 std::vector<GeometryBufferData<GeometryBuffer>> & geometryBufferData)
 {
   ASSERT(path.size() > 1, ());
 
   // Construct segments.
-  vector<LineSegment> segments;
+  std::vector<LineSegment> segments;
   segments.reserve(path.size() - 1);
-  ConstructLineSegments(path, segments);
+  ConstructLineSegments(path, segmentsColors, segments);
+
+  if (segments.empty())
+    return;
 
   // Build geometry.
-  float length = 0;
-  float const kDepth = 0.0f;
-  for (size_t i = 0; i < segments.size(); i++)
+  float length = 0.0f;
+  for (auto const & segment : segments)
+    length += glsl::length(segment.m_points[EndPoint] - segment.m_points[StartPoint]);
+
+  geometryBufferData.emplace_back(GeometryBufferData<GeometryBuffer>());
+
+  uint32_t constexpr kMinVertices = 5000;
+  double constexpr kMinExtent = mercator::Bounds::kRangeX / (1 << 10);
+
+  float depth = baseDepth;
+  float const depthStep = kRouteDepth / (1 + segments.size());
+  for (auto i = static_cast<int>(segments.size() - 1); i >= 0; i--)
   {
+    auto & geomBufferData = geometryBufferData.back();
+    auto & geometry = geomBufferData.m_geometry;
+
     UpdateNormals(&segments[i], (i > 0) ? &segments[i - 1] : nullptr,
-                 (i < segments.size() - 1) ? &segments[i + 1] : nullptr);
+                 (i < static_cast<int>(segments.size()) - 1) ? &segments[i + 1] : nullptr);
+
+    geomBufferData.m_boundingBox.Add(glsl::FromVec2(segments[i].m_points[StartPoint]));
+    geomBufferData.m_boundingBox.Add(glsl::FromVec2(segments[i].m_points[EndPoint]));
 
     // Generate main geometry.
     m2::PointD const startPt = MapShape::ConvertToLocal(glsl::FromVec2(segments[i].m_points[StartPoint]),
@@ -147,10 +223,11 @@ void RouteShape::PrepareGeometry(vector<m2::PointD> const & path, m2::PointD con
     m2::PointD const endPt = MapShape::ConvertToLocal(glsl::FromVec2(segments[i].m_points[EndPoint]),
                                                       pivot, kShapeCoordScalar);
 
-    glsl::vec3 const startPivot = glsl::vec3(glsl::ToVec2(startPt), kDepth);
-    glsl::vec3 const endPivot = glsl::vec3(glsl::ToVec2(endPt), kDepth);
+    glsl::vec3 const startPivot = glsl::vec3(glsl::ToVec2(startPt), depth);
+    glsl::vec3 const endPivot = glsl::vec3(glsl::ToVec2(endPt), depth);
+    depth += depthStep;
 
-    float const endLength = length + glsl::length(segments[i].m_points[EndPoint] - segments[i].m_points[StartPoint]);
+    float const startLength = length - glsl::length(segments[i].m_points[EndPoint] - segments[i].m_points[StartPoint]);
 
     glsl::vec2 const leftNormalStart = GetNormal(segments[i], true /* isLeft */, StartNormal);
     glsl::vec2 const rightNormalStart = GetNormal(segments[i], false /* isLeft */, StartNormal);
@@ -162,18 +239,28 @@ void RouteShape::PrepareGeometry(vector<m2::PointD> const & path, m2::PointD con
     float const projRightStart = -segments[i].m_rightWidthScalar[StartPoint].y;
     float const projRightEnd = segments[i].m_rightWidthScalar[EndPoint].y;
 
-    geometry.push_back(RV(startPivot, glsl::vec2(0, 0), glsl::vec3(length, 0, kCenter)));
-    geometry.push_back(RV(startPivot, leftNormalStart, glsl::vec3(length, projLeftStart, kLeftSide)));
-    geometry.push_back(RV(endPivot, glsl::vec2(0, 0), glsl::vec3(endLength, 0, kCenter)));
-    geometry.push_back(RV(endPivot, leftNormalEnd, glsl::vec3(endLength, projLeftEnd, kLeftSide)));
+    geometry.emplace_back(startPivot, glsl::vec2(0, 0),
+                          glsl::vec3(startLength, 0, kCenter), segments[i].m_color);
+    geometry.emplace_back(startPivot, leftNormalStart,
+                          glsl::vec3(startLength, projLeftStart, kLeftSide), segments[i].m_color);
+    geometry.emplace_back(endPivot, glsl::vec2(0, 0),
+                          glsl::vec3(length, 0, kCenter), segments[i].m_color);
+    geometry.emplace_back(endPivot, leftNormalEnd,
+                          glsl::vec3(length, projLeftEnd, kLeftSide), segments[i].m_color);
 
-    geometry.push_back(RV(startPivot, rightNormalStart, glsl::vec3(length, projRightStart, kRightSide)));
-    geometry.push_back(RV(startPivot, glsl::vec2(0, 0), glsl::vec3(length, 0, kCenter)));
-    geometry.push_back(RV(endPivot, rightNormalEnd, glsl::vec3(endLength, projRightEnd, kRightSide)));
-    geometry.push_back(RV(endPivot, glsl::vec2(0, 0), glsl::vec3(endLength, 0, kCenter)));
+    geometry.emplace_back(startPivot, rightNormalStart,
+                          glsl::vec3(startLength, projRightStart, kRightSide), segments[i].m_color);
+    geometry.emplace_back(startPivot, glsl::vec2(0, 0),
+                          glsl::vec3(startLength, 0, kCenter), segments[i].m_color);
+    geometry.emplace_back(endPivot, rightNormalEnd,
+                          glsl::vec3(length, projRightEnd, kRightSide), segments[i].m_color);
+    geometry.emplace_back(endPivot, glsl::vec2(0, 0),
+                          glsl::vec3(length, 0, kCenter), segments[i].m_color);
+
+    auto & joinsGeometry = geomBufferData.m_joinsGeometry;
 
     // Generate joins.
-    if (segments[i].m_generateJoin && i < segments.size() - 1)
+    if (segments[i].m_generateJoin && i < static_cast<int>(segments.size()) - 1)
     {
       glsl::vec2 n1 = segments[i].m_hasLeftJoin[EndPoint] ? segments[i].m_leftNormals[EndPoint] :
                                                             segments[i].m_rightNormals[EndPoint];
@@ -183,64 +270,75 @@ void RouteShape::PrepareGeometry(vector<m2::PointD> const & path, m2::PointD con
       float widthScalar = segments[i].m_hasLeftJoin[EndPoint] ? segments[i].m_rightWidthScalar[EndPoint].x :
                                                                 segments[i].m_leftWidthScalar[EndPoint].x;
 
-      vector<glsl::vec2> normals;
+      std::vector<glsl::vec2> normals;
       normals.reserve(24);
       GenerateJoinNormals(dp::RoundJoin, n1, n2, 1.0f, segments[i].m_hasLeftJoin[EndPoint],
                           widthScalar, normals);
 
-      GenerateJoinsTriangles(endPivot, normals, glsl::vec2(endLength, 0),
+      GenerateJoinsTriangles(endPivot, normals, segments[i].m_color, glsl::vec2(length, 0),
                              segments[i].m_hasLeftJoin[EndPoint], joinsGeometry);
     }
 
     // Generate caps.
     if (i == 0)
     {
-      vector<glsl::vec2> normals;
+      std::vector<glsl::vec2> normals;
       normals.reserve(24);
       GenerateCapNormals(dp::RoundCap, segments[i].m_leftNormals[StartPoint],
                          segments[i].m_rightNormals[StartPoint], -segments[i].m_tangent,
                          1.0f, true /* isStart */, normals);
 
-      GenerateJoinsTriangles(startPivot, normals, glsl::vec2(length, 0), true, joinsGeometry);
+      GenerateJoinsTriangles(startPivot, normals, segments[i].m_color, glsl::vec2(startLength, 0),
+                             true, joinsGeometry);
     }
 
-    if (i == segments.size() - 1)
+    if (i == static_cast<int>(segments.size()) - 1)
     {
-      vector<glsl::vec2> normals;
+      std::vector<glsl::vec2> normals;
       normals.reserve(24);
       GenerateCapNormals(dp::RoundCap, segments[i].m_leftNormals[EndPoint],
                          segments[i].m_rightNormals[EndPoint], segments[i].m_tangent,
                          1.0f, false /* isStart */, normals);
 
-      GenerateJoinsTriangles(endPivot, normals, glsl::vec2(endLength, 0), true, joinsGeometry);
+      GenerateJoinsTriangles(endPivot, normals, segments[i].m_color, glsl::vec2(length, 0),
+                             true, joinsGeometry);
     }
 
-    length = endLength;
-  }
+    auto const verticesCount = geomBufferData.m_geometry.size() + geomBufferData.m_joinsGeometry.size();
+    auto const extent = std::max(geomBufferData.m_boundingBox.SizeX(), geomBufferData.m_boundingBox.SizeY());
+    if (verticesCount > kMinVertices && extent > kMinExtent)
+      geometryBufferData.emplace_back(GeometryBufferData<GeometryBuffer>());
 
-  outputLength = length; 
+    length = startLength;
+  }
 }
 
-void RouteShape::PrepareArrowGeometry(vector<m2::PointD> const & path, m2::PointD const & pivot,
-                                      m2::RectF const & texRect, float depth,
-                                      TArrowGeometryBuffer & geometry, TArrowGeometryBuffer & joinsGeometry)
+void RouteShape::PrepareArrowGeometry(std::vector<m2::PointD> const & path, m2::PointD const & pivot,
+                                      m2::RectF const & texRect, float depthStep, float depth,
+                                      GeometryBufferData<ArrowGeometryBuffer> & geometryBufferData)
 {
   ASSERT(path.size() > 1, ());
 
   // Construct segments.
-  vector<LineSegment> segments;
+  std::vector<LineSegment> segments;
   segments.reserve(path.size() - 1);
-  ConstructLineSegments(path, segments);
+  ConstructLineSegments(path, std::vector<glsl::vec4>(), segments);
 
   m2::RectF tr = texRect;
-  tr.setMinX(texRect.minX() * (1.0 - kArrowTailSize) + texRect.maxX() * kArrowTailSize);
-  tr.setMaxX(texRect.minX() * kArrowHeadSize + texRect.maxX() * (1.0 - kArrowHeadSize));
+  tr.setMinX(static_cast<float>(texRect.minX() * (1.0 - kArrowTailSize) + texRect.maxX() * kArrowTailSize));
+  tr.setMaxX(static_cast<float>(texRect.minX() * kArrowHeadSize + texRect.maxX() * (1.0 - kArrowHeadSize)));
 
   // Build geometry.
+  float const depthInc = depthStep / (segments.size() + 1);
   for (size_t i = 0; i < segments.size(); i++)
   {
+    auto & geometry = geometryBufferData.m_geometry;
+
     UpdateNormals(&segments[i], (i > 0) ? &segments[i - 1] : nullptr,
                  (i < segments.size() - 1) ? &segments[i + 1] : nullptr);
+
+    geometryBufferData.m_boundingBox.Add(glsl::FromVec2(segments[i].m_points[StartPoint]));
+    geometryBufferData.m_boundingBox.Add(glsl::FromVec2(segments[i].m_points[EndPoint]));
 
     // Generate main geometry.
     m2::PointD const startPt = MapShape::ConvertToLocal(glsl::FromVec2(segments[i].m_points[StartPoint]),
@@ -250,6 +348,7 @@ void RouteShape::PrepareArrowGeometry(vector<m2::PointD> const & path, m2::Point
 
     glsl::vec4 const startPivot = glsl::vec4(glsl::ToVec2(startPt), depth, 1.0);
     glsl::vec4 const endPivot = glsl::vec4(glsl::ToVec2(endPt), depth, 1.0);
+    depth += depthInc;
 
     glsl::vec2 const leftNormalStart = GetNormal(segments[i], true /* isLeft */, StartNormal);
     glsl::vec2 const rightNormalStart = GetNormal(segments[i], false /* isLeft */, StartNormal);
@@ -260,15 +359,17 @@ void RouteShape::PrepareArrowGeometry(vector<m2::PointD> const & path, m2::Point
     glsl::vec2 const uvLeft = GetUV(tr, 0.5f, 0.0f);
     glsl::vec2 const uvRight = GetUV(tr, 0.5f, 1.0f);
 
-    geometry.push_back(AV(startPivot, glsl::vec2(0, 0), uvCenter));
-    geometry.push_back(AV(startPivot, leftNormalStart, uvLeft));
-    geometry.push_back(AV(endPivot, glsl::vec2(0, 0), uvCenter));
-    geometry.push_back(AV(endPivot, leftNormalEnd, uvLeft));
+    geometry.emplace_back(startPivot, glsl::vec2(0, 0), uvCenter);
+    geometry.emplace_back(startPivot, leftNormalStart, uvLeft);
+    geometry.emplace_back(endPivot, glsl::vec2(0, 0), uvCenter);
+    geometry.emplace_back(endPivot, leftNormalEnd, uvLeft);
 
-    geometry.push_back(AV(startPivot, rightNormalStart, uvRight));
-    geometry.push_back(AV(startPivot, glsl::vec2(0, 0), uvCenter));
-    geometry.push_back(AV(endPivot, rightNormalEnd, uvRight));
-    geometry.push_back(AV(endPivot, glsl::vec2(0, 0), uvCenter));
+    geometry.emplace_back(startPivot, rightNormalStart, uvRight);
+    geometry.emplace_back(startPivot, glsl::vec2(0, 0), uvCenter);
+    geometry.emplace_back(endPivot, rightNormalEnd, uvRight);
+    geometry.emplace_back(endPivot, glsl::vec2(0, 0), uvCenter);
+
+    auto & joinsGeometry = geometryBufferData.m_joinsGeometry;
 
     // Generate joins.
     if (segments[i].m_generateJoin && i < segments.size() - 1)
@@ -282,9 +383,9 @@ void RouteShape::PrepareArrowGeometry(vector<m2::PointD> const & path, m2::Point
                                                                 segments[i].m_leftWidthScalar[EndPoint].x;
 
       int const kAverageSize = 24;
-      vector<glsl::vec2> normals;
+      std::vector<glsl::vec2> normals;
       normals.reserve(kAverageSize);
-      vector<glsl::vec2> uv;
+      std::vector<glsl::vec2> uv;
       uv.reserve(kAverageSize);
 
       GenerateJoinNormals(dp::RoundJoin, n1, n2, 1.0f, segments[i].m_hasLeftJoin[EndPoint],
@@ -298,15 +399,17 @@ void RouteShape::PrepareArrowGeometry(vector<m2::PointD> const & path, m2::Point
     // Generate arrow head.
     if (i == segments.size() - 1)
     {
-      vector<glsl::vec2> normals =
+      std::vector<glsl::vec2> normals =
       {
         segments[i].m_rightNormals[EndPoint],
         segments[i].m_leftNormals[EndPoint],
         kArrowHeadFactor * segments[i].m_tangent
       };
-      float const u = 1.0f - kArrowHeadSize;
-      vector<glsl::vec2> uv = { glsl::vec2(u, 1.0f), glsl::vec2(u, 0.0f), glsl::vec2(1.0f, 0.5f) };
-      GenerateArrowsTriangles(endPivot, normals, texRect, uv, true /* normalizedUV */, joinsGeometry);
+      float const u = 1.0f - static_cast<float>(kArrowHeadSize);
+      std::vector<glsl::vec2> uv = { glsl::vec2(u, 1.0f), glsl::vec2(u, 0.0f), glsl::vec2(1.0f, 0.5f) };
+      glsl::vec4 const headPivot = glsl::vec4(glsl::ToVec2(endPt), depth, 1.0);
+      depth += depthInc;
+      GenerateArrowsTriangles(headPivot, normals, texRect, uv, true /* normalizedUV */, joinsGeometry);
     }
 
     // Generate arrow tail.
@@ -316,11 +419,11 @@ void RouteShape::PrepareArrowGeometry(vector<m2::PointD> const & path, m2::Point
       glsl::vec2 const n2 = segments[i].m_rightNormals[StartPoint];
       glsl::vec2 const n3 = (n1 - kArrowTailFactor * segments[i].m_tangent);
       glsl::vec2 const n4 = (n2 - kArrowTailFactor * segments[i].m_tangent);
-      vector<glsl::vec2> normals = { n2, n4, n1, n1, n4, n3 };
+      std::vector<glsl::vec2> normals = { n2, n4, n1, n1, n4, n3 };
 
       m2::RectF t = texRect;
       t.setMaxX(tr.minX());
-      vector<glsl::vec2> uv =
+      std::vector<glsl::vec2> uv =
       {
         glsl::ToVec2(t.RightBottom()),
         glsl::ToVec2(t.LeftBottom()),
@@ -335,113 +438,270 @@ void RouteShape::PrepareArrowGeometry(vector<m2::PointD> const & path, m2::Point
   }
 }
 
-void RouteShape::CacheRouteSign(ref_ptr<dp::TextureManager> mng, RouteSignData & routeSignData)
+void RouteShape::PrepareMarkersGeometry(std::vector<SubrouteMarker> const & markers,
+                                        m2::PointD const & pivot, float baseDepth,
+                                        MarkersGeometryBuffer & geometry)
 {
-  dp::TextureManager::SymbolRegion symbol;
-  mng->GetSymbolRegion(routeSignData.m_isStart ? "route_from" : "route_to", symbol);
+  ASSERT(!markers.empty(), ());
 
-  m2::RectF const & texRect = symbol.GetTexRect();
-  m2::PointF halfSize = m2::PointF(symbol.GetPixelSize()) * 0.5f;
+  static float const kSqrt3 = sqrt(3.0f);
+  static float const kSqrt2 = sqrt(2.0f);
+  static float const kInnerRadius = 0.6f;
+  static float const kOuterRadius = 1.0f;
 
-  glsl::vec4 const pivot = glsl::vec4(0.0f /* x */, 0.0f /* y */, 0.0f /* depth */, 0.0f /* pivot z */);
-  gpu::SolidTexturingVertex data[4]=
+  float const depth = baseDepth - 0.5f;
+  float const innerDepth = baseDepth + 0.5f;
+  for (SubrouteMarker const & marker : markers)
   {
-    { pivot, glsl::vec2(-halfSize.x,  halfSize.y), glsl::ToVec2(texRect.LeftTop()) },
-    { pivot, glsl::vec2(-halfSize.x, -halfSize.y), glsl::ToVec2(texRect.LeftBottom()) },
-    { pivot, glsl::vec2( halfSize.x,  halfSize.y), glsl::ToVec2(texRect.RightTop()) },
-    { pivot, glsl::vec2( halfSize.x, -halfSize.y), glsl::ToVec2(texRect.RightBottom()) }
-  };
-
-  dp::GLState state(gpu::TEXTURING_PROGRAM, dp::GLState::OverlayLayer);
-  if (!routeSignData.m_isStart)
-    state.SetProgram3dIndex(gpu::TEXTURING_BILLBOARD_PROGRAM);
-  state.SetColorTexture(symbol.GetTexture());
-
-  {
-    dp::Batcher batcher(dp::Batcher::IndexPerQuad, dp::Batcher::VertexPerQuad);
-    dp::SessionGuard guard(batcher, [&routeSignData](dp::GLState const & state, drape_ptr<dp::RenderBucket> && b)
+    if (marker.m_colors.empty())
     {
-      routeSignData.m_sign.m_buckets.push_back(move(b));
-      routeSignData.m_sign.m_state = state;
-    });
+      LOG(LWARNING, ("Colors have not been specified."));
+      continue;
+    }
 
-    dp::AttributeProvider provider(1 /* stream count */, dp::Batcher::VertexPerQuad);
-    provider.InitStream(0 /* stream index */, gpu::SolidTexturingVertex::GetBindingInfo(), make_ref(data));
+    float const innerRadius = kInnerRadius * marker.m_scale;
+    float const outerRadius = kOuterRadius * marker.m_scale;
 
-    dp::IndicesRange indices = batcher.InsertTriangleStrip(state, make_ref(&provider), nullptr);
-    UNUSED_VALUE(indices);
-    ASSERT(indices.IsValid(), ());
+    m2::PointD const pt = MapShape::ConvertToLocal(marker.m_position, pivot, kShapeCoordScalar);
+    MV::TPosition outerPos(pt.x, pt.y, depth, static_cast<float>(marker.m_distance));
+    MV::TPosition innerPos(pt.x, pt.y, innerDepth, static_cast<float>(marker.m_distance));
+
+    if (marker.m_colors.size() == 1)
+    {
+      dp::Color const color = df::GetColorConstant(marker.m_colors[0]);
+      MV::TColor const c(color.GetRedF(), color.GetGreenF(), color.GetBlueF(), color.GetAlphaF());
+
+      // Here we use an equilateral triangle to render circle (incircle of a triangle).
+      geometry.emplace_back(outerPos, MV::TNormal(-kSqrt3, -1.0f, outerRadius), c);
+      geometry.emplace_back(outerPos, MV::TNormal(kSqrt3, -1.0f, outerRadius), c);
+      geometry.emplace_back(outerPos, MV::TNormal(0.0f, 2.0f, outerRadius), c);
+    }
+    else if (marker.m_colors.size() >= 2)
+    {
+      dp::Color const color1 = df::GetColorConstant(marker.m_colors[0]);
+      dp::Color const color2 = df::GetColorConstant(marker.m_colors[1]);
+      dp::Color const innerColor = df::GetColorConstant(marker.m_innerColor);
+      MV::TColor const c1(color1.GetRedF(), color1.GetGreenF(), color1.GetBlueF(), color1.GetAlphaF());
+      MV::TColor const c2(color2.GetRedF(), color2.GetGreenF(), color2.GetBlueF(), color2.GetAlphaF());
+      MV::TColor const ic(innerColor.GetRedF(), innerColor.GetGreenF(),
+                          innerColor.GetBlueF(), innerColor.GetAlphaF());
+
+      auto const cosAngle = static_cast<float>(m2::DotProduct(marker.m_up, m2::PointD(0.0, 1.0)));
+      auto const sinAngle = static_cast<float>(m2::CrossProduct(marker.m_up, m2::PointD(0.0, 1.0)));
+
+      // Here we use a right triangle to render half-circle.
+      geometry.emplace_back(outerPos, MarkerNormal(-kSqrt2, 0.0f, outerRadius, cosAngle, sinAngle), c1);
+      geometry.emplace_back(outerPos, MarkerNormal(0.0f, -kSqrt2, outerRadius, cosAngle, sinAngle), c1);
+      geometry.emplace_back(outerPos, MarkerNormal(0.0f, kSqrt2, outerRadius, cosAngle, sinAngle), c1);
+
+      geometry.emplace_back(outerPos, MarkerNormal(kSqrt2, 0.0f, outerRadius, cosAngle, sinAngle), c2);
+      geometry.emplace_back(outerPos, MarkerNormal(0.0f, kSqrt2, outerRadius, cosAngle, sinAngle), c2);
+      geometry.emplace_back(outerPos, MarkerNormal(0.0f, -kSqrt2, outerRadius, cosAngle, sinAngle), c2);
+    }
+
+    if (marker.m_colors.size() > 1 || marker.m_colors.front() != marker.m_innerColor)
+    {
+      dp::Color const innerColor = df::GetColorConstant(marker.m_innerColor);
+      MV::TColor const ic(innerColor.GetRedF(), innerColor.GetGreenF(),
+                          innerColor.GetBlueF(), innerColor.GetAlphaF());
+
+      geometry.emplace_back(innerPos, MV::TNormal(-kSqrt3, -1.0f, innerRadius), ic);
+      geometry.emplace_back(innerPos, MV::TNormal(kSqrt3, -1.0f, innerRadius), ic);
+      geometry.emplace_back(innerPos, MV::TNormal(0.0f, 2.0f, innerRadius), ic);
+    }
   }
 }
 
-void RouteShape::CacheRouteArrows(ref_ptr<dp::TextureManager> mng, m2::PolylineD const & polyline,
-                                  vector<ArrowBorders> const & borders, RouteArrowsData & routeArrowsData)
+void RouteShape::CacheRouteArrows(ref_ptr<dp::GraphicsContext> context,
+                                  ref_ptr<dp::TextureManager> mng, m2::PolylineD const & polyline,
+                                  std::vector<ArrowBorders> const & borders, double baseDepthIndex,
+                                  SubrouteArrowsData & routeArrowsData)
 {
-  TArrowGeometryBuffer geometry;
-  TArrowGeometryBuffer joinsGeometry;
+  GeometryBufferData<ArrowGeometryBuffer> geometryData;
   dp::TextureManager::SymbolRegion region;
   GetArrowTextureRegion(mng, region);
-  dp::GLState state = dp::GLState(gpu::ROUTE_ARROW_PROGRAM, dp::GLState::GeometryLayer);
+  auto state = CreateRenderState(gpu::Program::RouteArrow, DepthLayer::GeometryLayer);
   state.SetColorTexture(region.GetTexture());
+  state.SetTextureIndex(region.GetTextureIndex());
 
   // Generate arrow geometry.
-  float depth = 0.0f;
+  auto depth = static_cast<float>(baseDepthIndex * kDepthPerSubroute) + kArrowsDepth;
+  float const depthStep = (kArrowsDepth - kRouteDepth) / (1 + borders.size());
   for (ArrowBorders const & b : borders)
   {
-    vector<m2::PointD> points = CalculatePoints(polyline, b.m_startDistance, b.m_endDistance);
+    depth -= depthStep;
+    std::vector<m2::PointD> points = CalculatePoints(polyline, b.m_startDistance, b.m_endDistance);
     ASSERT_LESS_OR_EQUAL(points.size(), polyline.GetSize(), ());
-    PrepareArrowGeometry(points, routeArrowsData.m_pivot, region.GetTexRect(), depth, geometry, joinsGeometry);
-    depth += 1.0f;
+    PrepareArrowGeometry(points, routeArrowsData.m_pivot, region.GetTexRect(), depthStep,
+                         depth, geometryData);
   }
 
-  BatchGeometry(state, make_ref(geometry.data()), geometry.size(),
-                make_ref(joinsGeometry.data()), joinsGeometry.size(),
-                AV::GetBindingInfo(), routeArrowsData.m_arrows);
+  geometryData.m_boundingBox.Scale(kBoundingBoxScale);
+
+  BatchGeometry(context, state, make_ref(geometryData.m_geometry.data()),
+                static_cast<uint32_t>(geometryData.m_geometry.size()),
+                make_ref(geometryData.m_joinsGeometry.data()),
+                static_cast<uint32_t>(geometryData.m_joinsGeometry.size()),
+                geometryData.m_boundingBox, AV::GetBindingInfo(),
+                routeArrowsData.m_renderProperty);
 }
 
-void RouteShape::CacheRoute(ref_ptr<dp::TextureManager> textures, RouteData & routeData)
+drape_ptr<df::SubrouteData> RouteShape::CacheRoute(ref_ptr<dp::GraphicsContext> context,
+                                                   dp::DrapeID subrouteId, SubrouteConstPtr subroute,
+                                                   size_t styleIndex, int recacheId,
+                                                   ref_ptr<dp::TextureManager> textures)
 {
-  TGeometryBuffer geometry;
-  TGeometryBuffer joinsGeometry;
-  PrepareGeometry(routeData.m_sourcePolyline.GetPoints(), routeData.m_pivot,
-                  geometry, joinsGeometry, routeData.m_length);
-
-  dp::GLState state = dp::GLState(gpu::ROUTE_PROGRAM, dp::GLState::GeometryLayer);
-  state.SetColorTexture(textures->GetSymbolsTexture());
-  BatchGeometry(state, make_ref(geometry.data()), geometry.size(),
-                make_ref(joinsGeometry.data()), joinsGeometry.size(),
-                RV::GetBindingInfo(), routeData.m_route);
-}
-
-void RouteShape::BatchGeometry(dp::GLState const & state, ref_ptr<void> geometry, size_t geomSize,
-                               ref_ptr<void> joinsGeometry, size_t joinsGeomSize,
-                               dp::BindingInfo const & bindingInfo, RouteRenderProperty & property)
-{
-  size_t const verticesCount = geomSize + joinsGeomSize;
-  if (verticesCount != 0)
+  size_t startIndex;
+  size_t endIndex;
+  if (subroute->m_styleType == df::SubrouteStyleType::Single)
   {
-    uint32_t const kBatchSize = 5000;
-    dp::Batcher batcher(kBatchSize, kBatchSize);
-    dp::SessionGuard guard(batcher, [&property](dp::GLState const & state, drape_ptr<dp::RenderBucket> && b)
+    ASSERT_EQUAL(styleIndex, 0, ());
+    startIndex = 0;
+    endIndex = subroute->m_polyline.GetSize() - 1;
+  }
+  else
+  {
+    auto const & style = subroute->m_style[styleIndex];
+    startIndex = style.m_startIndex;
+    endIndex = style.m_endIndex;
+  }
+
+  ASSERT_LESS(startIndex, endIndex, ());
+
+  auto const points = subroute->m_polyline.ExtractSegment(startIndex, endIndex);
+  if (points.empty())
+    return nullptr;
+
+  std::vector<glsl::vec4> segmentsColors;
+  if (!subroute->m_traffic.empty())
+  {
+    segmentsColors.reserve(endIndex - startIndex);
+    for (size_t i = startIndex; i < endIndex; ++i)
     {
-      property.m_buckets.push_back(move(b));
-      property.m_state = state;
+      auto const speedGroup = TrafficGenerator::CheckColorsSimplification(subroute->m_traffic[i]);
+      auto const colorConstant = TrafficGenerator::GetColorBySpeedGroup(speedGroup, true /* route */);
+      dp::Color const color = df::GetColorConstant(colorConstant);
+      float const alpha = (speedGroup == traffic::SpeedGroup::G4 ||
+        speedGroup == traffic::SpeedGroup::G5 ||
+        speedGroup == traffic::SpeedGroup::Unknown) ? 0.0f : 1.0f;
+      segmentsColors.emplace_back(color.GetRedF(), color.GetGreenF(), color.GetBlueF(), alpha);
+    }
+  }
+
+  auto subrouteData = make_unique_dp<df::SubrouteData>();
+  subrouteData->m_subrouteId = subrouteId;
+  subrouteData->m_subroute = subroute;
+  subrouteData->m_startPointIndex = startIndex;
+  subrouteData->m_endPointIndex = endIndex;
+  subrouteData->m_styleIndex = styleIndex;
+  subrouteData->m_pivot = subroute->m_polyline.GetLimitRect().Center();
+  subrouteData->m_recacheId = recacheId;
+  subrouteData->m_distanceOffset = subroute->m_polyline.GetLength(startIndex);
+
+  std::vector<GeometryBufferData<GeometryBuffer>> geometryBufferData;
+  PrepareGeometry(points, subrouteData->m_pivot, segmentsColors,
+                  static_cast<float>(subroute->m_baseDepthIndex * kDepthPerSubroute),
+                  geometryBufferData);
+
+  auto state = CreateRenderState(subroute->m_style[styleIndex].m_pattern.m_isDashed ?
+                                 gpu::Program::RouteDash : gpu::Program::Route, DepthLayer::GeometryLayer);
+  state.SetColorTexture(textures->GetSymbolsTexture());
+
+  for (auto & data : geometryBufferData)
+  {
+    data.m_boundingBox.Scale(kBoundingBoxScale);
+    BatchGeometry(context, state, make_ref(data.m_geometry.data()),
+                  static_cast<uint32_t>(data.m_geometry.size()),
+                  make_ref(data.m_joinsGeometry.data()),
+                  static_cast<uint32_t>(data.m_joinsGeometry.size()),
+                  data.m_boundingBox, RV::GetBindingInfo(),
+                  subrouteData->m_renderProperty);
+  }
+
+
+  return subrouteData;
+}
+
+drape_ptr<df::SubrouteMarkersData> RouteShape::CacheMarkers(ref_ptr<dp::GraphicsContext> context,
+                                                            dp::DrapeID subrouteId, SubrouteConstPtr subroute,
+                                                            int recacheId, ref_ptr<dp::TextureManager> textures)
+{
+  if (subroute->m_markers.empty())
+    return nullptr;
+
+  auto markersData = make_unique_dp<df::SubrouteMarkersData>();
+  markersData->m_subrouteId = subrouteId;
+  markersData->m_pivot = subroute->m_polyline.GetLimitRect().Center();
+  markersData->m_recacheId = recacheId;
+
+  MarkersGeometryBuffer geometry;
+  auto const depth = static_cast<float>(subroute->m_baseDepthIndex * kDepthPerSubroute + kMarkersDepth);
+  PrepareMarkersGeometry(subroute->m_markers, markersData->m_pivot, depth, geometry);
+  if (geometry.empty())
+    return nullptr;
+
+  auto state = CreateRenderState(gpu::Program::RouteMarker, DepthLayer::GeometryLayer);
+  state.SetColorTexture(textures->GetSymbolsTexture());
+
+  // Batching.
+  {
+    uint32_t const kBatchSize = 200;
+    dp::Batcher batcher(kBatchSize, kBatchSize);
+    batcher.SetBatcherHash(static_cast<uint64_t>(BatcherBucket::Routing));
+    dp::SessionGuard guard(context, batcher, [&markersData](dp::RenderState const & state,
+                                                            drape_ptr<dp::RenderBucket> &&b)
+    {
+      markersData->m_renderProperty.m_buckets.push_back(std::move(b));
+      markersData->m_renderProperty.m_state = state;
     });
 
-    if (geomSize != 0)
-    {
-      dp::AttributeProvider provider(1 /* stream count */, geomSize);
-      provider.InitStream(0 /* stream index */, bindingInfo, geometry);
-      batcher.InsertListOfStrip(state, make_ref(&provider), 4);
-    }
-
-    if (joinsGeomSize != 0)
-    {
-      dp::AttributeProvider joinsProvider(1 /* stream count */, joinsGeomSize);
-      joinsProvider.InitStream(0 /* stream index */, bindingInfo, joinsGeometry);
-      batcher.InsertTriangleList(state, make_ref(&joinsProvider));
-    }
+    dp::AttributeProvider provider(1 /* stream count */, static_cast<uint32_t>(geometry.size()));
+    provider.InitStream(0 /* stream index */, MV::GetBindingInfo(), geometry.data());
+    batcher.InsertTriangleList(context, state, make_ref(&provider));
   }
+
+  return markersData;
 }
 
-} // namespace df
+void RouteShape::BatchGeometry(ref_ptr<dp::GraphicsContext> context, dp::RenderState const & state,
+                               ref_ptr<void> geometry, uint32_t geomSize,
+                               ref_ptr<void> joinsGeometry, uint32_t joinsGeomSize,
+                               m2::RectD const & boundingBox, dp::BindingInfo const & bindingInfo,
+                               RouteRenderProperty & property)
+{
+  auto verticesCount = geomSize + joinsGeomSize;
+  if (verticesCount == 0)
+    return;
+
+  uint32_t constexpr kMinBatchSize = 100;
+  uint32_t constexpr kMaxBatchSize = 65000;
+  uint32_t constexpr kIndicesScalar = 2;
+
+  verticesCount = base::Clamp(verticesCount, kMinBatchSize, kMaxBatchSize);
+  auto const indicesCount = base::Clamp(verticesCount * kIndicesScalar, kMinBatchSize, kMaxBatchSize);
+
+  dp::Batcher batcher(indicesCount, verticesCount);
+  batcher.SetBatcherHash(static_cast<uint64_t>(BatcherBucket::Routing));
+  dp::SessionGuard guard(context, batcher, [&property, &boundingBox](dp::RenderState const & state,
+                                                                     drape_ptr<dp::RenderBucket> && b)
+  {
+    property.m_buckets.push_back(std::move(b));
+    property.m_boundingBoxes.push_back(boundingBox);
+    property.m_state = state;
+  });
+
+  if (geomSize != 0)
+  {
+    dp::AttributeProvider provider(1 /* stream count */, geomSize);
+    provider.InitStream(0 /* stream index */, bindingInfo, geometry);
+    batcher.InsertListOfStrip(context, state, make_ref(&provider), 4);
+  }
+
+  if (joinsGeomSize != 0)
+  {
+    dp::AttributeProvider joinsProvider(1 /* stream count */, joinsGeomSize);
+    joinsProvider.InitStream(0 /* stream index */, bindingInfo, joinsGeometry);
+    batcher.InsertTriangleList(context, state, make_ref(&joinsProvider));
+  }
+}
+}  // namespace df

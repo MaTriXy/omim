@@ -3,23 +3,25 @@
 
 #include "base/base.hpp"
 
-#include "std/algorithm.hpp"
-#include "std/string.hpp"
+#include <algorithm>
+#include <string>
+#include <utility>
 
 namespace
 {
-  class Tester
-  {
-  public:
-    Tester() = default;
-  };
+class Tester
+{
+public:
+  Tester() = default;
+};
 
 #if defined(TRACK_POINTERS)
-  bool g_assertRaised = false;
-  void OnAssertRaised(my::SrcPoint const & /*srcPoint*/, string const & /*msg*/)
-  {
-    g_assertRaised = true;
-  }
+bool g_assertRaised = false;
+bool OnAssertRaised(base::SrcPoint const & /* srcPoint */, std::string const & /* msg */)
+{
+  g_assertRaised = true;
+  return false;
+}
 #endif
 }
 
@@ -31,7 +33,7 @@ UNIT_TEST(PointersTrackingTest)
 
   drape_ptr<Tester> ptr = make_unique_dp<Tester>();
   void * ptrAddress = ptr.get();
-  string const ptrTypeName = typeid(Tester*).name();
+  std::string const ptrTypeName = typeid(Tester*).name();
 
   // no references
   TEST(alivePointers.find(ptrAddress) == alivePointers.end(), ());
@@ -58,7 +60,7 @@ UNIT_TEST(PointersTrackingTest)
   TEST_EQUAL(found->second.first, 2, ());
 
   // move reference
-  ref_ptr<Tester> refPtr3 = move(refPtr2);
+  ref_ptr<Tester> refPtr3 = std::move(refPtr2);
   TEST_EQUAL(found->second.first, 2, ());
 
   // assign reference
@@ -67,7 +69,7 @@ UNIT_TEST(PointersTrackingTest)
   TEST_EQUAL(found->second.first, 3, ());
 
   // move-assign reference
-  refPtr4 = move(refPtr3);
+  refPtr4 = std::move(refPtr3);
   TEST_EQUAL(found->second.first, 2, ());
 
   // create another reference
@@ -80,18 +82,16 @@ UNIT_TEST(PointersTrackingTest)
 UNIT_TEST(RefPointerExpiringTest)
 {
 #if defined(TRACK_POINTERS)
-
   g_assertRaised = false;
-  my::AssertFailedFn prevFn = my::SetAssertFunction(OnAssertRaised);
+  base::AssertFailedFn prevFn = base::SetAssertFunction(OnAssertRaised);
 
   drape_ptr<Tester> ptr = make_unique_dp<Tester>();
   ref_ptr<Tester> refPtr1 = make_ref(ptr);
   ref_ptr<Tester> refPtr2 = make_ref(ptr);
   ptr.reset();
 
-  my::SetAssertFunction(prevFn);
+  base::SetAssertFunction(prevFn);
 
   TEST(g_assertRaised, ());
-
 #endif
 }

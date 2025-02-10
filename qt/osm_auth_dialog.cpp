@@ -4,6 +4,8 @@
 
 #include "platform/settings.hpp"
 
+#include <string>
+
 #include <QtWidgets/QDialogButtonBox>
 #include <QtWidgets/QHBoxLayout>
 #include <QtWidgets/QLabel>
@@ -15,7 +17,6 @@ using namespace osm;
 
 namespace qt
 {
-
 char const * kTokenKeySetting = "OsmTokenKey";
 char const * kTokenSecretSetting = "OsmTokenSecret";
 char const * kLoginDialogTitle = "OpenStreetMap Login Dialog";
@@ -23,11 +24,9 @@ char const * kLogoutDialogTitle = "Logout Dialog";
 
 OsmAuthDialog::OsmAuthDialog(QWidget * parent)
 {
-  string key, secret;
-  settings::Get(kTokenKeySetting, key);
-  settings::Get(kTokenSecretSetting, secret);
-
-  bool const isLoginDialog = key.empty() || secret.empty();
+  std::string key, secret;
+  bool const isLoginDialog = !settings::Get(kTokenKeySetting, key) || key.empty() ||
+                             !settings::Get(kTokenSecretSetting, secret) || secret.empty();
 
   QVBoxLayout * vLayout = new QVBoxLayout(parent);
 
@@ -87,8 +86,8 @@ void OsmAuthDialog::OnAction()
   bool const isLoginDialog = findChild<QPushButton *>("button")->text() == tr("Login");
   if (isLoginDialog)
   {
-    string const login = findChild<QLineEdit *>("login")->text().toStdString();
-    string const password = findChild<QLineEdit *>("password")->text().toStdString();
+    std::string const login = findChild<QLineEdit *>("login")->text().toStdString();
+    std::string const password = findChild<QLineEdit *>("password")->text().toStdString();
 
     if (login.empty())
     {
@@ -119,19 +118,18 @@ void OsmAuthDialog::OnAction()
         return;
       }
     }
-    catch (exception const & ex)
+    catch (std::exception const & ex)
     {
-      setWindowTitle((string("Auth failed: ") + ex.what()).c_str());
+      setWindowTitle((std::string("Auth failed: ") + ex.what()).c_str());
       return;
     }
   }
   else
   {
-    settings::Set(kTokenKeySetting, string());
-    settings::Set(kTokenSecretSetting, string());
+    settings::Set(kTokenKeySetting, std::string());
+    settings::Set(kTokenSecretSetting, std::string());
 
     SwitchToLogin(this);
   }
 }
-
 } // namespace qt

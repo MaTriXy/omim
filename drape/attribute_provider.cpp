@@ -2,7 +2,7 @@
 #include "base/assert.hpp"
 
 #ifdef DEBUG
-  #define INIT_CHECK_INFO(x) m_checkInfo = vector<bool>((vector<bool>::size_type)(x), false);
+  #define INIT_CHECK_INFO(x) m_checkInfo = std::vector<bool>((std::vector<bool>::size_type)(x), false);
   #define CHECK_STREAMS CheckStreams()
   #define INIT_STREAM(x) InitCheckStream((x))
 #else
@@ -14,7 +14,6 @@
 
 namespace dp
 {
-
 AttributeProvider::AttributeProvider(uint8_t streamCount, uint32_t vertexCount)
   : m_vertexCount(vertexCount)
 {
@@ -22,7 +21,6 @@ AttributeProvider::AttributeProvider(uint8_t streamCount, uint32_t vertexCount)
   INIT_CHECK_INFO(streamCount);
 }
 
-/// interface for batcher
 bool AttributeProvider::IsDataExists() const
 {
   CHECK_STREAMS;
@@ -84,6 +82,18 @@ void AttributeProvider::InitStream(uint8_t streamIndex,
   INIT_STREAM(streamIndex);
 }
 
+void AttributeProvider::Reset(uint32_t vertexCount)
+{
+  m_vertexCount = vertexCount;
+}
+
+void AttributeProvider::UpdateStream(uint8_t streamIndex, ref_ptr<void> data)
+{
+  ASSERT_LESS(streamIndex, GetStreamCount(), ());
+  m_streams[streamIndex].m_data = data;
+  INIT_STREAM(streamIndex);
+}
+
 #ifdef DEBUG
 void AttributeProvider::CheckStreams() const
 {
@@ -96,5 +106,4 @@ void AttributeProvider::InitCheckStream(uint8_t streamIndex)
   m_checkInfo[streamIndex] = true;
 }
 #endif
-
-}
+}  // namespace dp

@@ -7,7 +7,7 @@
 #include "indexer/features_offsets_table.hpp"
 #include "indexer/features_vector.hpp"
 
-#include "coding/file_container.hpp"
+#include "coding/files_container.hpp"
 
 #include "platform/mwm_traits.hpp"
 
@@ -17,7 +17,7 @@
 
 namespace indexer
 {
-bool BuildCentersTableFromDataFile(string const & filename, bool forceRebuild)
+bool BuildCentersTableFromDataFile(std::string const & filename, bool forceRebuild)
 {
   try
   {
@@ -28,9 +28,14 @@ bool BuildCentersTableFromDataFile(string const & filename, bool forceRebuild)
       if (!forceRebuild && rcont.IsExist(CENTERS_FILE_TAG))
         return true;
 
-      feature::DataHeader header(rcont);
+      version::MwmVersion version;
+      if (!ReadVersion(rcont, version))
+      {
+        LOG(LERROR, ("Can't read version from", filename));
+        return false;
+      }
 
-      version::MwmTraits const traits(header.GetFormat());
+      version::MwmTraits const traits(version);
       if (!traits.HasOffsetsTable())
       {
         LOG(LERROR, (filename, "does not have an offsets table!"));
@@ -44,9 +49,10 @@ bool BuildCentersTableFromDataFile(string const & filename, bool forceRebuild)
         return false;
       }
 
+      feature::DataHeader const header(rcont);
       FeaturesVector const features(rcont, header, table.get());
 
-      builder.SetCodingParams(header.GetDefCodingParams());
+      builder.SetGeometryParams(header.GetBounds());
       features.ForEach([&](FeatureType & ft, uint32_t featureId) {
         builder.Put(featureId, feature::GetCenter(ft));
       });
@@ -54,8 +60,8 @@ bool BuildCentersTableFromDataFile(string const & filename, bool forceRebuild)
 
     {
       FilesContainerW writeContainer(filename, FileWriter::OP_WRITE_EXISTING);
-      FileWriter writer = writeContainer.GetWriter(CENTERS_FILE_TAG);
-      builder.Freeze(writer);
+      auto writer = writeContainer.GetWriter(CENTERS_FILE_TAG);
+      builder.Freeze(*writer);
     }
   }
   catch (RootException const & e)

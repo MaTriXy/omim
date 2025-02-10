@@ -4,58 +4,21 @@
 #include "geometry/mercator.hpp"
 #include "geometry/rect2d.hpp"
 
+#include "generator/osm_element.hpp"
+
 #include "base/string_utils.hpp"
 
-#include "std/limits.hpp"
-#include "std/string.hpp"
-#include "std/vector.hpp"
+#include <string>
+#include <vector>
 
 class TownsDumper
 {
 public:
   TownsDumper();
 
-  template <typename TElement>
-  void CheckElement(TElement const & em)
-  {
-    if (em.type != TElement::EntityType::Node)
-      return;
-    uint64_t population = 1;
-    bool town = false;
-    bool capital = false;
-    int admin_level = numeric_limits<int>::max();
-    for (auto const & tag : em.Tags())
-    {
-      string key(tag.key), value(tag.value);
-      if (key == "population")
-      {
-        if (!strings::to_uint64(value, population))
-          continue;
-      }
-      else if (key == "admin_level")
-      {
-        if (!strings::to_int(value, admin_level))
-          continue;
-      }
-      else if (key == "capital" && value == "yes")
-      {
-        capital = true;
-      }
-      else if (key == "place" && (value == "city" || value == "town"))
-      {
-        town = true;
-      }
-    }
+  void CheckElement(OsmElement const & em);
 
-    // Ignore regional capitals.
-    if (capital && admin_level > 2)
-      capital = false;
-
-    if (town || capital)
-      m_records.emplace_back(em.lat, em.lon, em.id, capital, population);
-  }
-
-  void Dump(string const & filePath);
+  void Dump(std::string const & filePath);
 
 private:
   void FilterTowns();
@@ -75,9 +38,9 @@ private:
     bool operator<(Town const & rhs) const { return population < rhs.population; }
     m2::RectD GetLimitRect() const
     {
-      return m2::RectD(MercatorBounds::FromLatLon(point), MercatorBounds::FromLatLon(point));
+      return m2::RectD(mercator::FromLatLon(point), mercator::FromLatLon(point));
     }
   };
 
-  vector<Town> m_records;
+  std::vector<Town> m_records;
 };

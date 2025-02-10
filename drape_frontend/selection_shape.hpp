@@ -1,24 +1,29 @@
 #pragma once
 
-#include "animation/show_hide_animation.hpp"
-#include "animation/value_mapping.hpp"
-#include "render_node.hpp"
+#include "drape_frontend/animation/show_hide_animation.hpp"
+#include "drape_frontend/animation/value_mapping.hpp"
+#include "drape_frontend/frame_values.hpp"
+#include "drape_frontend/render_node.hpp"
+
+#include "drape/graphics_context.hpp"
 
 #include "geometry/point2d.hpp"
 #include "geometry/screenbase.hpp"
 
+#include <vector>
+
 namespace dp
 {
-
-class GpuProgramManager;
-class UniformValuesStorage;
 class TextureManager;
+}  // namespace dp
 
-}
+namespace gpu
+{
+class ProgramManager;
+}  // namespace gpu
 
 namespace df
 {
-
 class SelectionShape
 {
 public:
@@ -27,24 +32,29 @@ public:
     OBJECT_EMPTY,
     OBJECT_POI,
     OBJECT_USER_MARK,
-    OBJECT_MY_POSITION
+    OBJECT_MY_POSITION,
+    OBJECT_TRACK,
+    OBJECT_GUIDE
   };
 
-  SelectionShape(ref_ptr<dp::TextureManager> mng);
+  SelectionShape(ref_ptr<dp::GraphicsContext> context, ref_ptr<dp::TextureManager> mng);
 
   void SetPosition(m2::PointD const & position) { m_position = position; }
   void Show(ESelectedObject obj, m2::PointD const & position, double positionZ, bool isAnimate);
   void Hide();
-  void Render(ScreenBase const & screen, int zoomLevel, ref_ptr<dp::GpuProgramManager> mng,
-              dp::UniformValuesStorage const & commonUniforms);
+  void Render(ref_ptr<dp::GraphicsContext> context, ref_ptr<gpu::ProgramManager> mng, ScreenBase const & screen,
+              int zoomLevel, FrameValues const & frameValues);
 
   bool IsVisible(ScreenBase const & screen, m2::PointD & pxPos) const;
   double GetRadius() const { return m_radius; }
+  double GetPositionZ() const { return m_positionZ; }
 
   ESelectedObject GetSelectedObject() const;
 
-private:
-  double GetCurrentRadius() const;
+  void AddSelectionGeometry(drape_ptr<RenderNode> && renderNode, int recacheId);
+  int GetRecacheId() const { return m_recacheId; }
+  m2::RectD GetSelectionGeometryBoundingBox() const;
+  bool HasSelectionGeometry() const { return !m_selectionGeometry.empty(); }
 
 private:
   m2::PointD m_position;
@@ -54,7 +64,10 @@ private:
   ESelectedObject m_selectedObject;
 
   drape_ptr<RenderNode> m_renderNode;
+  drape_ptr<RenderNode> m_trackRenderNode;
   ValueMapping<float> m_mapping;
-};
 
-} // namespace df
+  std::vector<drape_ptr<RenderNode>> m_selectionGeometry;
+  int m_recacheId = -1;
+};
+}  // namespace df

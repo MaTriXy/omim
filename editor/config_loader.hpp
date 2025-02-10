@@ -1,14 +1,15 @@
 #pragma once
 
+#include "base/atomic_shared_ptr.hpp"
 #include "base/exception.hpp"
 #include "base/logging.hpp"
 
-#include "std/chrono.hpp"
-#include "std/condition_variable.hpp"
-#include "std/mutex.hpp"
-#include "std/shared_ptr.hpp"
-#include "std/string.hpp"
-#include "std/thread.hpp"
+#include <chrono>
+#include <condition_variable>
+#include <memory>
+#include <mutex>
+#include <string>
+#include <thread>
 
 namespace pugi
 {
@@ -17,16 +18,16 @@ class xml_document;
 
 namespace editor
 {
-class EditorConfigWrapper;
+class EditorConfig;
 
 // Class for multithreaded interruptable waiting.
 class Waiter
 {
 public:
   template <typename Rep, typename Period>
-  bool Wait(duration<Rep, Period> const & waitDuration)
+  bool Wait(std::chrono::duration<Rep, Period> const & waitDuration)
   {
-    unique_lock<mutex> lock(m_mutex);
+    std::unique_lock<std::mutex> lock(m_mutex);
 
     if (m_interrupted)
       return false;
@@ -40,8 +41,8 @@ public:
 
 private:
   bool m_interrupted = false;
-  mutex m_mutex;
-  condition_variable m_event;
+  std::mutex m_mutex;
+  std::condition_variable m_event;
 };
 
 // Class which loads config from local drive, checks hash
@@ -49,24 +50,24 @@ private:
 class ConfigLoader
 {
 public:
-  explicit ConfigLoader(EditorConfigWrapper & config);
+  explicit ConfigLoader(base::AtomicSharedPtr<EditorConfig> & config);
   ~ConfigLoader();
 
   // Static methods for production and testing.
   static void LoadFromLocal(pugi::xml_document & doc);
-  static string GetRemoteHash();
+  static std::string GetRemoteHash();
   static void GetRemoteConfig(pugi::xml_document & doc);
-  static bool SaveHash(string const & hash, string const & filePath);
-  static string LoadHash(string const & filePath);
+  static bool SaveHash(std::string const & hash, std::string const & filePath);
+  static std::string LoadHash(std::string const & filePath);
 
 private:
   void LoadFromServer();
   bool SaveAndReload(pugi::xml_document const & doc);
   void ResetConfig(pugi::xml_document const & doc);
 
-  EditorConfigWrapper & m_config;
+  base::AtomicSharedPtr<EditorConfig> & m_config;
 
   Waiter m_waiter;
-  thread m_loaderThread;
+  std::thread m_loaderThread;
 };
 }  // namespace editor

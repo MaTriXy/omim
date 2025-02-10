@@ -5,18 +5,19 @@
 
 #include "base/shared_buffer_manager.hpp"
 
-#include "std/cstdint.hpp"
-#include "std/map.hpp"
+#include <cstdint>
+#include <map>
+#include <utility>
+#include <vector>
 
 namespace dp
 {
-
 struct MutateRegion
 {
   MutateRegion() : m_offset(0), m_count(0) {}
   MutateRegion(uint32_t offset, uint32_t count) : m_offset(offset), m_count(count) {}
 
-  uint32_t m_offset; // Offset from buffer begin in "Elements" not in bytes
+  uint32_t m_offset; // Offset from buffer begin in "Elements" not in bytes.
   uint32_t m_count;  // Count of "Elements".
 };
 
@@ -28,10 +29,11 @@ struct MutateNode
 
 class AttributeBufferMutator
 {
-  typedef pair<SharedBufferManager::shared_buffer_ptr_t, size_t> TBufferNode;
-  typedef vector<TBufferNode> TBufferArray;
-  typedef vector<MutateNode> TMutateNodes;
-  typedef map<BindingInfo, TMutateNodes> TMutateData;
+  using TBufferNode = std::pair<SharedBufferManager::shared_buffer_ptr_t, size_t>;
+  using TBufferArray = std::vector<TBufferNode>;
+  using TMutateNodes = std::vector<MutateNode>;
+  using TMutateData = std::map<BindingInfo, TMutateNodes>;
+
 public:
   ~AttributeBufferMutator();
   void AddMutation(BindingInfo const & info, MutateNode const & node);
@@ -41,9 +43,7 @@ private:
   friend class VertexArrayBuffer;
   TMutateData const & GetMutateData() const { return m_data; }
 
-private:
   TMutateData m_data;
   TBufferArray m_array;
 };
-
-} // namespace dp
+}  // namespace dp

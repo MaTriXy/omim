@@ -9,12 +9,12 @@ from sys import argv
 
 TransAndKey = namedtuple("TransAndKey", "translation, key")
 
-TRANSLATION = re.compile(r"([a-z]{2}|zh-Han[st])\s*=\s*.*$", re.S | re.MULTILINE)
+TRANSLATION = re.compile(r"(.*)\s*=\s*.*$", re.S | re.MULTILINE)
 MANY_DOTS = re.compile(r"\.{4,}")
 SPACE_PUNCTUATION = re.compile(r"\s[.,?!:;]")
 PLACEHOLDERS = re.compile(r"(%\d*\$@|%[@dqus]|\^)")
 
-ITUNES_LANGS = ["en", "en-GB", "ru", "ar", "cs", "da", "nl", "fi", "fr", "de", "hu", "id", "it", "ja", "ko", "nb", "pl", "pt", "ro", "sl", "es", "sv", "th", "tr", "uk", "vi", "zh-Hans", "zh-Hant"]
+ITUNES_LANGS = ["en", "en-GB", "ru", "ar", "cs", "da", "nl", "fi", "fr", "de", "hu", "id", "it", "ja", "ko", "nb", "pl", "pt", "pt-BR", "ro", "sl", "es", "sv", "th", "tr", "uk", "vi", "zh-Hans", "zh-Hant"]
 
 SIMILARITY_THRESHOLD = 20.0 #%
 
@@ -23,7 +23,7 @@ class StringsTxt:
 
     def __init__(self, strings_path=None):
         if not strings_path:
-            self.strings_path = join(dirname(argv[0]), "..", "..", "strings.txt")
+            self.strings_path = join(dirname(argv[0]), "..", "..", "data", "strings", "strings.txt")
         else:
             self.strings_path = strings_path
 
@@ -67,25 +67,26 @@ class StringsTxt:
                     self.keys_in_order.append(line)
                     continue
                 if line.startswith("["):
-                    if line in self.translations:
-                        print("Duplicate key {}".format(line))
-                        continue
+                    # if line in self.translations:
+                    #     print("Duplicate key {}".format(line))
+                    #     continue
                     self.translations[line] = {}
                     current_key = line
-                    self.keys_in_order.append(current_key)
+                    if current_key not in self.keys_in_order:
+                        self.keys_in_order.append(current_key)
 
                 if TRANSLATION.match(line):
                     lang, tran = self._parse_lang_and_translation(line)
+
+                    if lang == "comment" or lang == "tags":
+                        self.comments_and_tags[current_key][lang] = tran
+                        continue
+
                     self.translations[current_key][lang] = tran
 
                     self.all_langs.add(lang)
                     if line.startswith("en = "):
                         self.with_english.append(current_key)
-                    continue
-
-                if line.startswith("comment") or line.startswith("tags"):
-                    lang, value = self._parse_lang_and_translation(line)
-                    self.comments_and_tags[current_key][lang] = value
                     continue
 
 
@@ -291,7 +292,15 @@ class StringsTxt:
 
     def _check_placeholders_in_block(self, block_key):
         wrong_placeholders_strings = []
-        en_placeholders = sorted(PLACEHOLDERS.findall(self.translations[block_key]["en"]))
+        key = self.translations[block_key].get("en")
+        if not key:
+            print("No english for key: {}".format(block_key))
+            print("Existing keys are: {}".format(",".join(self.translations[block_key].keys())))
+            raise KeyError
+
+        en_placeholders = sorted(PLACEHOLDERS.findall(key))
+
+        
         for lang, translation in self.translations[block_key].items():
             if lang == "en":
                 continue

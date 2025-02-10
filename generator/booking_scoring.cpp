@@ -3,6 +3,8 @@
 #include "generator/booking_dataset.hpp"
 #include "generator/feature_builder.hpp"
 
+using namespace feature;
+
 namespace
 {
 // Calculated with tools/python/booking_hotels_quality.py.
@@ -26,13 +28,13 @@ bool MatchStats<BookingHotel>::IsMatched() const
   return GetMatchingScore() > kOptimalThreshold;
 }
 
-// TODO(mgsergio): Do I need to spesialize this method?
+// TODO(mgsergio): Do I need to specialize this method?
 template <>
-MatchStats<BookingHotel> Match(BookingHotel const & h, FeatureBuilder1 const & fb)
+MatchStats<BookingHotel> Match(BookingHotel const & h, FeatureBuilder const & fb)
 {
   MatchStats<BookingHotel> score;
 
-  auto const fbCenter = MercatorBounds::ToLatLon(fb.GetKeyPoint());
+  auto const fbCenter = mercator::ToLatLon(fb.GetKeyPoint());
   auto const distance = ms::DistanceOnEarth(fbCenter, h.m_latLon);
   score.m_linearNormDistanceScore =
       impl::GetLinearNormDistanceScore(distance, BookingDataset::kDistanceLimitInMeters);

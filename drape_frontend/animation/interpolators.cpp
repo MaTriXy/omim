@@ -1,8 +1,9 @@
-#include "interpolators.hpp"
+#include "drape_frontend/animation/interpolators.hpp"
+#include "drape_frontend/animation/interpolations.hpp"
 
 #include "base/assert.hpp"
 
-#include "interpolations.hpp"
+#include <algorithm>
 
 namespace df
 {
@@ -11,7 +12,7 @@ double CalcAnimSpeedDuration(double pxDiff, double pxSpeed)
 {
   double constexpr kEps = 1e-5;
 
-  if (my::AlmostEqualAbs(pxDiff, 0.0, kEps))
+  if (base::AlmostEqualAbs(pxDiff, 0.0, kEps))
     return 0.0;
 
   return fabs(pxDiff) / pxSpeed;
@@ -20,6 +21,8 @@ double CalcAnimSpeedDuration(double pxDiff, double pxSpeed)
 Interpolator::Interpolator(double duration, double delay)
   : m_elapsedTime(0.0)
   , m_duration(duration)
+  , m_maxDuration(Interpolator::kInvalidDuration)
+  , m_minDuration(Interpolator::kInvalidDuration)
   , m_delay(delay)
   , m_isActive(false)
 {
@@ -56,12 +59,26 @@ void Interpolator::SetActive(bool active)
 
 void Interpolator::SetMaxDuration(double maxDuration)
 {
-  m_duration = min(m_duration, maxDuration);
+  m_maxDuration = maxDuration;
+  if (m_maxDuration >= 0.0)
+    m_duration = std::min(m_duration, m_maxDuration);
 }
 
 void Interpolator::SetMinDuration(double minDuration)
 {
-  m_duration = max(m_duration, minDuration);
+  m_minDuration = minDuration;
+  if (m_minDuration >= 0.0)
+    m_duration = std::max(m_duration, m_minDuration);
+}
+
+double Interpolator::GetMaxDuration() const
+{
+  return m_maxDuration;
+}
+
+double Interpolator::GetMinDuration() const
+{
+  return m_minDuration;
 }
 
 double Interpolator::GetT() const
@@ -69,7 +86,7 @@ double Interpolator::GetT() const
   if (IsFinished())
     return 1.0;
 
-  return max(m_elapsedTime - m_delay, 0.0) / m_duration;
+  return std::max(m_elapsedTime - m_delay, 0.0) / m_duration;
 }
 
 double Interpolator::GetElapsedTime() const
@@ -140,7 +157,7 @@ double PositionInterpolator::GetMoveDuration(double globalDistance, m2::RectD co
   if (pixelLength < kEps)
     return 0.0;
 
-  double const minSize = min(viewportRect.SizeX(), viewportRect.SizeY());
+  double const minSize = std::min(viewportRect.SizeX(), viewportRect.SizeY());
   if (pixelLength < kMinSpeedScalar * minSize)
     return kMinMoveDuration;
 
@@ -200,7 +217,7 @@ double ScaleInterpolator::GetScaleDuration(double startScale, double endScale, b
   double const kPixelSpeed = isAutoZoom ? (2.0 / 1.2) : (2.0 / 0.2);
 
   if (startScale > endScale)
-    swap(startScale, endScale);
+    std::swap(startScale, endScale);
 
   return CalcAnimSpeedDuration(endScale / startScale, kPixelSpeed);
 }

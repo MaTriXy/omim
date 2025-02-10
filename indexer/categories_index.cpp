@@ -3,17 +3,18 @@
 #include "search_string_utils.hpp"
 
 #include "base/assert.hpp"
-#include "base/stl_add.hpp"
 #include "base/stl_helpers.hpp"
 #include "base/string_utils.hpp"
 
-#include "std/algorithm.hpp"
-#include "std/set.hpp"
+#include <algorithm>
+#include <set>
+
+using namespace std;
 
 namespace
 {
-void AddAllNonemptySubstrings(my::MemTrie<string, uint32_t> & trie, string const & s,
-                              uint32_t value)
+void AddAllNonemptySubstrings(base::MemTrie<string, base::VectorValues<uint32_t>> & trie,
+                              string const & s, uint32_t value)
 {
   ASSERT(!s.empty(), ());
   for (size_t i = 0; i < s.length(); ++i)
@@ -31,14 +32,14 @@ template <typename TF>
 void ForEachToken(string const & s, TF && fn)
 {
   vector<strings::UniString> tokens;
-  SplitUniString(search::NormalizeAndSimplifyString(s), MakeBackInsertFunctor(tokens),
+  SplitUniString(search::NormalizeAndSimplifyString(s), base::MakeBackInsertFunctor(tokens),
                  search::Delimiters());
   for (auto const & token : tokens)
     fn(strings::ToUtf8(token));
 }
 
-void TokenizeAndAddAllSubstrings(my::MemTrie<string, uint32_t> & trie, string const & s,
-                                 uint32_t value)
+void TokenizeAndAddAllSubstrings(base::MemTrie<string, base::VectorValues<uint32_t>> & trie,
+                                 string const & s, uint32_t value)
 {
   auto fn = [&](string const & token)
   {
@@ -52,9 +53,9 @@ namespace indexer
 {
 void CategoriesIndex::AddCategoryByTypeAndLang(uint32_t type, int8_t lang)
 {
-  ASSERT(lang >= 1 && lang <= CategoriesHolder::kLocaleMapping.size(),
+  ASSERT(lang >= 1 && static_cast<size_t>(lang) <= CategoriesHolder::kLocaleMapping.size(),
          ("Invalid lang code:", lang));
-  m_catHolder->ForEachNameByType(type, [&](TCategory::Name const & name)
+  m_catHolder->ForEachNameByType(type, [&](Category::Name const & name)
                                  {
                                    if (name.m_locale == lang)
                                      TokenizeAndAddAllSubstrings(m_trie, name.m_name, type);
@@ -69,9 +70,9 @@ void CategoriesIndex::AddCategoryByTypeAllLangs(uint32_t type)
 
 void CategoriesIndex::AddAllCategoriesInLang(int8_t lang)
 {
-  ASSERT(lang >= 1 && lang <= CategoriesHolder::kLocaleMapping.size(),
+  ASSERT(lang >= 1 && static_cast<size_t>(lang) <= CategoriesHolder::kLocaleMapping.size(),
          ("Invalid lang code:", lang));
-  m_catHolder->ForEachTypeAndCategory([&](uint32_t type, TCategory const & cat)
+  m_catHolder->ForEachTypeAndCategory([&](uint32_t type, Category const & cat)
                                       {
                                         for (auto const & name : cat.m_synonyms)
                                         {
@@ -83,19 +84,19 @@ void CategoriesIndex::AddAllCategoriesInLang(int8_t lang)
 
 void CategoriesIndex::AddAllCategoriesInAllLangs()
 {
-  m_catHolder->ForEachTypeAndCategory([this](uint32_t type, TCategory const & cat)
+  m_catHolder->ForEachTypeAndCategory([this](uint32_t type, Category const & cat)
                                       {
                                         for (auto const & name : cat.m_synonyms)
                                           TokenizeAndAddAllSubstrings(m_trie, name.m_name, type);
                                       });
 }
 
-void CategoriesIndex::GetCategories(string const & query, vector<TCategory> & result) const
+void CategoriesIndex::GetCategories(string const & query, vector<Category> & result) const
 {
   vector<uint32_t> types;
   GetAssociatedTypes(query, types);
-  my::SortUnique(types);
-  m_catHolder->ForEachTypeAndCategory([&](uint32_t type, TCategory const & cat)
+  base::SortUnique(types);
+  m_catHolder->ForEachTypeAndCategory([&](uint32_t type, Category const & cat)
                                       {
                                         if (binary_search(types.begin(), types.end(), type))
                                           result.push_back(cat);

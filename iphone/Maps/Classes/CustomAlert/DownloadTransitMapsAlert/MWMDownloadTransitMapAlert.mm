@@ -1,20 +1,18 @@
-#import "Common.h"
-#import "MWMAlertViewController.h"
+#import "MWMDownloadTransitMapAlert.h"
 #import "MWMCircularProgress.h"
 #import "MWMDownloaderDialogCell.h"
 #import "MWMDownloaderDialogHeader.h"
-#import "MWMDownloadTransitMapAlert.h"
-#import "MWMFrameworkListener.h"
-#import "MWMStorage.h"
+#import "MWMStorage+UI.h"
 #import "Statistics.h"
-#import "UIColor+MapsMeColor.h"
+#import "SwiftBridge.h"
 #import "UILabel+RuntimeAttributes.h"
 
-#include "Framework.h"
+#include <CoreApi/Framework.h>
+
+#include "platform/downloader_defines.hpp"
 
 namespace
 {
-NSString * const kCellIdentifier = @"MWMDownloaderDialogCell";
 NSString * const kDownloadTransitMapAlertNibName = @"MWMDownloadTransitMapAlert";
 NSString * const kStatisticsEvent = @"Map download Alert";
 
@@ -24,14 +22,15 @@ CGFloat const kMinimumOffset = 20.;
 CGFloat const kAnimationDuration = .05;
 } // namespace
 
-@interface MWMDownloadTransitMapAlert () <UITableViewDataSource, UITableViewDelegate, MWMFrameworkStorageObserver, MWMCircularProgressProtocol>
+@interface MWMDownloadTransitMapAlert () <UITableViewDataSource, UITableViewDelegate, MWMStorageObserver, MWMCircularProgressProtocol>
 
-@property (copy, nonatomic) TMWMVoidBlock cancelBlock;
-@property (copy, nonatomic) TMWMDownloadBlock downloadBlock;
-@property (copy, nonatomic) TMWMVoidBlock downloadCompleteBlock;
+@property(copy, nonatomic) MWMVoidBlock cancelBlock;
+@property(copy, nonatomic) MWMDownloadBlock downloadBlock;
+@property(copy, nonatomic) MWMVoidBlock downloadCompleteBlock;
 
 @property (nonatomic) MWMCircularProgress * progress;
 
+@property (weak, nonatomic) IBOutlet UIView * containerView;
 @property (weak, nonatomic) IBOutlet UILabel * titleLabel;
 @property (weak, nonatomic) IBOutlet UILabel * messageLabel;
 @property (weak, nonatomic) IBOutlet UITableView * dialogsTableView;
@@ -54,30 +53,30 @@ CGFloat const kAnimationDuration = .05;
 
 @implementation MWMDownloadTransitMapAlert
 {
-  storage::TCountriesVec m_countries;
+  storage::CountriesVec m_countries;
 }
 
-+ (instancetype)downloaderAlertWithMaps:(storage::TCountriesVec const &)countries
-                                   code:(routing::IRouter::ResultCode)code
-                            cancelBlock:(TMWMVoidBlock)cancelBlock
-                          downloadBlock:(TMWMDownloadBlock)downloadBlock
-                  downloadCompleteBlock:(TMWMVoidBlock)downloadCompleteBlock
++ (instancetype)downloaderAlertWithMaps:(storage::CountriesSet const &)countries
+                                   code:(routing::RouterResultCode)code
+                            cancelBlock:(MWMVoidBlock)cancelBlock
+                          downloadBlock:(MWMDownloadBlock)downloadBlock
+                  downloadCompleteBlock:(MWMVoidBlock)downloadCompleteBlock
 {
   [Statistics logEvent:kStatisticsEvent withParameters:@{kStatAction : kStatOpen}];
   MWMDownloadTransitMapAlert * alert = [self alertWithCountries:countries];
   switch (code)
   {
-    case routing::IRouter::InconsistentMWMandRoute:
-    case routing::IRouter::RouteNotFound:
-    case routing::IRouter::RouteFileNotExist:
+    case routing::RouterResultCode::InconsistentMWMandRoute:
+    case routing::RouterResultCode::RouteNotFound:
+    case routing::RouterResultCode::RouteFileNotExist:
       alert.titleLabel.localizedText = @"dialog_routing_download_files";
       alert.messageLabel.localizedText = @"dialog_routing_download_and_update_all";
       break;
-    case routing::IRouter::FileTooOld:
+    case routing::RouterResultCode::FileTooOld:
       alert.titleLabel.localizedText = @"dialog_routing_download_files";
       alert.messageLabel.localizedText = @"dialog_routing_download_and_update_maps";
       break;
-    case routing::IRouter::NeedMoreMaps:
+    case routing::RouterResultCode::NeedMoreMaps:
       alert.titleLabel.localizedText = @"dialog_routing_download_and_build_cross_route";
       alert.messageLabel.localizedText = @"dialog_routing_download_cross_route";
       break;
@@ -91,34 +90,48 @@ CGFloat const kAnimationDuration = .05;
   return alert;
 }
 
-+ (instancetype)alertWithCountries:(storage::TCountriesVec const &)countries
++ (instancetype)alertWithCountries:(storage::CountriesSet const &)countries
 {
   NSAssert(!countries.empty(), @"countries can not be empty.");
-  MWMDownloadTransitMapAlert * alert = [[[NSBundle mainBundle] loadNibNamed:kDownloadTransitMapAlertNibName owner:nil options:nil] firstObject];
+  MWMDownloadTransitMapAlert * alert =
+      [NSBundle.mainBundle loadNibNamed:kDownloadTransitMapAlertNibName owner:nil options:nil]
+          .firstObject;
 
-  NSMutableArray<NSString *> * titles = [@[] mutableCopy];
-  TMwmSize totalSize = 0;
+  alert->m_countries = storage::CountriesVec(countries.begin(), countries.end());
+  [alert configure];
+  [alert updateCountriesList];
+  [[MWMStorage sharedStorage] addObserver:alert];
+  return alert;
+}
+
+- (void)configure
+{
+  [self.dialogsTableView registerNibWithCellClass:[MWMDownloaderDialogCell class]];
+  self.listExpanded = NO;
+  CALayer * containerViewLayer = self.containerView.layer;
+  containerViewLayer.shouldRasterize = YES;
+  containerViewLayer.rasterizationScale = [[UIScreen mainScreen] scale];
+  [self.dialogsTableView reloadData];
+}
+
+- (void)updateCountriesList
+{
   auto const & s = GetFramework().GetStorage();
-  for (auto const & countryId : countries)
+  m_countries.erase(
+      remove_if(m_countries.begin(), m_countries.end(),
+                [&s](storage::CountryId const & countryId) { return s.HasLatestVersion(countryId); }),
+      m_countries.end());
+  NSMutableArray<NSString *> * titles = [@[] mutableCopy];
+  MwmSize totalSize = 0;
+  for (auto const & countryId : m_countries)
   {
     storage::NodeAttrs attrs;
     s.GetNodeAttrs(countryId, attrs);
     [titles addObject:@(attrs.m_nodeLocalName.c_str())];
     totalSize += attrs.m_mwmSize;
   }
-
-  alert->m_countries = countries;
-  alert.countriesNames = titles;
-  alert.countriesSize = formattedSize(totalSize);
-  [alert configure];
-  return alert;
-}
-
-- (void)configure
-{
-  [self.dialogsTableView registerNib:[UINib nibWithNibName:kCellIdentifier bundle:nil] forCellReuseIdentifier:kCellIdentifier];
-  self.listExpanded = NO;
-  [self.dialogsTableView reloadData];
+  self.countriesNames = titles;
+  self.countriesSize = formattedSize(totalSize);
 }
 
 #pragma mark - MWMCircularProgressProtocol
@@ -126,32 +139,51 @@ CGFloat const kAnimationDuration = .05;
 - (void)progressButtonPressed:(nonnull MWMCircularProgress *)progress
 {
   for (auto const & countryId : m_countries)
-    [MWMStorage cancelDownloadNode:countryId];
+    [[MWMStorage sharedStorage] cancelDownloadNode:@(countryId.c_str())];
   [self cancelButtonTap];
 }
 
-#pragma mark - MWMFrameworkStorageObserver
+#pragma mark - MWMStorageObserver
 
-- (void)processCountryEvent:(TCountryId const &)countryId
+- (void)processCountryEvent:(NSString *)countryId
 {
-  auto const & s = GetFramework().GetStorage();
-  auto const & p = GetFramework().GetDownloadingPolicy();
-  if (s.CheckFailedCountries(m_countries))
-  {
-    if (p.IsAutoRetryDownloadFailed())
-      [self close:nil];
+  if (find(m_countries.begin(), m_countries.end(), countryId.UTF8String) == m_countries.end())
     return;
+  if (self.rightButton.hidden)
+  {
+    auto const & s = GetFramework().GetStorage();
+    auto const & p = GetFramework().GetDownloadingPolicy();
+    if (s.CheckFailedCountries(m_countries))
+    {
+      if (p.IsAutoRetryDownloadFailed())
+        [self close:nil];
+      return;
+    }
+    auto const overallProgress = s.GetOverallProgress(m_countries);
+    // Test if downloading has finished by comparing downloaded and total sizes.
+    if (overallProgress.m_bytesDownloaded == overallProgress.m_bytesTotal)
+      [self close:self.downloadCompleteBlock];
   }
-  auto const overallProgress = s.GetOverallProgress(m_countries);
-  // Test if downloading has finished by comparing downloaded and total sizes.
-  if (overallProgress.first == overallProgress.second)
-    [self close:self.downloadCompleteBlock];
+  else
+  {
+    [self updateCountriesList];
+    [self.dialogsTableView reloadSections:[NSIndexSet indexSetWithIndex:0]
+                         withRowAnimation:UITableViewRowAnimationAutomatic];
+    if (m_countries.empty())
+      [self close:self.downloadCompleteBlock];
+  }
 }
 
-- (void)processCountry:(TCountryId const &)countryId progress:(MapFilesDownloader::TProgress const &)progress
+- (void)processCountry:(NSString *)countryId
+       downloadedBytes:(uint64_t)downloadedBytes
+            totalBytes:(uint64_t)totalBytes
 {
+  if (!self.rightButton.hidden ||
+      find(m_countries.begin(), m_countries.end(), countryId.UTF8String) == m_countries.end())
+    return;
   auto const overallProgress = GetFramework().GetStorage().GetOverallProgress(m_countries);
-  CGFloat const progressValue = static_cast<CGFloat>(overallProgress.first) / overallProgress.second;
+  CGFloat const progressValue =
+      static_cast<CGFloat>(overallProgress.m_bytesDownloaded) / overallProgress.m_bytesTotal;
   self.progress.progress = progressValue;
   self.titleLabel.text = [NSString stringWithFormat:@"%@%@%%", L(@"downloading"), @(floor(progressValue * 100))];
 }
@@ -167,9 +199,13 @@ CGFloat const kAnimationDuration = .05;
 - (IBAction)downloadButtonTap
 {
   [Statistics logEvent:kStatisticsEvent withParameters:@{kStatAction : kStatApply}];
-  self.downloadBlock(m_countries, ^
+  [self updateCountriesList];
+  if (m_countries.empty())
   {
-    [MWMFrameworkListener addObserver:self];
+    [self close:self.downloadCompleteBlock];
+    return;
+  }
+  self.downloadBlock(m_countries, ^{
     self.titleLabel.text = L(@"downloading");
     self.messageLabel.hidden = YES;
     self.progressWrapper.hidden = NO;
@@ -180,7 +216,10 @@ CGFloat const kAnimationDuration = .05;
     self.rightButton.hidden = YES;
     self.dialogsBottomOffset.priority = UILayoutPriorityDefaultHigh;
     self.progressWrapperBottomOffset.priority = UILayoutPriorityDefaultHigh;
-    [UIView animateWithDuration:kAnimationDuration animations:^{ [self layoutSubviews]; }];
+    [UIView animateWithDuration:kAnimationDuration
+                     animations:^{
+                       [self layoutSubviews];
+                     }];
   });
 }
 
@@ -199,8 +238,7 @@ CGFloat const kAnimationDuration = .05;
     {
       cell.titleLabel.alpha = show ? 1. : 0.;
     }
-    [self.dialogsTableView beginUpdates];
-    [self.dialogsTableView endUpdates];
+    [self.dialogsTableView refresh];
   };
   if (listExpanded)
   {
@@ -251,6 +289,12 @@ CGFloat const kAnimationDuration = .05;
   [self invalidateTableConstraintWithHeight:height];
 }
 
+- (void)close:(MWMVoidBlock)completion
+{
+  [[MWMStorage sharedStorage] removeObserver:self];
+  [super close:completion];
+}
+
 #pragma mark - UITableViewDelegate
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section
@@ -276,13 +320,15 @@ CGFloat const kAnimationDuration = .05;
 - (UIView *)tableView:(UITableView *)tableView viewForFooterInSection:(NSInteger)section
 {
   UIView * view = [[UIView alloc] init];
-  view.backgroundColor = UIColor.blackOpaque;
+  view.styleName = @"BlackOpaqueBackground";
   return view;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath
 {
-  MWMDownloaderDialogCell * cell = (MWMDownloaderDialogCell *)[tableView dequeueReusableCellWithIdentifier:kCellIdentifier];
+  Class cls = [MWMDownloaderDialogCell class];
+  auto cell = static_cast<MWMDownloaderDialogCell *>(
+      [tableView dequeueReusableCellWithCellClass:cls indexPath:indexPath]);
   cell.titleLabel.text = self.countriesNames[indexPath.row];
   return cell;
 }
@@ -292,11 +338,10 @@ CGFloat const kAnimationDuration = .05;
 - (MWMDownloaderDialogHeader *)listHeader
 {
   if (!_listHeader)
-  {
-    NSString * title = [NSString stringWithFormat:@"%@ (%@)", L(@"maps"), @(m_countries.size())];
-    NSString * size = self.countriesSize;
-    _listHeader = [MWMDownloaderDialogHeader headerForOwnerAlert:self title:title size:size];
-  }
+    _listHeader = [MWMDownloaderDialogHeader headerForOwnerAlert:self];
+
+  [_listHeader setTitle:[NSString stringWithFormat:@"%@ (%@)", L(@"maps"), @(m_countries.size())]
+                   size:self.countriesSize];
   return _listHeader;
 }
 

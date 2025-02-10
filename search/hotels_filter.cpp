@@ -2,10 +2,14 @@
 
 #include "indexer/feature.hpp"
 #include "indexer/feature_meta.hpp"
+#include "indexer/ftypes_matcher.hpp"
 
 #include "base/assert.hpp"
+#include "base/checked_cast.hpp"
 
-#include "std/algorithm.hpp"
+#include <algorithm>
+
+using namespace std;
 
 namespace search
 {
@@ -23,23 +27,23 @@ void Description::FromFeature(FeatureType & ft)
   m_rating = Rating::kDefault;
   m_priceRate = PriceRate::kDefault;
 
-  auto const & metadata = ft.GetMetadata();
-
-  if (metadata.Has(feature::Metadata::FMD_RATING))
+  string const rating = ft.GetMetadata(feature::Metadata::FMD_RATING);
+  if (!rating.empty())
   {
-    string const rating = metadata.Get(feature::Metadata::FMD_RATING);
     float r;
     if (strings::to_float(rating, r))
       m_rating = r;
   }
 
-  if (metadata.Has(feature::Metadata::FMD_PRICE_RATE))
+  string const priceRate = ft.GetMetadata(feature::Metadata::FMD_PRICE_RATE);
+  if (!priceRate.empty())
   {
-    string const priceRate = metadata.Get(feature::Metadata::FMD_PRICE_RATE);
     int pr;
     if (strings::to_int(priceRate, pr))
       m_priceRate = pr;
   }
+
+  m_types = ftypes::IsHotelChecker::Instance().GetHotelTypesMask(ft);
 }
 
 // Rule --------------------------------------------------------------------------------------------
@@ -108,12 +112,12 @@ HotelsFilter::Descriptions const & HotelsFilter::GetDescriptions(MwmContext cons
 
   auto const hotels = m_hotels.Get(context);
   auto & descriptions = m_descriptions[mwmId];
-  hotels.ForEach([&descriptions, &context](uint32_t id) {
-    FeatureType ft;
+  hotels.ForEach([&descriptions, &context](uint64_t bit) {
+    auto const id = base::asserted_cast<uint32_t>(bit);
 
     Description description;
-    if (context.GetFeature(id, ft))
-      description.FromFeature(ft);
+    if (auto ft = context.GetFeature(id))
+      description.FromFeature(*ft);
     descriptions.emplace_back(id, description);
   });
   return descriptions;

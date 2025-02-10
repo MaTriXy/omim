@@ -1,99 +1,85 @@
 #include "routing/pedestrian_directions.hpp"
-#include "routing/road_graph.hpp"
 
-#include "indexer/classificator.hpp"
-#include "indexer/feature.hpp"
-#include "indexer/ftypes_matcher.hpp"
+#include "routing/road_graph.hpp"
+#include "routing/turns_generator.hpp"
 
 #include "base/assert.hpp"
 #include "base/logging.hpp"
 
-namespace
-{
-bool HasType(uint32_t type, feature::TypesHolder const & types)
-{
-  for (uint32_t t : types)
-  {
-    t = ftypes::BaseChecker::PrepareToMatch(t, 2);
-    if (type == t)
-      return true;
-  }
-  return false;
-}
-}  // namespace
+#include <utility>
+
+using namespace std;
 
 namespace routing
 {
-
-PedestrianDirectionsEngine::PedestrianDirectionsEngine()
-  : m_typeSteps(classif().GetTypeByPath({"highway", "steps"}))
-  , m_typeLiftGate(classif().GetTypeByPath({"barrier", "lift_gate"}))
-  , m_typeGate(classif().GetTypeByPath({"barrier", "gate"}))
+PedestrianDirectionsEngine::PedestrianDirectionsEngine(DataSource const & dataSource,
+                                                       shared_ptr<NumMwmIds> numMwmIds)
+  : DirectionsEngine(dataSource, move(numMwmIds))
 {
 }
 
-void PedestrianDirectionsEngine::Generate(IRoadGraph const & graph, vector<Junction> const & path,
-                                          Route::TTimes & times, Route::TTurns & turns,
-                                          vector<Junction> & routeGeometry,
-                                          my::Cancellable const & cancellable)
+bool PedestrianDirectionsEngine::Generate(IndexRoadGraph const & graph,
+                                          vector<geometry::PointWithAltitude> const & path,
+                                          base::Cancellable const & cancellable,
+                                          Route::TTurns & turns, Route::TStreets & streetNames,
+                                          vector<geometry::PointWithAltitude> & routeGeometry,
+                                          vector<Segment> & segments)
 {
-  times.clear();
+  CHECK(m_numMwmIds, ());
+
+  m_adjacentEdges.clear();
+  m_pathSegments.clear();
   turns.clear();
+  streetNames.clear();
+  segments.clear();
+
+  vector<Edge> routeEdges;
+
+  CHECK_NOT_EQUAL(m_vehicleType, VehicleType::Count, (m_vehicleType));
+
+  if (m_vehicleType == VehicleType::Transit)
+  {
+    routeGeometry = path;
+    graph.GetRouteSegments(segments);
+    graph.GetRouteEdges(routeEdges);
+    turns.emplace_back(routeEdges.size(), turns::PedestrianDirection::ReachedYourDestination);
+    return true;
+  }
+
   routeGeometry.clear();
 
   if (path.size() <= 1)
-    return;
+    return false;
 
-  CalculateTimes(graph, path, times);
+  size_t const pathSize = path.size();
 
-  vector<Edge> routeEdges;
-  if (!ReconstructPath(graph, path, routeEdges, cancellable))
-  {
-    LOG(LDEBUG, ("Couldn't reconstruct path."));
-    // use only "arrival" direction
-    turns.emplace_back(path.size() - 1, turns::PedestrianDirection::ReachedYourDestination);
-    return;
-  }
+  graph.GetRouteEdges(routeEdges);
 
-  CalculateTurns(graph, routeEdges, turns, cancellable);
-  routeGeometry = path;
-}
+  if (routeEdges.empty())
+    return false;
 
-void PedestrianDirectionsEngine::CalculateTurns(IRoadGraph const & graph,
-                                                vector<Edge> const & routeEdges,
-                                                Route::TTurns & turns,
-                                                my::Cancellable const & cancellable) const
-{
-  for (size_t i = 0; i < routeEdges.size(); ++i)
-  {
-    if (cancellable.IsCancelled())
-      return;
+  if (cancellable.IsCancelled())
+    return false;
 
-    Edge const & edge = routeEdges[i];
+  FillPathSegmentsAndAdjacentEdgesMap(graph, path, routeEdges, cancellable);
 
-    feature::TypesHolder types;
-    graph.GetEdgeTypes(edge, types);
+  if (cancellable.IsCancelled())
+    return false;
 
-    if (HasType(m_typeSteps, types))
-    {
-      if (edge.IsForward())
-        turns.emplace_back(i, turns::PedestrianDirection::Upstairs);
-      else
-        turns.emplace_back(i, turns::PedestrianDirection::Downstairs);
-    }
-    else
-    {
-      graph.GetJunctionTypes(edge.GetStartJunction(), types);
+  RoutingEngineResult resultGraph(routeEdges, m_adjacentEdges, m_pathSegments);
+  auto const res =
+      MakeTurnAnnotationPedestrian(resultGraph, *m_numMwmIds, m_vehicleType, cancellable,
+                                   routeGeometry, turns, streetNames, segments);
 
-      if (HasType(m_typeLiftGate, types))
-        turns.emplace_back(i, turns::PedestrianDirection::LiftGate);
-      else if (HasType(m_typeGate, types))
-        turns.emplace_back(i, turns::PedestrianDirection::Gate);
-    }
-  }
+  if (res != RouterResultCode::NoError)
+    return false;
 
-  // direction "arrival"
-  // (index of last junction is the same as number of edges)
-  turns.emplace_back(routeEdges.size(), turns::PedestrianDirection::ReachedYourDestination);
+  CHECK_EQUAL(
+      routeGeometry.size(), pathSize,
+      ("routeGeometry and path have different sizes. routeGeometry size:", routeGeometry.size(),
+       "path size:", pathSize, "segments size:", segments.size(), "routeEdges size:",
+       routeEdges.size(), "resultGraph.GetSegments() size:", resultGraph.GetSegments().size()));
+
+  return true;
 }
 }  // namespace routing

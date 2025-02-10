@@ -5,12 +5,13 @@
 #include "search/result.hpp"
 #include "search/search_params.hpp"
 
-#include "std/condition_variable.hpp"
-#include "std/mutex.hpp"
-#include "std/string.hpp"
-#include "std/vector.hpp"
-
 #include "base/timer.hpp"
+
+#include <chrono>
+#include <condition_variable>
+#include <mutex>
+#include <string>
+#include <vector>
 
 namespace search
 {
@@ -24,49 +25,53 @@ class TestSearchEngine;
 class TestSearchRequest
 {
 public:
-  TestSearchRequest(TestSearchEngine & engine, string const & query, string const & locale,
-                    Mode mode, m2::RectD const & viewport);
-  TestSearchRequest(TestSearchEngine & engine, SearchParams params, m2::RectD const & viewport);
+  inline static double const kDefaultTestStreetSearchRadiusM = 2e7;
+  inline static double const kDefaultTestVillageSearchRadiusM = 2e7;
+
+  TestSearchRequest(TestSearchEngine & engine, std::string const & query,
+                    std::string const & locale, Mode mode, m2::RectD const & viewport);
+  TestSearchRequest(TestSearchEngine & engine, SearchParams const & params);
 
   // Initiates the search and waits for it to finish.
   void Run();
 
-  // Call these functions only after call to Wait().
-  steady_clock::duration ResponseTime() const;
-  vector<search::Result> const & Results() const;
-
-protected:
-  TestSearchRequest(TestSearchEngine & engine, string const & query, string const & locale,
-                    Mode mode, m2::RectD const & viewport, SearchParams::TOnStarted onStarted,
-                    SearchParams::TOnResults onResults);
-
-  // Initiates the search.
+  // Initiates asynchronous search.
   void Start();
 
   // Waits for the search to finish.
   void Wait();
 
+  // Call these functions only after call to Wait().
+  std::chrono::steady_clock::duration ResponseTime() const;
+  std::vector<search::Result> const & Results() const;
+
+protected:
+  TestSearchRequest(TestSearchEngine & engine, std::string const & query,
+                    std::string const & locale, Mode mode, m2::RectD const & viewport,
+                    SearchParams::OnStarted const & onStarted,
+                    SearchParams::OnResults const & onResults);
+
   void SetUpCallbacks();
+  void SetUpResultParams();
 
   void OnStarted();
   void OnResults(search::Results const & results);
 
   // Overrides the default onResults callback.
-  void SetCustomOnResults(SearchParams::TOnResults const & onResults);
+  void SetCustomOnResults(SearchParams::OnResults const & onResults);
 
-  condition_variable m_cv;
-  mutable mutex m_mu;
+  std::condition_variable m_cv;
+  mutable std::mutex m_mu;
 
-  vector<search::Result> m_results;
+  std::vector<search::Result> m_results;
   bool m_done = false;
 
-  my::Timer m_timer;
-  steady_clock::duration m_startTime;
-  steady_clock::duration m_endTime;
+  base::Timer m_timer;
+  std::chrono::steady_clock::duration m_startTime;
+  std::chrono::steady_clock::duration m_endTime;
 
   TestSearchEngine & m_engine;
   SearchParams m_params;
-  m2::RectD m_viewport;
 };
 }  // namespace tests_support
 }  // namespace search

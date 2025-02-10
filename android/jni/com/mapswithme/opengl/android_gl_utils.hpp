@@ -1,17 +1,18 @@
 #pragma once
 
-#include "../../../../../base/src_point.hpp"
+#include "drape/gl_includes.hpp"
 
-#include <EGL/egl.h>
-#include <GLES2/gl2.h>
+namespace base
+{
+class SrcPoint;
+}  // namespace base
 
 namespace android
 {
-
 class ConfigComparator
 {
 public:
-  ConfigComparator(EGLDisplay display);
+  explicit ConfigComparator(EGLDisplay display);
 
   bool operator()(EGLConfig const & l, EGLConfig const & r) const;
   int configWeight(EGLConfig const & config) const;
@@ -21,10 +22,8 @@ private:
   EGLDisplay m_display;
 };
 
-void CheckEGL(my::SrcPoint const & src);
-
-#define CHECK_EGL(x) do { (x); CheckEGL(SRC());} while(false);
-#define CHECK_EGL_CALL() do { CheckEGL(SRC());} while (false);
-
+void CheckEGL(base::SrcPoint const & src);
 }  // namespace android
 
+#define CHECK_EGL(x) do { (x); android::CheckEGL(SRC());} while(false);
+#define CHECK_EGL_CALL() do { android::CheckEGL(SRC());} while (false);

@@ -1,43 +1,48 @@
 #pragma once
 
+#include "drape_frontend/frame_values.hpp"
 #include "drape_frontend/traffic_generator.hpp"
+#include "drape_frontend/tile_utils.hpp"
 
-#include "drape/gpu_program_manager.hpp"
+#include "shaders/program_manager.hpp"
+
 #include "drape/pointers.hpp"
-#include "drape/uniform_values_storage.hpp"
 
 #include "geometry/screenbase.hpp"
 #include "geometry/spline.hpp"
 
-#include "std/map.hpp"
-#include "std/vector.hpp"
-#include "std/unordered_map.hpp"
+#include <vector>
 
 namespace df
 {
-
 class TrafficRenderer final
 {
 public:
   TrafficRenderer() = default;
 
-  void AddRenderData(ref_ptr<dp::GpuProgramManager> mng,
-                     vector<TrafficRenderData> && renderData);
+  void AddRenderData(ref_ptr<dp::GraphicsContext> context, ref_ptr<gpu::ProgramManager> mng,
+                     TrafficRenderData && renderData);
 
-  void SetTexCoords(unordered_map<int, glsl::vec2> && texCoords);
+  void RenderTraffic(ref_ptr<dp::GraphicsContext> context, ref_ptr<gpu::ProgramManager> mng,
+                     ScreenBase const & screen, int zoomLevel, float opacity,
+                     FrameValues const & frameValues);
 
-  void UpdateTraffic(vector<TrafficSegmentData> const & trafficData);
+  bool HasRenderData() const { return !m_renderData.empty(); }
 
-  void RenderTraffic(ScreenBase const & screen, int zoomLevel,
-                     ref_ptr<dp::GpuProgramManager> mng,
-                     dp::UniformValuesStorage const & commonUniforms);
+  void ClearContextDependentResources();
+  void Clear(MwmSet::MwmId const & mwmId);
 
-  void Clear();
+  void OnUpdateViewport(CoverageResult const & coverage, int currentZoomLevel,
+                        buffer_vector<TileKey, 8> const & tilesToDelete);
+  void OnGeometryReady(int currentZoomLevel);
+
+  static float GetTwoWayOffset(RoadClass const & roadClass, int zoomLevel);
+  static bool CanBeRenderedAsLine(RoadClass const & roadClass, int zoomLevel, int & width);
 
 private:
-  vector<TrafficRenderData> m_renderData;
-  unordered_map<int, glsl::vec2> m_texCoords;
-  unordered_map<uint64_t, TrafficHandle *> m_handles;
-};
+  static float GetPixelWidth(RoadClass const & roadClass, int zoomLevel);
+  static float GetPixelWidthInternal(RoadClass const & roadClass, int zoomLevel);
 
-} // namespace df
+  std::vector<TrafficRenderData> m_renderData;
+};
+}  // namespace df

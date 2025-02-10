@@ -3,8 +3,7 @@
 #include "base/assert.hpp"
 #include "base/math.hpp"
 
-#include "std/algorithm.hpp"
-#include "std/fstream.hpp"
+#include <algorithm>
 
 #include "3party/agg/agg_conv_curve.h"
 #include "3party/agg/agg_conv_stroke.h"
@@ -14,6 +13,8 @@
 #include "3party/agg/agg_renderer_primitives.h"
 #include "3party/agg/agg_renderer_scanline.h"
 #include "3party/agg/agg_scanline_p.h"
+
+using namespace std;
 
 namespace
 {
@@ -56,12 +57,14 @@ agg::rgba8 GetLineColor(MapStyle mapStyle)
     LOG(LERROR, ("Wrong map style param."));
     // No need break or return here.
   case MapStyleDark:
+  case MapStyleVehicleDark:
     return agg::rgba8(255, 230, 140, 255);
-  case MapStyleLight:
   case MapStyleClear:
+  case MapStyleVehicleClear:
   case MapStyleMerged:
     return agg::rgba8(30, 150, 240, 255);
   }
+  UNREACHABLE();
 }
 
 agg::rgba8 GetCurveColor(MapStyle mapStyle)
@@ -72,12 +75,14 @@ agg::rgba8 GetCurveColor(MapStyle mapStyle)
     LOG(LERROR, ("Wrong map style param."));
     // No need break or return here.
   case MapStyleDark:
+  case MapStyleVehicleDark:
     return agg::rgba8(255, 230, 140, 20);
-  case MapStyleLight:
   case MapStyleClear:
+  case MapStyleVehicleClear:
   case MapStyleMerged:
     return agg::rgba8(30, 150, 240, 20);
   }
+  UNREACHABLE();
 }
 }  // namespace
 
@@ -102,7 +107,7 @@ void ReflectChartData(vector<double> & chartData)
 }
 
 bool NormalizeChartData(vector<double> const & distanceDataM,
-                        feature::TAltitudes const & altitudeDataM, size_t resultPointCount,
+                        geometry::Altitudes const & altitudeDataM, size_t resultPointCount,
                         vector<double> & uniformAltitudeDataM)
 {
   double constexpr kEpsilon = 1e-6;
@@ -136,7 +141,7 @@ bool NormalizeChartData(vector<double> const & distanceDataM,
     ASSERT_LESS(0, nextPointIdx, ("distFormStartM is greater than 0 but nextPointIdx == 0."));
     size_t const prevPointIdx = nextPointIdx - 1;
 
-    if (my::AlmostEqualAbs(distanceDataM[prevPointIdx], distanceDataM[nextPointIdx], kEpsilon))
+    if (base::AlmostEqualAbs(distanceDataM[prevPointIdx], distanceDataM[nextPointIdx], kEpsilon))
       return static_cast<double>(altitudeDataM[prevPointIdx]);
 
     double const k = (altitudeDataM[nextPointIdx] - altitudeDataM[prevPointIdx]) /
@@ -217,8 +222,6 @@ bool GenerateChartByPoints(uint32_t width, uint32_t height, vector<m2::PointD> c
   using TBlender = BlendAdaptor<agg::rgba8, agg::order_rgba>;
   using TPixelFormat = agg::pixfmt_custom_blend_rgba<TBlender, agg::rendering_buffer>;
   using TBaseRenderer = agg::renderer_base<TPixelFormat>;
-  using TPrimitivesRenderer = agg::renderer_primitives<TBaseRenderer>;
-  using TSolidRenderer = agg::renderer_scanline_aa_solid<TBaseRenderer>;
   using TPath = agg::poly_container_adaptor<vector<m2::PointD>>;
   using TStroke = agg::conv_stroke<TPath>;
 
@@ -269,7 +272,7 @@ bool GenerateChartByPoints(uint32_t width, uint32_t height, vector<m2::PointD> c
 }
 
 bool GenerateChart(uint32_t width, uint32_t height, vector<double> const & distanceDataM,
-                   feature::TAltitudes const & altitudeDataM, MapStyle mapStyle,
+                   geometry::Altitudes const & altitudeDataM, MapStyle mapStyle,
                    vector<uint8_t> & frameBuffer)
 {
   if (distanceDataM.size() != altitudeDataM.size())

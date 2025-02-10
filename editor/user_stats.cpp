@@ -4,7 +4,7 @@
 #include "platform/platform.hpp"
 #include "platform/settings.hpp"
 
-#include "coding/url_encode.hpp"
+#include "coding/url.hpp"
 
 #include "base/logging.hpp"
 #include "base/thread.hpp"
@@ -14,7 +14,7 @@
 
 namespace
 {
-string const kUserStatsUrl = "https://editor-api.maps.me/user?format=xml";
+std::string const kUserStatsUrl = "https://editor-api.maps.me/user?format=xml";
 int32_t constexpr kUninitialized = -1;
 
 auto constexpr kSettingsUserName = "LastLoggedUser";
@@ -31,14 +31,16 @@ namespace editor
 
 UserStats::UserStats()
   : m_changesCount(kUninitialized), m_rank(kUninitialized)
-  , m_updateTime(my::SecondsSinceEpochToTimeT(0)), m_valid(false)
+  , m_updateTime(base::SecondsSinceEpochToTimeT(0)), m_valid(false)
 {
 }
 
-UserStats::UserStats(time_t const updateTime, uint32_t const rating,
-                     uint32_t const changesCount, string const & levelUpFeat)
-  : m_changesCount(changesCount), m_rank(rating)
-  , m_updateTime(updateTime), m_levelUpRequiredFeat(levelUpFeat)
+UserStats::UserStats(time_t const updateTime, uint32_t const rating, uint32_t const changesCount,
+                     std::string const & levelUpFeat)
+  : m_changesCount(changesCount)
+  , m_rank(rating)
+  , m_updateTime(updateTime)
+  , m_levelUpRequiredFeat(levelUpFeat)
   , m_valid(true)
 {
 }
@@ -59,7 +61,7 @@ bool UserStats::GetRank(int32_t & rank) const
   return true;
 }
 
-bool UserStats::GetLevelUpRequiredFeat(string & levelUpFeat) const
+bool UserStats::GetLevelUpRequiredFeat(std::string & levelUpFeat) const
 {
   if (m_levelUpRequiredFeat.empty())
     return false;
@@ -70,7 +72,7 @@ bool UserStats::GetLevelUpRequiredFeat(string & levelUpFeat) const
 // UserStatsLoader ---------------------------------------------------------------------------------
 
 UserStatsLoader::UserStatsLoader()
-  : m_lastUpdate(my::SecondsSinceEpochToTimeT(0))
+  : m_lastUpdate(base::SecondsSinceEpochToTimeT(0))
 {
   if (!LoadFromSettings())
     LOG(LINFO, ("There is no cached user stats info in settings"));
@@ -78,18 +80,19 @@ UserStatsLoader::UserStatsLoader()
     LOG(LINFO, ("User stats info was loaded successfully"));
 }
 
-bool UserStatsLoader::Update(string const & userName)
+bool UserStatsLoader::Update(std::string const & userName)
 {
   if (userName.empty())
     return false;
 
   {
-    lock_guard<mutex> g(m_mutex);
+    std::lock_guard<std::mutex> g(m_mutex);
     m_userName = userName;
   }
 
-  auto const url = kUserStatsUrl + "&name=" + UrlEncode(userName);
+  auto const url = kUserStatsUrl + "&name=" + url::UrlEncode(userName);
   platform::HttpClient request(url);
+  request.SetRawHeader("User-Agent", GetPlatform().GetAppUserAgent());
 
   if (!request.RunHttpRequest())
   {
@@ -116,7 +119,7 @@ bool UserStatsLoader::Update(string const & userName)
   auto rank = document.select_node("mmwatch/rank/@value").attribute().as_int(-1);
   auto levelUpFeat = document.select_node("mmwatch/levelUpFeat/@value").attribute().as_string();
 
-  lock_guard<mutex> g(m_mutex);
+  std::lock_guard<std::mutex> g(m_mutex);
   if (m_userName != userName)
     return false;
 
@@ -127,54 +130,55 @@ bool UserStatsLoader::Update(string const & userName)
   return true;
 }
 
-void UserStatsLoader::Update(string const & userName, UpdatePolicy const policy,
-                             TOnUpdateCallback fn)
+void UserStatsLoader::Update(std::string const & userName, UpdatePolicy const policy,
+                             OnUpdateCallback fn)
 {
   auto nothingToUpdate = false;
   if (policy == UpdatePolicy::Lazy)
   {
-    lock_guard<mutex> g(m_mutex);
+    std::lock_guard<std::mutex> g(m_mutex);
     nothingToUpdate = m_userStats && m_userName == userName &&
                       difftime(time(nullptr), m_lastUpdate) < kSecondsInHour;
   }
 
   if (nothingToUpdate)
   {
-    GetPlatform().RunOnGuiThread(fn);
+    GetPlatform().RunTask(Platform::Thread::Gui, fn);
     return;
   }
 
-  threads::SimpleThread([this, userName, fn] {
+  GetPlatform().RunTask(Platform::Thread::Network, [this, userName, fn]
+  {
     if (Update(userName))
-      GetPlatform().RunOnGuiThread(fn);
-  }).detach();
+      GetPlatform().RunTask(Platform::Thread::Gui, fn);
+  });
 }
 
-void UserStatsLoader::Update(string const & userName, TOnUpdateCallback fn)
+void UserStatsLoader::Update(std::string const & userName, OnUpdateCallback fn)
 {
   Update(userName, UpdatePolicy::Lazy, fn);
 }
 
-void UserStatsLoader::DropStats(string const & userName)
+void UserStatsLoader::DropStats(std::string const & userName)
 {
-  lock_guard<mutex> g(m_mutex);
+  std::lock_guard<std::mutex> g(m_mutex);
   if (m_userName != userName)
     return;
   m_userStats = {};
   DropSettings();
 }
 
-UserStats UserStatsLoader::GetStats(string const & userName) const
+UserStats UserStatsLoader::GetStats(std::string const & userName) const
 {
-  lock_guard<mutex> g(m_mutex);
+  std::lock_guard<std::mutex> g(m_mutex);
   if (m_userName == userName)
     return m_userStats;
   return {};
 }
 
-string UserStatsLoader::GetUserName() const
+std::string UserStatsLoader::GetUserName() const
 {
-  lock_guard<mutex> g(m_mutex);
+  std::lock_guard<std::mutex> g(m_mutex);
   return m_userName;
 }
 
@@ -192,7 +196,7 @@ bool UserStatsLoader::LoadFromSettings()
     return false;
   }
 
-  m_lastUpdate = my::SecondsSinceEpochToTimeT(lastUpdate);
+  m_lastUpdate = base::SecondsSinceEpochToTimeT(lastUpdate);
   m_userStats = UserStats(m_lastUpdate, rating, changesCount, "");
   return true;
 }
@@ -209,7 +213,7 @@ void UserStatsLoader::SaveToSettings()
   int32_t changesCount;
   if (m_userStats.GetChangesCount(changesCount))
     settings::Set(kSettingsChangesCount, changesCount);
-  settings::Set(kSettingsLastUpdate, my::TimeTToSecondsSinceEpoch(m_lastUpdate));
+  settings::Set(kSettingsLastUpdate, base::TimeTToSecondsSinceEpoch(m_lastUpdate));
   // Do not save m_requiredLevelUpFeat for it becomes obsolete very fast.
 }
 

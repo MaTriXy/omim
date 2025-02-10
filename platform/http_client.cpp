@@ -1,15 +1,41 @@
 #include "platform/http_client.hpp"
 
+#include "coding/base64.hpp"
+
 #include "base/string_utils.hpp"
 
-#include "std/sstream.hpp"
+#include <sstream>
+
+using namespace std;
 
 namespace platform
 {
-HttpClient & HttpClient::SetDebugMode(bool debug_mode)
+HttpClient::HttpClient(string const & url) : m_urlRequested(url)
 {
-  m_debugMode = debug_mode;
-  return *this;
+// Http client for linux supports only "deflate" encoding, but osrm server cannot
+// correctly process "Accept-Encoding: deflate" header, so do not encode data on linux.
+#if !defined(OMIM_OS_LINUX)
+  m_headers.emplace("Accept-Encoding", "gzip, deflate");
+#endif
+}
+
+bool HttpClient::RunHttpRequest(string & response, SuccessChecker checker /* = nullptr */)
+{
+  static auto const simpleChecker = [](HttpClient const & request)
+  {
+    return request.ErrorCode() == 200;
+  };
+
+  if (checker == nullptr)
+    checker = simpleChecker;
+
+  if (RunHttpRequest() && checker(*this))
+  {
+    response = ServerResponse();
+    return true;
+  }
+
+  return false;
 }
 
 HttpClient & HttpClient::SetUrlRequested(string const & url)
@@ -30,9 +56,9 @@ HttpClient & HttpClient::SetBodyFile(string const & body_file, string const & co
 {
   m_inputFile = body_file;
   m_bodyData.clear();
-  m_contentType = content_type;
+  m_headers.emplace("Content-Type", content_type);
   m_httpMethod = http_method;
-  m_contentEncoding = content_encoding;
+  m_headers.emplace("Content-Encoding", content_encoding);
   return *this;
 }
 
@@ -42,16 +68,9 @@ HttpClient & HttpClient::SetReceivedFile(string const & received_file)
   return *this;
 }
 
-HttpClient & HttpClient::SetUserAgent(string const & user_agent)
-{
-  m_userAgent = user_agent;
-  return *this;
-}
-
 HttpClient & HttpClient::SetUserAndPassword(string const & user, string const & password)
 {
-  m_basicAuthUser = user;
-  m_basicAuthPassword = password;
+  m_headers.emplace("Authorization", "Basic " + base64::Encode(user + ":" + password));
   return *this;
 }
 
@@ -65,6 +84,23 @@ HttpClient & HttpClient::SetHandleRedirects(bool handle_redirects)
 {
   m_handleRedirects = handle_redirects;
   return *this;
+}
+
+HttpClient & HttpClient::SetRawHeader(string const & key, string const & value)
+{
+  m_headers.emplace(key, value);
+  return *this;
+}
+
+HttpClient & HttpClient::SetRawHeaders(Headers const & headers)
+{
+  m_headers.insert(headers.begin(), headers.end());
+  return *this;
+}
+
+void HttpClient::SetTimeout(double timeoutSec)
+{
+  m_timeoutSec = timeoutSec;
 }
 
 string const & HttpClient::UrlRequested() const
@@ -99,13 +135,18 @@ string const & HttpClient::HttpMethod() const
 
 string HttpClient::CombinedCookies() const
 {
-  if (m_serverCookies.empty())
+  string serverCookies;
+  auto const it = m_headers.find("Set-Cookie");
+  if (it != m_headers.end())
+    serverCookies = it->second;
+
+  if (serverCookies.empty())
     return m_cookies;
 
   if (m_cookies.empty())
-    return m_serverCookies;
+    return serverCookies;
 
-  return m_serverCookies + "; " + m_cookies;
+  return serverCookies + "; " + m_cookies;
 }
 
 string HttpClient::CookieByName(string name) const
@@ -118,6 +159,16 @@ string HttpClient::CookieByName(string name) const
     return str.substr(eq, str.find(';', eq) - eq);
 
   return {};
+}
+
+void HttpClient::LoadHeaders(bool loadHeaders)
+{
+  m_loadHeaders = loadHeaders;
+}
+
+HttpClient::Headers const & HttpClient::GetHeaders() const
+{
+  return m_headers;
 }
 
 // static
@@ -162,4 +213,4 @@ string DebugPrint(HttpClient const & request)
     ostr << " response: " << request.ServerResponse();
   return ostr.str();
 }
-}
+}  // namespace platform

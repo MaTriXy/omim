@@ -1,21 +1,21 @@
 package com.mapswithme.maps.base;
 
 import android.os.Bundle;
-import android.support.annotation.CallSuper;
-import android.support.v7.widget.Toolbar;
+import androidx.annotation.CallSuper;
+import androidx.appcompat.widget.Toolbar;
 
 import com.mapswithme.maps.R;
 import com.mapswithme.util.UiUtils;
 
-public class BaseMwmExtraTitleActivity extends BaseMwmFragmentActivity
+public abstract class BaseMwmExtraTitleActivity extends BaseMwmFragmentActivity
 {
   protected static final String EXTRA_TITLE = "activity_title";
 
   @Override
   @CallSuper
-  protected void onCreate(Bundle savedInstanceState)
+  protected void onSafeCreate(Bundle savedInstanceState)
   {
-    super.onCreate(savedInstanceState);
+    super.onSafeCreate(savedInstanceState);
 
     String title = "";
     Bundle bundle = getIntent().getExtras();
@@ -24,6 +24,7 @@ public class BaseMwmExtraTitleActivity extends BaseMwmFragmentActivity
       title = bundle.getString(EXTRA_TITLE);
     }
     Toolbar toolbar = getToolbar();
+    UiUtils.extendViewWithStatusBar(toolbar);
     toolbar.setTitle(title);
     UiUtils.showHomeUpButton(toolbar);
     displayToolbarAsActionBar();

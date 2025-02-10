@@ -3,8 +3,8 @@ package com.mapswithme.maps.ads;
 import android.app.Dialog;
 import android.content.DialogInterface;
 import android.os.Bundle;
-import android.support.annotation.NonNull;
-import android.support.v7.app.AlertDialog;
+import androidx.annotation.NonNull;
+import androidx.appcompat.app.AlertDialog;
 import android.view.LayoutInflater;
 import android.view.View;
 
@@ -13,7 +13,7 @@ import com.facebook.share.model.AppInviteContent;
 import com.facebook.share.widget.AppInviteDialog;
 import com.mapswithme.maps.R;
 import com.mapswithme.maps.base.BaseMwmDialogFragment;
-import com.mapswithme.util.UiUtils;
+import com.mapswithme.maps.dialog.DialogUtils;
 import com.mapswithme.util.statistics.Statistics;
 
 public class FacebookInvitesDialogFragment extends BaseMwmDialogFragment
@@ -78,7 +78,7 @@ public class FacebookInvitesDialogFragment extends BaseMwmDialogFragment
       AppInviteDialog.show(this, content);
     else
     {
-      UiUtils.showAlertDialog(getActivity(), R.string.email_error_title);
+      DialogUtils.showAlertDialog(getActivity(), R.string.email_error_title);
       dismiss();
     }
   }

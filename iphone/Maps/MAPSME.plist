@@ -18,6 +18,8 @@
 			</array>
 			<key>CFBundleTypeName</key>
 			<string>Google Earth KML Document</string>
+			<key>LSHandlerRank</key>
+			<string>Default</string>
 			<key>LSItemContentTypes</key>
 			<array>
 				<string>com.google.earth.kml</string>
@@ -33,6 +35,8 @@
 			</array>
 			<key>CFBundleTypeName</key>
 			<string>Google Earth KMZ Document</string>
+			<key>LSHandlerRank</key>
+			<string>Default</string>
 			<key>LSItemContentTypes</key>
 			<array>
 				<string>com.google.earth.kmz</string>
@@ -70,9 +74,17 @@
 				<string>mapswithmepro</string>
 			</array>
 		</dict>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>com.googleusercontent.apps.1033279251462-k2pp753lp1f39dacjn0pkurcc8pbbvsi</string>
+			</array>
+		</dict>
 	</array>
 	<key>CFBundleVersion</key>
-	<string>${CURRENT_PROJECT_VERSION}</string>
+	<string>0</string>
 	<key>Fabric</key>
 	<dict>
 		<key>APIKey</key>
@@ -98,11 +110,20 @@
 		<string>fbauth2</string>
 		<string>fbshareextension</string>
 		<string>uber</string>
+		<string>yandextaxi</string>
+		<string>yandexyango</string>
+		<string>tel</string>
+		<string>booking</string>
+		<string>maximzakaz</string>
+		<string>vzt</string>
+		<string>mytaxi</string>
+		<string>citymobil-taxi</string>
+		<string>wunderlinq</string>
 	</array>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
-	<key>LocalNotificationsFileName</key>
-	<string>LocalNotifications</string>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<false/>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>
@@ -146,6 +167,20 @@
 			</dict>
 		</dict>
 	</dict>
+	<key>NSCameraUsageDescription</key>
+	<string>Unused by an application</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Unused by an application</string>
+	<key>PW_USE_GPS</key>
+	<false/>
+	<key>Pushwoosh_APPID</key>
+	<string>84E00-0F767</string>
+	<key>Pushwoosh_LOG_LEVEL</key>
+	<string>WARNING</string>
+	<key>UIAppFonts</key>
+	<array>
+		<string>FredokaOne-Regular.ttf</string>
+	</array>
 	<key>UIApplicationShortcutItems</key>
 	<array>
 		<dict>
@@ -185,7 +220,7 @@
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
 	<key>UIMainStoryboardFile</key>
-	<string>Mapsme</string>
+	<string>Main</string>
 	<key>UIPrerenderedIcon</key>
 	<true/>
 	<key>UIStatusBarHidden</key>
@@ -246,13 +281,5 @@
 			</dict>
 		</dict>
 	</array>
-	<key>PW_USE_GPS</key>
-	<false/>
-	<key>Pushwoosh_LOG_LEVEL</key>
-	<string>WARNING</string>
-	<key>NSPhotoLibraryUsageDescription</key>
-	<string>Unused by an application</string>
-	<key>NSCameraUsageDescription</key>
-	<string>Unused by an application</string>
 </dict>
 </plist>

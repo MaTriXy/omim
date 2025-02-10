@@ -2,14 +2,14 @@
 
 #include <type_traits>
 
-namespace my
+namespace base
 {
 namespace details
 {
 template <typename T>
 struct ValueType
 {
-  using TType = typename std::remove_reference<T>::type::value_type;
+  using TType = typename std::remove_reference_t<T>::value_type;
 };
 
 template <typename T>
@@ -26,4 +26,4 @@ auto collection_cast(TFrom && from) -> TTo<details::TValueType<TFrom>>
 {
   return TTo<details::TValueType<TFrom>>(begin(from), end(from));
 }
-}  // namespace my
+}  // namespace base

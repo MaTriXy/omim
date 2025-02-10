@@ -1,25 +1,33 @@
 package com.mapswithme.maps.base;
 
 import android.os.Bundle;
-import android.support.annotation.NonNull;
-import android.support.annotation.Nullable;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
 import android.view.View;
 
 import com.mapswithme.maps.widget.ToolbarController;
 
-public class BaseMwmToolbarFragment extends BaseMwmFragment
+public class BaseMwmToolbarFragment extends BaseAsyncOperationFragment
 {
-  protected ToolbarController mToolbarController;
+  @SuppressWarnings("NullableProblems")
+  @NonNull
+  private ToolbarController mToolbarController;
 
   @Override
-  public void onViewCreated(View view, @Nullable Bundle savedInstanceState)
+  public void onViewCreated(@NonNull View view, @Nullable Bundle savedInstanceState)
   {
-    super.onViewCreated(view, savedInstanceState);
     mToolbarController = onCreateToolbarController(view);
   }
 
+  @NonNull
   protected ToolbarController onCreateToolbarController(@NonNull View root)
   {
     return new ToolbarController(root, getActivity());
+  }
+
+  @NonNull
+  protected ToolbarController getToolbarController()
+  {
+    return mToolbarController;
   }
 }

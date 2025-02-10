@@ -1,23 +1,22 @@
 package com.mapswithme.maps.downloader;
 
 import android.app.Activity;
+import android.app.Application;
 import android.content.DialogInterface;
-import android.support.annotation.NonNull;
-import android.support.annotation.Nullable;
-import android.support.annotation.StringRes;
-import android.support.annotation.UiThread;
-import android.support.v7.app.AlertDialog;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import androidx.annotation.StringRes;
+import androidx.annotation.UiThread;
+import androidx.appcompat.app.AlertDialog;
 import android.text.TextUtils;
 
-import java.lang.ref.WeakReference;
-import java.util.List;
-
-import com.mapswithme.maps.Framework;
 import com.mapswithme.maps.R;
-import com.mapswithme.maps.background.Notifier;
 import com.mapswithme.util.ConnectionState;
 import com.mapswithme.util.Utils;
 import com.mapswithme.util.statistics.Statistics;
+
+import java.lang.ref.WeakReference;
+import java.util.List;
 
 @UiThread
 public final class MapManager
@@ -52,14 +51,6 @@ public final class MapManager
     void onCurrentCountryChanged(String countryId);
   }
 
-  @SuppressWarnings("unused")
-  interface MigrationListener
-  {
-    void onComplete();
-    void onProgress(int percent);
-    void onError(int code);
-  }
-
   private static WeakReference<AlertDialog> sCurrentErrorDialog;
 
   private MapManager() {}
@@ -84,7 +75,17 @@ public final class MapManager
     Statistics.INSTANCE.trackEvent(event, Statistics.params().add(Statistics.EventParam.TYPE, text));
   }
 
-  public static void showError(final Activity activity, final StorageCallbackData errorData, @Nullable final Utils.Proc<Boolean> dialogClickListener)
+  public static void showError(final Activity activity, final StorageCallbackData errorData,
+                               @Nullable final Utils.Proc<Boolean> dialogClickListener)
+  {
+    if (!nativeIsAutoretryFailed())
+      return;
+
+    showErrorDialog(activity, errorData, dialogClickListener);
+  }
+
+  public static void showErrorDialog(final Activity activity, final StorageCallbackData errorData,
+                                     @Nullable final Utils.Proc<Boolean> dialogClickListener)
   {
     if (sCurrentErrorDialog != null)
     {
@@ -92,9 +93,6 @@ public final class MapManager
       if (dlg != null && dlg.isShowing())
         return;
     }
-
-    if (!nativeIsAutoretryFailed())
-      return;
 
     @StringRes int text;
     switch (errorData.errorCode)
@@ -114,48 +112,30 @@ public final class MapManager
     AlertDialog dlg = new AlertDialog.Builder(activity)
                                      .setTitle(R.string.country_status_download_failed)
                                      .setMessage(text)
-                                     .setNegativeButton(android.R.string.cancel, null)
-                                     .setPositiveButton(R.string.downloader_retry, new DialogInterface.OnClickListener()
+                                     .setNegativeButton(android.R.string.cancel, new DialogInterface.OnClickListener()
                                      {
                                        @Override
                                        public void onClick(DialogInterface dialog, int which)
-                                       {
-                                         warn3gAndRetry(activity, errorData.countryId, new Runnable()
-                                         {
-                                           @Override
-                                           public void run()
-                                           {
-                                             Notifier.cancelDownloadFailed();
-
-                                             if (dialogClickListener != null)
-                                               dialogClickListener.invoke(true);
-                                           }
-                                         });
-                                       }
-                                     }).setOnDismissListener(new DialogInterface.OnDismissListener()
-                                     {
-                                       @Override
-                                       public void onDismiss(DialogInterface dialog)
                                        {
                                          sCurrentErrorDialog = null;
                                          if (dialogClickListener != null)
                                            dialogClickListener.invoke(false);
                                        }
+                                     })
+                                     .setPositiveButton(R.string.downloader_retry, new DialogInterface.OnClickListener()
+                                     {
+                                       @Override
+                                       public void onClick(DialogInterface dialog, int which)
+                                       {
+                                         Application app = activity.getApplication();
+                                         RetryFailedDownloadConfirmationListener listener
+                                             = new ExpandRetryConfirmationListener(app, dialogClickListener);
+                                         warn3gAndRetry(activity, errorData.countryId, listener);
+                                       }
                                      }).create();
+    dlg.setCanceledOnTouchOutside(false);
     dlg.show();
     sCurrentErrorDialog = new WeakReference<>(dlg);
-  }
-
-  public static void checkUpdates()
-  {
-    if (!Framework.nativeIsDataVersionChanged())
-      return;
-
-    String countriesToUpdate = Framework.nativeGetOutdatedCountriesString();
-    if (!TextUtils.isEmpty(countriesToUpdate))
-      Notifier.notifyUpdateAvailable(countriesToUpdate);
-
-    Framework.nativeUpdateSavedDataVersion();
   }
 
   private static void notifyNoSpaceInternal(Activity activity)
@@ -205,7 +185,7 @@ public final class MapManager
 
   private static boolean warnOn3gInternal(Activity activity, @NonNull final Runnable onAcceptListener)
   {
-    if (nativeIsDownloadOn3gEnabled() || !ConnectionState.isMobileConnected())
+    if (nativeIsDownloadOn3gEnabled() || !ConnectionState.INSTANCE.isMobileConnected())
     {
       onAcceptListener.run();
       return false;
@@ -290,11 +270,6 @@ public final class MapManager
   public static native boolean nativeMoveFile(String oldFile, String newFile);
 
   /**
-   * Returns {@code true} if there is enough storage space to perform migration. Or {@code false} otherwise.
-   */
-  public static native boolean nativeHasSpaceForMigration();
-
-  /**
    * Returns {@code true} if there is enough storage space to download specified amount of data. Or {@code false} otherwise.
    */
   public static native boolean nativeHasSpaceToDownloadAmount(long bytes);
@@ -308,29 +283,6 @@ public final class MapManager
    * Returns {@code true} if there is enough storage space to update maps with specified {@code root}. Or {@code false} otherwise.
    */
   public static native boolean nativeHasSpaceToUpdate(String root);
-
-  /**
-   * Determines whether the legacy (large MWMs) mode is used.
-   */
-  public static native boolean nativeIsLegacyMode();
-
-  /**
-   * Quickly determines if the migration is needed. In the most cases you should use {@link #nativeIsLegacyMode()} instead.
-   */
-  public static native boolean nativeNeedMigrate();
-
-  /**
-   * Performs migration from old (large MWMs) mode.
-   * @return Name of the country to be loaded during the prefetch.
-   *         Or {@code null} if maps were queued to downloader and migration process is complete.
-   *         In the latter case {@link MigrationListener#onComplete()} will be called before return from {@code nativeMigrate()}.
-   */
-  public static native @Nullable String nativeMigrate(MigrationListener listener, double lat, double lon, boolean hasLocation, boolean keepOldMaps);
-
-  /**
-   * Aborts migration. Affects only prefetch process.
-   */
-  public static native void nativeCancelMigration();
 
   /**
    * Return count of fully downloaded maps (excluding fake MWMs).
@@ -396,6 +348,9 @@ public final class MapManager
    * Determines whether something is downloading now.
    */
   public static native boolean nativeIsDownloading();
+
+  @Nullable
+  public static native String nativeGetCurrentDownloadingCountryId();
 
   /**
    * Enqueues given {@code root} node and its children in downloader.
@@ -479,4 +434,11 @@ public final class MapManager
    * Returns country ID which the current PP object points to, or {@code null}.
    */
   public static native @Nullable String nativeGetSelectedCountry();
+
+  public static native boolean nativeIsUrlSupported(@NonNull String url);
+  @NonNull
+  public static native String nativeGetFilePathByUrl(@NonNull String url);
+
+  public static native void nativeOnDownloadFinished(boolean status, long id);
+  public static native void nativeOnDownloadProgress(long id, long bytesDownloaded, long bytesTotal);
 }

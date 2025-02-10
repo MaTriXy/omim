@@ -78,6 +78,9 @@ exec /usr/bin/env sbcl --noinform --quit --load "$0" --end-toplevel-options "$@"
 (defmacro irrelevant (&rest args)
   `(make-result 'irrelevant ,@args))
 
+(defmacro harmful (&rest args)
+  `(make-result 'harmful ,@args))
+
 (defclass sample ()
   ((query :initarg :query)
    (locale :initarg :locale)
@@ -129,4 +132,4 @@ exec /usr/bin/env sbcl --noinform --quit --load "$0" --end-toplevel-options "$@"
         (loop for sample in *samples*
              summing (length (slot-value sample 'results))))
 
-(format t "~a~%" (json:encode-json-to-string (reverse *samples*)))
+(format t "~{~a~%~}" (mapcar #'json:encode-json-to-string (reverse *samples*)))

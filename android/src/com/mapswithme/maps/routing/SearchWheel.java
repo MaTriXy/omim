@@ -3,10 +3,12 @@ package com.mapswithme.maps.routing;
 import android.animation.Animator;
 import android.animation.AnimatorInflater;
 import android.content.Context;
-import android.support.annotation.DrawableRes;
-import android.support.annotation.IdRes;
-import android.support.annotation.NonNull;
-import android.support.annotation.Nullable;
+import android.os.Bundle;
+import androidx.annotation.DrawableRes;
+import androidx.annotation.IdRes;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import androidx.annotation.StringRes;
 import android.text.TextUtils;
 import android.view.ContextThemeWrapper;
 import android.view.View;
@@ -19,9 +21,13 @@ import com.mapswithme.maps.search.SearchEngine;
 import com.mapswithme.util.Graphics;
 import com.mapswithme.util.UiUtils;
 import com.mapswithme.util.concurrency.UiThread;
+import com.mapswithme.util.statistics.Statistics;
+
+import static com.mapswithme.util.statistics.Statistics.EventName.ROUTING_SEARCH_CLICK;
 
 class SearchWheel implements View.OnClickListener
 {
+  private static final String EXTRA_CURRENT_OPTION = "extra_current_option";
   private final View mFrame;
 
   private final View mSearchLayout;
@@ -29,6 +35,7 @@ class SearchWheel implements View.OnClickListener
   private final View mTouchInterceptor;
 
   private boolean mIsExpanded;
+  @Nullable
   private SearchOption mCurrentOption;
 
   private static final long CLOSE_DELAY_MILLIS = 5000L;
@@ -36,33 +43,42 @@ class SearchWheel implements View.OnClickListener
     @Override
     public void run()
     {
+      // if the search bar is already closed, i.e. nothing should be done here.
+      if (!mIsExpanded)
+        return;
+
       toggleSearchLayout();
     }
   };
 
   private enum SearchOption
   {
-    FUEL(R.id.search_fuel, R.drawable.ic_routing_fuel_off, R.drawable.ic_routing_fuel_on, "fuel"),
-    PARKING(R.id.search_parking, R.drawable.ic_routing_parking_off, R.drawable.ic_routing_parking_on, "parking"),
-    FOOD(R.id.search_food, R.drawable.ic_routing_food_off, R.drawable.ic_routing_food_on, "food"),
-    SHOP(R.id.search_shop, R.drawable.ic_routing_shop_off, R.drawable.ic_routing_shop_on, "shop"),
-    ATM(R.id.search_atm, R.drawable.ic_routing_atm_off, R.drawable.ic_routing_atm_on, "atm");
+    FUEL(R.id.search_fuel, R.drawable.ic_routing_fuel_off, R.drawable.ic_routing_fuel_on, R.string.fuel),
+    PARKING(R.id.search_parking, R.drawable.ic_routing_parking_off, R.drawable.ic_routing_parking_on, R.string.parking),
+    EAT(R.id.search_eat, R.drawable.ic_routing_eat_off, R.drawable.ic_routing_eat_on, R.string.eat),
+    FOOD(R.id.search_food, R.drawable.ic_routing_food_off, R.drawable.ic_routing_food_on, R.string.food),
+    ATM(R.id.search_atm, R.drawable.ic_routing_atm_off, R.drawable.ic_routing_atm_on, R.string.atm);
 
+    @IdRes
     private int mResId;
+    @DrawableRes
     private int mDrawableOff;
+    @DrawableRes
     private int mDrawableOn;
-    private String mSearchQuery;
+    @StringRes
+    private int mQueryId;
 
-    SearchOption(@IdRes int resId, @DrawableRes int drawableOff, @DrawableRes int drawableOn, String searchQuery)
+    SearchOption(@IdRes int resId, @DrawableRes int drawableOff, @DrawableRes int drawableOn,
+                 @StringRes int queryId)
     {
       this.mResId = resId;
       this.mDrawableOff = drawableOff;
       this.mDrawableOn = drawableOn;
-      this.mSearchQuery = searchQuery;
+      this.mQueryId = queryId;
     }
 
     @NonNull
-    public static SearchOption FromResId(@IdRes int resId)
+    public static SearchOption fromResId(@IdRes int resId)
     {
       for (SearchOption searchOption : SearchOption.values())
       {
@@ -73,12 +89,13 @@ class SearchWheel implements View.OnClickListener
     }
 
     @Nullable
-    public static SearchOption FromSearchQuery(@NonNull String query)
+    public static SearchOption fromSearchQuery(@NonNull String query, @NonNull Context context)
     {
       final String normalizedQuery = query.trim().toLowerCase();
       for (SearchOption searchOption : SearchOption.values())
       {
-        if (searchOption.mSearchQuery.equals(normalizedQuery))
+        final String searchOptionQuery = context.getString(searchOption.mQueryId).trim().toLowerCase();
+        if (searchOptionQuery.equals(normalizedQuery))
           return searchOption;
       }
       return null;
@@ -111,24 +128,40 @@ class SearchWheel implements View.OnClickListener
     refreshSearchVisibility();
   }
 
+  void saveState(@NonNull Bundle outState)
+  {
+    outState.putSerializable(EXTRA_CURRENT_OPTION, mCurrentOption);
+  }
+
+  void restoreState(@NonNull Bundle savedState)
+  {
+    mCurrentOption = (SearchOption) savedState.getSerializable(EXTRA_CURRENT_OPTION);
+  }
+
   public void reset()
   {
     mIsExpanded = false;
     mCurrentOption = null;
-    SearchEngine.cancelSearch();
+    SearchEngine.INSTANCE.cancelInteractiveSearch();
     resetSearchButtonImage();
   }
 
   public void onResume()
   {
-    final String query = SearchEngine.getQuery();
+    if (mCurrentOption != null)
+    {
+      refreshSearchButtonImage();
+      return;
+    }
+
+    final String query = SearchEngine.INSTANCE.getQuery();
     if (TextUtils.isEmpty(query))
     {
       resetSearchButtonImage();
       return;
     }
 
-    mCurrentOption = SearchOption.FromSearchQuery(query);
+    mCurrentOption = SearchOption.fromSearchQuery(query, mFrame.getContext());
     refreshSearchButtonImage();
   }
 
@@ -188,15 +221,35 @@ class SearchWheel implements View.OnClickListener
                                                  R.attr.colorAccent));
   }
 
+  public boolean performClick()
+  {
+    return mSearchButton.performClick();
+  }
+
   @Override
   public void onClick(View v)
   {
     switch (v.getId())
     {
     case R.id.btn_search:
-      if (mCurrentOption != null || !TextUtils.isEmpty(SearchEngine.getQuery()))
+      if (RoutingController.get().isPlanning())
       {
-        SearchEngine.cancelSearch();
+        if (TextUtils.isEmpty(SearchEngine.INSTANCE.getQuery()))
+        {
+          showSearchInParent();
+          Statistics.INSTANCE.trackRoutingEvent(ROUTING_SEARCH_CLICK, true);
+        }
+        else
+        {
+          reset();
+        }
+        return;
+      }
+
+      Statistics.INSTANCE.trackRoutingEvent(ROUTING_SEARCH_CLICK, false);
+      if (mCurrentOption != null || !TextUtils.isEmpty(SearchEngine.INSTANCE.getQuery()))
+      {
+        SearchEngine.INSTANCE.cancelInteractiveSearch();
         mCurrentOption = null;
         mIsExpanded = false;
         resetSearchButtonImage();
@@ -217,10 +270,10 @@ class SearchWheel implements View.OnClickListener
       break;
     case R.id.search_fuel:
     case R.id.search_parking:
+    case R.id.search_eat:
     case R.id.search_food:
-    case R.id.search_shop:
     case R.id.search_atm:
-      startSearch(SearchOption.FromResId(v.getId()));
+      startSearch(SearchOption.fromResId(v.getId()));
     }
   }
 
@@ -230,20 +283,21 @@ class SearchWheel implements View.OnClickListener
     final MwmActivity parent;
     if (context instanceof ContextThemeWrapper)
       parent = (MwmActivity)((ContextThemeWrapper)context).getBaseContext();
-    else if (context instanceof android.support.v7.internal.view.ContextThemeWrapper)
-      parent = (MwmActivity)((android.support.v7.internal.view.ContextThemeWrapper)context).getBaseContext();
+    else if (context instanceof androidx.appcompat.view.ContextThemeWrapper)
+      parent = (MwmActivity)((androidx.appcompat.view.ContextThemeWrapper)context).getBaseContext();
     else
       parent = (MwmActivity) context;
     parent.showSearch();
     mIsExpanded = false;
     refreshSearchVisibility();
-    UiThread.cancelDelayedTasks(mCloseRunnable);
   }
 
   private void startSearch(SearchOption searchOption)
   {
     mCurrentOption = searchOption;
-    SearchEngine.searchInteractive(searchOption.mSearchQuery, System.nanoTime(), false /* isMapAndTable */, null /* hotelsFilter */);
+    final String query = mFrame.getContext().getString(searchOption.mQueryId);
+    SearchEngine.INSTANCE.searchInteractive(mFrame.getContext(), query, System.nanoTime(), false /* isMapAndTable */,
+                                   null /* hotelsFilter */, null /* bookingParams */);
     refreshSearchButtonImage();
 
     toggleSearchLayout();

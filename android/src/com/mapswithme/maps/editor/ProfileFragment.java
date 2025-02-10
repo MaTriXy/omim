@@ -1,20 +1,23 @@
 package com.mapswithme.maps.editor;
 
+import android.content.Context;
+import android.content.DialogInterface;
 import android.content.Intent;
 import android.net.Uri;
 import android.os.Bundle;
-import android.support.annotation.DrawableRes;
-import android.support.annotation.Nullable;
-import android.support.annotation.StringRes;
+import androidx.annotation.DrawableRes;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import androidx.annotation.StringRes;
+import androidx.appcompat.app.AlertDialog;
 import android.text.format.DateUtils;
 import android.view.View;
-import android.widget.ImageView;
 import android.widget.TextView;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 
+import com.cocosw.bottomsheet.BottomSheet;
 import com.mapswithme.maps.R;
 import com.mapswithme.maps.editor.data.UserStats;
 import com.mapswithme.util.BottomSheetHelper;
@@ -37,10 +40,22 @@ public class ProfileFragment extends AuthFragment implements View.OnClickListene
     LOGOUT(R.drawable.ic_logout, R.string.logout)
     {
       @Override
-      void invoke(ProfileFragment fragment)
+      void invoke(final ProfileFragment fragment)
       {
-        OsmOAuth.clearAuthorization();
-        fragment.refreshViews();
+        new AlertDialog.Builder(fragment.requireContext())
+            .setMessage(R.string.are_you_sure)
+            .setPositiveButton(android.R.string.ok, new DialogInterface.OnClickListener()
+            {
+              @Override
+              public void onClick(DialogInterface dialog, int which)
+              {
+                OsmOAuth.clearAuthorization(fragment.requireContext());
+                fragment.refreshViews();
+              }
+            })
+            .setNegativeButton(android.R.string.no, null)
+            .create()
+            .show();
       }
     },
 
@@ -49,7 +64,7 @@ public class ProfileFragment extends AuthFragment implements View.OnClickListene
       @Override
       void invoke(ProfileFragment fragment)
       {
-        OsmOAuth.nativeUpdateOsmUserStats(OsmOAuth.getUsername(), true /* forceUpdate */);
+        OsmOAuth.nativeUpdateOsmUserStats(OsmOAuth.getUsername(fragment.requireContext()), true /* forceUpdate */);
       }
     };
 
@@ -66,19 +81,19 @@ public class ProfileFragment extends AuthFragment implements View.OnClickListene
   }
 
   @Override
-  public void onViewCreated(View view, @Nullable Bundle savedInstanceState)
+  public void onViewCreated(@NonNull View view, @Nullable Bundle savedInstanceState)
   {
     super.onViewCreated(view, savedInstanceState);
-    mToolbarController.setTitle(R.string.profile);
+    getToolbarController().setTitle(R.string.profile);
     initViews(view);
     refreshViews();
     OsmOAuth.setUserStatsListener(this);
-    OsmOAuth.nativeUpdateOsmUserStats(OsmOAuth.getUsername(), false /* forceUpdate */);
+    OsmOAuth.nativeUpdateOsmUserStats(OsmOAuth.getUsername(requireContext()), false /* forceUpdate */);
   }
 
   private void initViews(View view)
   {
-    mMore = mToolbarController.findViewById(R.id.more);
+    mMore = getToolbarController().getToolbar().findViewById(R.id.more);
     mMore.setOnClickListener(this);
     View editsBlock = view.findViewById(R.id.block_edits);
     UiUtils.show(editsBlock);
@@ -95,7 +110,7 @@ public class ProfileFragment extends AuthFragment implements View.OnClickListene
 
   private void refreshViews()
   {
-    if (OsmOAuth.isAuthorized())
+    if (OsmOAuth.isAuthorized(requireContext()))
     {
       UiUtils.show(mMore, mRatingBlock, mSentBlock);
       UiUtils.hide(mAuthBlock);
@@ -165,7 +180,7 @@ public class ProfileFragment extends AuthFragment implements View.OnClickListene
     for (MenuItem item: items)
       bs.sheet(item.ordinal(), item.icon, item.title);
 
-    bs.listener(new android.view.MenuItem.OnMenuItemClickListener()
+    BottomSheet bottomSheet = bs.listener(new android.view.MenuItem.OnMenuItemClickListener()
     {
       @Override
       public boolean onMenuItemClick(android.view.MenuItem item)
@@ -173,6 +188,8 @@ public class ProfileFragment extends AuthFragment implements View.OnClickListene
         MenuItem.values()[item.getItemId()].invoke(ProfileFragment.this);
         return false;
       }
-    }).tint().show();
+    }).build();
+    BottomSheetHelper.tint(bottomSheet);
+    bottomSheet.show();
   }
 }

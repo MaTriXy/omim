@@ -1,11 +1,14 @@
-#include "types_skipper.hpp"
+#include "search/types_skipper.hpp"
 
 #include "indexer/classificator.hpp"
 #include "indexer/feature_data.hpp"
 #include "indexer/ftypes_matcher.hpp"
 
-#include "std/algorithm.hpp"
-#include "std/initializer_list.hpp"
+#include "base/stl_helpers.hpp"
+
+#include <algorithm>
+
+using base::StringIL;
 
 namespace search
 {
@@ -13,55 +16,39 @@ TypesSkipper::TypesSkipper()
 {
   Classificator const & c = classif();
 
-  for (auto const & e : (StringIL[]){{"entrance"}})
-    m_skipAlways[0].push_back(c.GetTypeByPath(e));
-  for (auto const & e : (StringIL[]){{"building", "address"}})
-    m_skipAlways[1].push_back(c.GetTypeByPath(e));
-
-  for (auto const & e : (StringIL[]){{"building"}, {"highway"}, {"natural"},
-                                     {"waterway"}, {"landuse"}})
+  StringIL const typesLengthOne[] = {{"building"}, {"highway"}, {"landuse"}, {"natural"},
+                                     {"office"}, {"waterway"}, {"area:highway"}};
+  for (auto const & e : typesLengthOne)
   {
     m_skipIfEmptyName[0].push_back(c.GetTypeByPath(e));
   }
 
-  for (auto const & e : (StringIL[]){{"place", "country"},
+  StringIL const typesLengthTwo[] = {{"man_made", "chimney"},
+                                     {"place", "country"},
                                      {"place", "state"},
                                      {"place", "county"},
                                      {"place", "region"},
                                      {"place", "city"},
                                      {"place", "town"},
-                                     {"railway", "rail"}})
+                                     {"place", "suburb"},
+                                     {"place", "neighbourhood"},
+                                     {"place", "square"}};
+  for (auto const & e : typesLengthTwo)
   {
     m_skipIfEmptyName[1].push_back(c.GetTypeByPath(e));
   }
 
-  m_country = c.GetTypeByPath({"place", "country"});
-  m_state = c.GetTypeByPath({"place", "state"});
-}
-
-void TypesSkipper::SkipTypes(feature::TypesHolder & types) const
-{
-  auto shouldBeRemoved = [this](uint32_t type)
-  {
-    ftype::TruncValue(type, 2);
-    if (HasType(m_skipAlways[1], type))
-      return true;
-
-    ftype::TruncValue(type, 1);
-    if (HasType(m_skipAlways[0], type))
-      return true;
-
-    return false;
-  };
-
-  types.RemoveIf(shouldBeRemoved);
+  m_skipAlways[1].push_back(c.GetTypeByPath({"sponsored", "partner18"}));
+  m_skipAlways[1].push_back(c.GetTypeByPath({"sponsored", "partner19"}));
+  m_skipAlways[0].push_back(c.GetTypeByPath({"isoline"}));
 }
 
 void TypesSkipper::SkipEmptyNameTypes(feature::TypesHolder & types) const
 {
+  static const TwoLevelPOIChecker dontSkip;
   auto shouldBeRemoved = [this](uint32_t type)
   {
-    if (m_dontSkipIfEmptyName.IsMatched(type))
+    if (dontSkip.IsMatched(type))
       return false;
 
     ftype::TruncValue(type, 2);
@@ -78,20 +65,24 @@ void TypesSkipper::SkipEmptyNameTypes(feature::TypesHolder & types) const
   types.RemoveIf(shouldBeRemoved);
 }
 
-bool TypesSkipper::IsCountryOrState(feature::TypesHolder const & types) const
+bool TypesSkipper::SkipAlways(feature::TypesHolder const & types) const
 {
-  for (uint32_t t : types)
+  for (auto type : types)
   {
-    ftype::TruncValue(t, 2);
-    if (t == m_country || t == m_state)
+    ftype::TruncValue(type, 2);
+    if (HasType(m_skipAlways[1], type))
+      return true;
+
+    ftype::TruncValue(type, 1);
+    if (HasType(m_skipAlways[0], type))
       return true;
   }
   return false;
 }
 
 // static
-bool TypesSkipper::HasType(TCont const & v, uint32_t t)
+bool TypesSkipper::HasType(Cont const & v, uint32_t t)
 {
-  return find(v.begin(), v.end(), t) != v.end();
+  return std::find(v.begin(), v.end(), t) != v.end();
 }
 }  // namespace search

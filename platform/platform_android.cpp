@@ -5,16 +5,20 @@
 #include "platform/settings.hpp"
 
 #include "coding/zip_reader.hpp"
-#include "coding/file_name_utils.hpp"
 
+#include "base/file_name_utils.hpp"
 #include "base/logging.hpp"
-#include "base/thread.hpp"
 #include "base/string_utils.hpp"
+#include "base/thread.hpp"
 
-#include "std/regex.hpp"
+#include <memory>
+#include <regex>
+#include <string>
 
 #include <unistd.h>     // for sysconf
 #include <sys/stat.h>
+
+using namespace std;
 
 Platform::Platform()
 {
@@ -38,7 +42,6 @@ bool IsResource(string const & file, string const & ext)
   if (ext == DATA_FILE_EXTENSION)
   {
     return (strings::StartsWith(file, WORLD_COASTS_FILE_NAME) ||
-            strings::StartsWith(file, WORLD_COASTS_OBSOLETE_FILE_NAME) ||
             strings::StartsWith(file, WORLD_FILE_NAME));
   }
   else if (ext == BOOKMARKS_FILE_EXTENSION ||
@@ -78,23 +81,26 @@ size_t GetSearchSources(string const & file, string const & searchScope,
 #ifdef DEBUG
 class DbgLogger
 {
-  string const & m_file;
-  SourceT m_src;
 public:
-  DbgLogger(string const & file) : m_file(file) {}
-  void SetSource(SourceT src) { m_src = src; }
+  explicit DbgLogger(string const & file) : m_file(file) {}
+
   ~DbgLogger()
   {
     LOG(LDEBUG, ("Source for file", m_file, "is", m_src));
   }
+
+  void SetSource(SourceT src) { m_src = src; }
+
+private:
+  string const & m_file;
+  SourceT m_src;
 };
 #endif
-
-}
+}  // namespace
 
 unique_ptr<ModelReader> Platform::GetReader(string const & file, string const & searchScope) const
 {
-  string const ext = my::GetFileExtension(file);
+  string const ext = base::GetFileExtension(file);
   ASSERT(!ext.empty(), ());
 
   uint32_t const logPageSize = (ext == DATA_FILE_EXTENSION) ? READER_CHUNK_LOG_SIZE : 10;
@@ -174,8 +180,9 @@ unique_ptr<ModelReader> Platform::GetReader(string const & file, string const & 
       {
         return make_unique<ZipFileReader>(m_resourcesDir, "assets/" + file, logPageSize, logPageCount);
       }
-      catch (Reader::OpenException const &)
+      catch (Reader::OpenException const & e)
       {
+        LOG(LWARNING, ("Can't get reader:", e.what()));
       }
       break;
 
@@ -195,7 +202,7 @@ void Platform::GetFilesByRegExp(string const & directory, string const & regexp,
   if (ZipFileReader::IsZip(directory))
   {
     // Get files list inside zip file
-    typedef ZipFileReader::FileListT FilesT;
+    typedef ZipFileReader::FileList FilesT;
     FilesT fList;
     ZipFileReader::FilesList(directory, fList);
 
@@ -243,7 +250,8 @@ bool Platform::GetFileSizeByName(string const & fileName, uint64_t & size) const
   }
 }
 
-Platform::EError Platform::MkDir(string const & dirName) const
+// static
+Platform::EError Platform::MkDir(string const & dirName)
 {
   if (0 != mkdir(dirName.c_str(), 0755))
     return ErrnoToError();
@@ -258,34 +266,4 @@ void Platform::SetupMeasurementSystem() const
   // @TODO Add correct implementation
   units = measurement_utils::Units::Metric;
   settings::Set(settings::kMeasurementUnits, units);
-}
-
-/// @see implementation of methods below in android/jni/com/.../Platform.cpp
-// void Platform::RunOnGuiThread(TFunctor const & fn){}
-// void Platform::SendPushWooshTag(string const & tag){}
-// void Platform::SendPushWooshTag(string const & tag, string const & value){}
-// void Platform::SendPushWooshTag(string const & tag, vector<string> const & values){}
-// void Platform::SendMarketingEvent(string const & tag, map<string, string> const & params){}
-
-namespace
-{
-class FunctorWrapper : public threads::IRoutine
-{
-  Platform::TFunctor m_fn;
-
-public:
-  FunctorWrapper(Platform::TFunctor const & fn) : m_fn(fn) {}
-
-  void Do() override { m_fn(); }
-};
-}
-
-void Platform::RunAsync(TFunctor const & fn, Priority p)
-{
-  UNUSED_VALUE(p);
-
-  // We don't need to store thread handler in POSIX, just create and
-  // run.  Unfortunately we can't use std::async() here since it
-  // doesn't attach to JVM threads.
-  threads::Thread().Create(make_unique<FunctorWrapper>(fn));
 }

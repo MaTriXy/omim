@@ -2,28 +2,23 @@
 
 #include "drape/pointers.hpp"
 
-#include "std/function.hpp"
-#include "std/limits.hpp"
+#include <limits>
+#include <vector>
 
 class ScreenBase;
 
-namespace df
-{
-class BatchMergeHelper;
-}
-
 namespace dp
 {
-
+class DebugRenderer;
+class GraphicsContext;
 class OverlayHandle;
 class OverlayTree;
 class VertexArrayBuffer;
 
 class RenderBucket
 {
-  friend class df::BatchMergeHelper;
 public:
-  RenderBucket(drape_ptr<VertexArrayBuffer> && buffer);
+  explicit RenderBucket(drape_ptr<VertexArrayBuffer> && buffer);
   ~RenderBucket();
 
   ref_ptr<VertexArrayBuffer> GetBuffer();
@@ -36,11 +31,14 @@ public:
 
   void Update(ScreenBase const & modelView);
   void CollectOverlayHandles(ref_ptr<OverlayTree> tree);
+  bool HasOverlayHandles() const;
   void RemoveOverlayHandles(ref_ptr<OverlayTree> tree);
-  void Render(bool drawAsLine);
+  void SetOverlayVisibility(bool isVisible);
+  void Render(ref_ptr<GraphicsContext> context, bool drawAsLine);
 
   // Only for testing! Don't use this function in production code!
-  void RenderDebug(ScreenBase const & screen) const;
+  void RenderDebug(ref_ptr<GraphicsContext> context, ScreenBase const & screen,
+                   ref_ptr<DebugRenderer> debugRectRenderer) const;
 
   // Only for testing! Don't use this function in production code!
   template <typename ToDo>
@@ -54,10 +52,11 @@ public:
   int GetMinZoom() const { return m_featuresMinZoom; }
 
 private:
-  int m_featuresMinZoom = numeric_limits<int>::max();
+  void BeforeUpdate();
 
-  vector<drape_ptr<OverlayHandle> > m_overlay;
+  int m_featuresMinZoom = std::numeric_limits<int>::max();
+
+  std::vector<drape_ptr<OverlayHandle>> m_overlay;
   drape_ptr<VertexArrayBuffer> m_buffer;
 };
-
-} // namespace dp
+}  // namespace dp

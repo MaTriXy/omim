@@ -2,17 +2,21 @@
 
 #include "base/assert.hpp"
 
-#include "std/algorithm.hpp"
-#include "std/array.hpp"
-#include "std/string.hpp"
+#include <algorithm>
+#include <set>
+#include <string>
 
 #include "3party/opening_hours/opening_hours.hpp"
 
 namespace
 {
-editor::ui::TOpeningDays MakeOpeningDays(osmoh::Weekdays const & wds)
+using osmoh::operator ""_h;
+
+osmoh::Timespan const kTwentyFourHours = {0_h, 24_h};
+
+editor::ui::OpeningDays MakeOpeningDays(osmoh::Weekdays const & wds)
 {
-  set<osmoh::Weekday> openingDays;
+  std::set<osmoh::Weekday> openingDays;
   for (auto const & wd : wds.GetWeekdayRanges())
   {
     if (wd.HasSunday())
@@ -46,20 +50,19 @@ void SetUpTimeTable(osmoh::TTimespans spans, editor::ui::TimeTable & tt)
   for (auto & span : spans)
     span.ExpandPlus();
 
-  sort(begin(spans), end(spans), [](Timespan const & a, Timespan const & b)
-       {
-         auto const start1 = a.GetStart().GetHourMinutes().GetDuration();
-         auto const start2 = b.GetStart().GetHourMinutes().GetDuration();
+  std::sort(std::begin(spans), std::end(spans), [](Timespan const & a, Timespan const & b) {
+    auto const start1 = a.GetStart().GetHourMinutes().GetDuration();
+    auto const start2 = b.GetStart().GetHourMinutes().GetDuration();
 
-         return start1 < start2;
-       });
+    return start1 < start2;
+  });
 
   // Take first start and last end as opening time span.
   tt.SetOpeningTime({spans.front().GetStart(), spans.back().GetEnd()});
 
   // Add an end of a span of index i and start of following span
   // as exclude time.
-  for (auto i = 0; i + 1 < spans.size(); ++i)
+  for (size_t i = 0; i + 1 < spans.size(); ++i)
     tt.AddExcludeTime({spans[i].GetEnd(), spans[i + 1].GetStart()});
 }
 
@@ -82,9 +85,9 @@ int32_t NextWeekdayNumber(osmoh::Weekday const wd)
 // Exampls:
 // su, mo, we -> mo, we, su;
 // su, mo, fr, sa -> fr, sa, su, mo.
-vector<osmoh::Weekday> RemoveInversion(editor::ui::TOpeningDays const & days)
+std::vector<osmoh::Weekday> RemoveInversion(editor::ui::OpeningDays const & days)
 {
-  vector<osmoh::Weekday> result(begin(days), end(days));
+  std::vector<osmoh::Weekday> result(begin(days), end(days));
   if ((NextWeekdayNumber(result.back()) != WeekdayNumber(result.front()) &&
        result.back() != osmoh::Weekday::Sunday) || result.size() < 2)
     return result;
@@ -104,12 +107,12 @@ vector<osmoh::Weekday> RemoveInversion(editor::ui::TOpeningDays const & days)
   return result;
 }
 
-using TWeekdays = vector<osmoh::Weekday>;
+using Weekdays = std::vector<osmoh::Weekday>;
 
-vector<TWeekdays> SplitIntoIntervals(editor::ui::TOpeningDays const & days)
+std::vector<Weekdays> SplitIntoIntervals(editor::ui::OpeningDays const & days)
 {
   ASSERT_GREATER(days.size(), 0, ("At least one day must present."));
-  vector<TWeekdays> result;
+  std::vector<Weekdays> result;
   auto const & noInversionDays = RemoveInversion(days);
   ASSERT(!noInversionDays.empty(), ());
 
@@ -146,9 +149,8 @@ osmoh::Weekdays MakeWeekdays(editor::ui::TimeTable const & tt)
 
 osmoh::TTimespans MakeTimespans(editor::ui::TimeTable const & tt)
 {
-
   if (tt.IsTwentyFourHours())
-    return {};
+    return {kTwentyFourHours};
 
   auto const & excludeTime = tt.GetExcludeTime();
   if (excludeTime.empty())
@@ -156,7 +158,7 @@ osmoh::TTimespans MakeTimespans(editor::ui::TimeTable const & tt)
 
   osmoh::TTimespans spans{{tt.GetOpeningTime().GetStart(), excludeTime[0].GetStart()}};
 
-  for (auto i = 0; i + 1 < excludeTime.size(); ++i)
+  for (size_t i = 0; i + 1 < excludeTime.size(); ++i)
     spans.emplace_back(excludeTime[i].GetEnd(), excludeTime[i + 1].GetStart());
 
   spans.emplace_back(excludeTime.back().GetEnd(), tt.GetOpeningTime().GetEnd());
@@ -164,7 +166,7 @@ osmoh::TTimespans MakeTimespans(editor::ui::TimeTable const & tt)
   return spans;
 }
 
-editor::ui::TOpeningDays const kWholeWeek = {
+editor::ui::OpeningDays const kWholeWeek = {
   osmoh::Weekday::Monday,
   osmoh::Weekday::Tuesday,
   osmoh::Weekday::Wednesday,
@@ -174,11 +176,11 @@ editor::ui::TOpeningDays const kWholeWeek = {
   osmoh::Weekday::Sunday
 };
 
-editor::ui::TOpeningDays GetCommonDays(editor::ui::TOpeningDays const & a,
-                                       editor::ui::TOpeningDays const & b)
+editor::ui::OpeningDays GetCommonDays(editor::ui::OpeningDays const & a,
+                                      editor::ui::OpeningDays const & b)
 {
-  editor::ui::TOpeningDays result;
-  set_intersection(begin(a), end(a), begin(b), end(b), inserter(result, begin(result)));
+  editor::ui::OpeningDays result;
+  std::set_intersection(begin(a), end(a), begin(b), end(b), inserter(result, begin(result)));
   return result;
 }
 
@@ -203,7 +205,7 @@ bool ExcludeRulePart(osmoh::RuleSequence const & rulePart, editor::ui::TimeTable
     auto const commonDays = GetCommonDays(ttOpeningDays,
                                           MakeOpeningDays(rulePart.GetWeekdays()));
 
-    auto const removeCommonDays = [&commonDays](editor::ui::TTimeTableProxy & tt)
+    auto const removeCommonDays = [&commonDays](editor::ui::TimeTableSet::Proxy & tt)
     {
       for (auto const day : commonDays)
         VERIFY(tt.RemoveWorkingDay(day), ("Can't remove working day"));
@@ -212,13 +214,12 @@ bool ExcludeRulePart(osmoh::RuleSequence const & rulePart, editor::ui::TimeTable
 
     auto const twentyFourHoursGuard = [](editor::ui::TimeTable & tt)
     {
-      using osmoh::operator ""_h;
       if (tt.IsTwentyFourHours())
       {
         tt.SetTwentyFourHours(false);
         // TODO(mgsergio): Consider TimeTable refactoring:
         // get rid of separation of TwentyFourHours and OpeningTime.
-        tt.SetOpeningTime({0_h, 24_h});
+        tt.SetOpeningTime(kTwentyFourHours);
       }
     };
 
@@ -326,6 +327,9 @@ bool MakeTimeTableSet(osmoh::OpeningHours const & oh, ui::TimeTableSet & tts)
   bool first = true;
   for (auto const & rulePart : oh.GetRule())
   {
+    if (rulePart.IsEmpty())
+      continue;
+
     ui::TimeTable tt = ui::TimeTable::GetUninitializedTimeTable();
     tt.SetOpeningTime(tt.GetPredefinedOpeningTime());
 
@@ -350,14 +354,19 @@ bool MakeTimeTableSet(osmoh::OpeningHours const & oh, ui::TimeTableSet & tts)
     else
       tt.SetOpeningDays(kWholeWeek);
 
-    if (rulePart.HasTimes())
+    auto const & times = rulePart.GetTimes();
+
+    bool isTwentyFourHours =
+        times.empty() || (times.size() == 1 && times.front() == kTwentyFourHours);
+
+    if (isTwentyFourHours)
     {
-      tt.SetTwentyFourHours(false);
-      SetUpTimeTable(rulePart.GetTimes(), tt);
+      tt.SetTwentyFourHours(true);
     }
     else
     {
-      tt.SetTwentyFourHours(true);
+      tt.SetTwentyFourHours(false);
+      SetUpTimeTable(rulePart.GetTimes(), tt);
     }
 
     // Check size as well since ExcludeRulePart can add new time tables.

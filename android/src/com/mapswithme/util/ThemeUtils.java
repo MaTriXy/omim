@@ -2,27 +2,21 @@ package com.mapswithme.util;
 
 import android.content.Context;
 import android.content.res.TypedArray;
-import android.support.annotation.AttrRes;
-import android.support.annotation.ColorInt;
-import android.support.annotation.StyleRes;
-import android.support.v7.internal.view.ContextThemeWrapper;
+import androidx.annotation.AttrRes;
+import androidx.annotation.ColorInt;
+import androidx.annotation.NonNull;
+import androidx.annotation.StyleRes;
 import android.util.TypedValue;
-import android.view.LayoutInflater;
 
-import com.mapswithme.maps.MwmApplication;
 import com.mapswithme.maps.R;
 
 public final class ThemeUtils
 {
-  public static final String THEME_DEFAULT = MwmApplication.get().getString(R.string.theme_default);
-  public static final String THEME_NIGHT = MwmApplication.get().getString(R.string.theme_night);
-  public static final String THEME_AUTO = MwmApplication.get().getString(R.string.theme_auto);
-
   private static final TypedValue VALUE_BUFFER = new TypedValue();
 
   private ThemeUtils() {}
 
-  public static @ColorInt int getColor(Context context, @AttrRes int attr)
+  public static @ColorInt int getColor(@NonNull Context context, @AttrRes int attr)
   {
     if (!context.getTheme().resolveAttribute(attr, VALUE_BUFFER, true))
       throw new IllegalArgumentException("Failed to resolve color theme attribute");
@@ -30,7 +24,7 @@ public final class ThemeUtils
     return VALUE_BUFFER.data;
   }
 
-  public static int getResource(Context context, @AttrRes int attr)
+  public static int getResource(@NonNull Context context, @AttrRes int attr)
   {
     if (!context.getTheme().resolveAttribute(attr, VALUE_BUFFER, true))
       throw new IllegalArgumentException("Failed to resolve theme attribute");
@@ -38,7 +32,7 @@ public final class ThemeUtils
     return VALUE_BUFFER.resourceId;
   }
 
-  public static int getResource(Context context, @AttrRes int style, @AttrRes int attr)
+  public static int getResource(@NonNull Context context, @AttrRes int style, @AttrRes int attr)
   {
     int styleRef = getResource(context, style);
 
@@ -50,45 +44,67 @@ public final class ThemeUtils
     return VALUE_BUFFER.resourceId;
   }
 
-  public static LayoutInflater themedInflater(LayoutInflater src, @StyleRes int theme)
+  public static boolean isDefaultTheme(@NonNull Context context)
   {
-    Context wrapper = new ContextThemeWrapper(src.getContext(), theme);
-    return src.cloneInContext(wrapper);
+    return isDefaultTheme(context, Config.getCurrentUiTheme(context));
   }
 
-  public static boolean isDefaultTheme()
+  public static boolean isDefaultTheme(@NonNull Context context, String theme)
   {
-    return isDefaultTheme(Config.getCurrentUiTheme());
+    String defaultTheme = context.getString(R.string.theme_default);
+    return defaultTheme.equals(theme);
   }
 
-  public static boolean isDefaultTheme(String theme)
+  public static boolean isNightTheme(@NonNull Context context)
   {
-    return THEME_DEFAULT.equals(theme);
+    return isNightTheme(context, Config.getCurrentUiTheme(context));
   }
 
-  public static boolean isNightTheme()
+  public static boolean isNightTheme(@NonNull Context context, String theme)
   {
-    return isNightTheme(Config.getCurrentUiTheme());
+    String nightTheme = context.getString(R.string.theme_night);
+    return nightTheme.equals(theme);
   }
 
-  public static boolean isNightTheme(String theme)
+  public static boolean isAutoTheme(@NonNull Context context)
   {
-    return THEME_NIGHT.equals(theme);
+    return isAutoTheme(context, Config.getCurrentUiTheme(context));
   }
 
-  public static boolean isAutoTheme()
+  public static boolean isAutoTheme(@NonNull Context context, String theme)
   {
-    return THEME_AUTO.equals(Config.getUiThemeSettings());
+    String autoTheme = context.getString(R.string.theme_auto);
+    return autoTheme.equals(theme);
   }
 
-  public static boolean isAutoTheme(String theme)
+  public static boolean isValidTheme(@NonNull Context context, String theme)
   {
-    return THEME_AUTO.equals(theme);
+    String defaultTheme = context.getString(R.string.theme_default);
+    String nightTheme = context.getString(R.string.theme_night);
+    return (defaultTheme.equals(theme) || nightTheme.equals(theme));
   }
 
-  public static boolean isValidTheme(String theme)
+  @StyleRes
+  public static int getCardBgThemeResourceId(@NonNull Context context, @NonNull String theme)
   {
-    return (THEME_DEFAULT.equals(theme) ||
-            THEME_NIGHT.equals(theme));
+    if (isDefaultTheme(context, theme))
+      return R.style.MwmTheme_CardBg;
+
+    if (isNightTheme(context, theme))
+      return R.style.MwmTheme_Night_CardBg;
+
+    throw new IllegalArgumentException("Attempt to apply unsupported theme: " + theme);
+  }
+
+  @StyleRes
+  public static int getWindowBgThemeResourceId(@NonNull Context context, @NonNull String theme)
+  {
+    if (isDefaultTheme(context, theme))
+      return R.style.MwmTheme_WindowBg;
+
+    if (isNightTheme(context, theme))
+      return R.style.MwmTheme_Night_WindowBg;
+
+    throw new IllegalArgumentException("Attempt to apply unsupported theme: " + theme);
   }
 }

@@ -1,15 +1,28 @@
 #include "map/user_mark.hpp"
-#include "map/user_mark_container.hpp"
+#include "map/user_mark_id_storage.hpp"
 
-#include "indexer/classificator.hpp"
+#include "drape_frontend/visual_params.hpp"
+
+#include "indexer/scales.hpp"
 
 #include "geometry/mercator.hpp"
 
-#include "base/string_utils.hpp"
-
-UserMark::UserMark(m2::PointD const & ptOrg, UserMarkContainer * container)
-  : m_ptOrg(ptOrg), m_container(container)
+UserMark::UserMark(kml::MarkId id, m2::PointD const & ptOrg, UserMark::Type type)
+  : df::UserPointMark(id == kml::kInvalidMarkId ? UserMarkIdStorage::Instance().GetNextUserMarkId(type) : id)
+  , m_ptOrg(ptOrg)
 {
+  ASSERT_EQUAL(GetMarkType(), type, ());
+}
+
+UserMark::UserMark(m2::PointD const & ptOrg, UserMark::Type type)
+  : df::UserPointMark(UserMarkIdStorage::Instance().GetNextUserMarkId(type))
+  , m_ptOrg(ptOrg)
+{}
+
+// static
+UserMark::Type UserMark::GetMarkType(kml::MarkId id)
+{
+  return UserMarkIdStorage::GetMarkType(id);
 }
 
 m2::PointD const & UserMark::GetPivot() const
@@ -17,94 +30,91 @@ m2::PointD const & UserMark::GetPivot() const
   return m_ptOrg;
 }
 
-m2::PointD UserMark::GetPixelOffset() const
-{
-  return m2::PointD(0.0, 0.0);
-}
-
-dp::Anchor UserMark::GetAnchor() const
-{
-  return dp::Center;
-}
-
-float UserMark::GetDepth() const
-{
-  return GetContainer()->GetPointDepth();
-}
-
-bool UserMark::RunCreationAnim() const
-{
-  return false;
-}
-
-UserMarkContainer const * UserMark::GetContainer() const
-{
-  ASSERT(m_container != nullptr, ());
-  return m_container;
-}
-
 ms::LatLon UserMark::GetLatLon() const
 {
-  return MercatorBounds::ToLatLon(m_ptOrg);
+  return mercator::ToLatLon(m_ptOrg);
 }
 
-SearchMarkPoint::SearchMarkPoint(m2::PointD const & ptOrg, UserMarkContainer * container)
-: UserMark(ptOrg, container)
-{
-}
+StaticMarkPoint::StaticMarkPoint(m2::PointD const & ptOrg)
+  : UserMark(ptOrg, UserMark::Type::STATIC)
+{}
 
-string SearchMarkPoint::GetSymbolName() const
+void StaticMarkPoint::SetPtOrg(m2::PointD const & ptOrg)
 {
-  return m_customSymbol.empty() ? "search-result" : m_customSymbol;
-}
-
-UserMark::Type SearchMarkPoint::GetMarkType() const
-{
-  return UserMark::Type::SEARCH;
-}
-
-PoiMarkPoint::PoiMarkPoint(UserMarkContainer * container)
-  : SearchMarkPoint(m2::PointD::Zero(), container) {}
-
-UserMark::Type PoiMarkPoint::GetMarkType() const
-{
-  return UserMark::Type::POI;
-}
-
-void PoiMarkPoint::SetPtOrg(m2::PointD const & ptOrg)
-{
+  SetDirty();
   m_ptOrg = ptOrg;
 }
 
-MyPositionMarkPoint::MyPositionMarkPoint(UserMarkContainer * container)
-  : PoiMarkPoint(container)
+MyPositionMarkPoint::MyPositionMarkPoint(m2::PointD const & ptOrg)
+  : StaticMarkPoint(ptOrg)
+{}
+
+DebugMarkPoint::DebugMarkPoint(const m2::PointD & ptOrg)
+  : UserMark(ptOrg, UserMark::Type::DEBUG_MARK)
+{}
+
+drape_ptr<df::UserPointMark::SymbolNameZoomInfo> DebugMarkPoint::GetSymbolNames() const
 {
+  auto symbol = make_unique_dp<SymbolNameZoomInfo>();
+  symbol->insert(std::make_pair(1 /* zoomLevel */, "non-found-search-result"));
+  return symbol;
 }
 
-UserMark::Type MyPositionMarkPoint::GetMarkType() const
+ColoredMarkPoint::ColoredMarkPoint(m2::PointD const & ptOrg)
+  : UserMark(ptOrg, UserMark::Type::COLORED)
 {
-  return UserMark::Type::MY_POSITION;
+  auto const vs = static_cast<float>(df::VisualParams::Instance().GetVisualScale());
+
+  df::ColoredSymbolViewParams params;
+  params.m_outlineColor = dp::Color::White();
+  params.m_outlineWidth = 1.5f * vs;
+  params.m_radiusInPixels = 7.0f * vs;
+  params.m_color = dp::Color::Green();
+  m_coloredSymbols.m_needOverlay = false;
+  m_coloredSymbols.m_zoomInfo.insert(std::make_pair(1, params));
 }
 
-DebugMarkPoint::DebugMarkPoint(const m2::PointD & ptOrg, UserMarkContainer * container)
-  : UserMark(ptOrg, container)
+void ColoredMarkPoint::SetColor(dp::Color const & color)
 {
+  SetDirty();
+  m_coloredSymbols.m_zoomInfo.begin()->second.m_color = color;
 }
 
-string DebugMarkPoint::GetSymbolName() const
+void ColoredMarkPoint::SetRadius(float radius)
 {
-  return "api-result";
+  SetDirty();
+
+  auto const vs = static_cast<float>(df::VisualParams::Instance().GetVisualScale());
+  m_coloredSymbols.m_zoomInfo.begin()->second.m_radiusInPixels = radius * vs;
 }
 
-string DebugPrint(UserMark::Type type)
+drape_ptr<df::UserPointMark::ColoredSymbolZoomInfo> ColoredMarkPoint::GetColoredSymbols() const
+{
+  return make_unique_dp<ColoredSymbolZoomInfo>(m_coloredSymbols);
+}
+
+std::string DebugPrint(UserMark::Type type)
 {
   switch (type)
   {
   case UserMark::Type::API: return "API";
   case UserMark::Type::SEARCH: return "SEARCH";
-  case UserMark::Type::POI: return "POI";
+  case UserMark::Type::STATIC: return "STATIC";
   case UserMark::Type::BOOKMARK: return "BOOKMARK";
-  case UserMark::Type::MY_POSITION: return "MY_POSITION";
   case UserMark::Type::DEBUG_MARK: return "DEBUG_MARK";
+  case UserMark::Type::ROUTING: return "ROUTING";
+  case UserMark::Type::ROAD_WARNING: return "ROAD_WARNING";
+  case UserMark::Type::SPEED_CAM: return "SPEED_CAM";
+  case UserMark::Type::LOCAL_ADS: return "LOCAL_ADS";
+  case UserMark::Type::TRANSIT: return "TRANSIT";
+  case UserMark::Type::TRACK_INFO: return "TRACK_INFO";
+  case UserMark::Type::TRACK_SELECTION: return "TRACK_SELECTION";
+  case UserMark::Type::GUIDE: return "GUIDE";
+  case UserMark::Type::GUIDE_CLUSTER: return "GUIDE_CLUSTER";
+  case UserMark::Type::GUIDE_SELECTION: return "GUIDE_SELECTION";
+  case UserMark::Type::COLORED: return "COLORED";
+  case UserMark::Type::USER_MARK_TYPES_COUNT: return "USER_MARK_TYPES_COUNT";
+  case UserMark::Type::USER_MARK_TYPES_COUNT_MAX: return "USER_MARK_TYPES_COUNT_MAX";
   }
+  UNREACHABLE();
 }

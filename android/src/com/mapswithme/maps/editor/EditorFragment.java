@@ -4,15 +4,18 @@ import android.content.DialogInterface;
 import android.content.Intent;
 import android.net.Uri;
 import android.os.Bundle;
-import android.support.annotation.DrawableRes;
-import android.support.annotation.NonNull;
-import android.support.annotation.Nullable;
-import android.support.annotation.StringRes;
-import android.support.design.widget.TextInputLayout;
-import android.support.v7.app.AlertDialog;
-import android.support.v7.widget.RecyclerView;
-import android.support.v7.widget.SwitchCompat;
+import androidx.annotation.CallSuper;
+import androidx.annotation.DrawableRes;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import androidx.annotation.StringRes;
+import androidx.recyclerview.widget.LinearLayoutManager;
+import com.google.android.material.textfield.TextInputLayout;
+import androidx.appcompat.app.AlertDialog;
+import androidx.recyclerview.widget.RecyclerView;
+import androidx.appcompat.widget.SwitchCompat;
 import android.text.InputType;
+import android.text.TextUtils;
 import android.util.SparseArray;
 import android.view.LayoutInflater;
 import android.view.View;
@@ -25,8 +28,9 @@ import android.widget.TextView;
 import com.mapswithme.maps.Framework;
 import com.mapswithme.maps.R;
 import com.mapswithme.maps.base.BaseMwmFragment;
-import com.mapswithme.maps.bookmarks.data.Metadata.MetadataType;
+import com.mapswithme.maps.bookmarks.data.MapObject.OsmProps;
 import com.mapswithme.maps.dialog.EditTextDialogFragment;
+import com.mapswithme.maps.editor.data.LocalizedName;
 import com.mapswithme.maps.editor.data.LocalizedStreet;
 import com.mapswithme.maps.editor.data.TimeFormatUtils;
 import com.mapswithme.maps.editor.data.Timetable;
@@ -35,16 +39,17 @@ import com.mapswithme.util.Graphics;
 import com.mapswithme.util.InputUtils;
 import com.mapswithme.util.StringUtils;
 import com.mapswithme.util.UiUtils;
-import org.solovyev.android.views.llm.LinearLayoutManager;
+import com.mapswithme.util.Utils;
 
-public class EditorFragment extends BaseMwmFragment implements View.OnClickListener, EditTextDialogFragment.OnTextSaveListener
+public class EditorFragment extends BaseMwmFragment implements View.OnClickListener,
+                                                               EditTextDialogFragment.EditTextDialogInterface
 {
   final static String LAST_INDEX_OF_NAMES_ARRAY = "LastIndexOfNamesArray";
 
   private TextView mCategory;
   private View mCardName;
   private View mCardAddress;
-  private View mCardMetadata;
+  private View mCardDetails;
 
   private RecyclerView mNamesView;
 
@@ -109,7 +114,7 @@ public class EditorFragment extends BaseMwmFragment implements View.OnClickListe
   private TextView mOpeningHours;
   private View mEditOpeningHours;
   private EditText mDescription;
-  private final SparseArray<View> mMetaBlocks = new SparseArray<>(7);
+  private final SparseArray<View> mDetailsBlocks = new SparseArray<>(7);
   private TextView mReset;
 
   private EditorHostFragment mParent;
@@ -121,16 +126,15 @@ public class EditorFragment extends BaseMwmFragment implements View.OnClickListe
     return inflater.inflate(R.layout.fragment_editor, container, false);
   }
 
+  @CallSuper
   @Override
-  public void onViewCreated(View view, @Nullable Bundle savedInstanceState)
+  public void onViewCreated(@NonNull View view, @Nullable Bundle savedInstanceState)
   {
-    super.onViewCreated(view, savedInstanceState);
-
     mParent = (EditorHostFragment) getParentFragment();
 
     initViews(view);
 
-    mCategory.setText(Editor.nativeGetCategory());
+    mCategory.setText(Utils.getLocalizedFeatureType(getContext(), Editor.nativeGetCategory()));
     final LocalizedStreet street = Editor.nativeGetStreet();
     mStreet.setText(street.defaultName);
 
@@ -280,6 +284,25 @@ public class EditorFragment extends BaseMwmFragment implements View.OnClickListe
       return false;
     }
 
+    return validateNames();
+  }
+
+  private boolean validateNames()
+  {
+    for (int pos = 0; pos < mNamesAdapter.getItemCount(); pos++)
+    {
+      LocalizedName localizedName = mNamesAdapter.getNameAtPos(pos);
+      if (Editor.nativeIsNameValid(localizedName.name))
+        continue;
+
+      View nameView = mNamesView.getChildAt(pos);
+      nameView.requestFocus();
+
+      InputUtils.showKeyboard(nameView);
+
+      return false;
+    }
+
     return true;
   }
 
@@ -287,43 +310,47 @@ public class EditorFragment extends BaseMwmFragment implements View.OnClickListe
   {
     UiUtils.showIf(Editor.nativeIsNameEditable(), mCardName);
     UiUtils.showIf(Editor.nativeIsAddressEditable(), mCardAddress);
-    UiUtils.showIf(Editor.nativeIsBuilding(), mBlockLevels);
+    UiUtils.showIf(Editor.nativeIsBuilding() && !Editor.nativeIsPointType(), mBlockLevels);
 
-    final int[] editableMeta = Editor.nativeGetEditableFields();
-    if (editableMeta.length == 0)
+    final int[] editableDetails = Editor.nativeGetEditableProperties();
+    if (editableDetails.length == 0)
     {
-      UiUtils.hide(mCardMetadata);
+      UiUtils.hide(mCardDetails);
       return;
     }
 
-    for (int i = 0; i < mMetaBlocks.size(); i++)
-      UiUtils.hide(mMetaBlocks.valueAt(i));
+    for (int i = 0; i < mDetailsBlocks.size(); i++)
+      UiUtils.hide(mDetailsBlocks.valueAt(i));
 
-    boolean anyEditableMeta = false;
-    for (int type : editableMeta)
+    boolean anyEditableDetails = false;
+    for (int type : editableDetails)
     {
-      final View metaBlock = mMetaBlocks.get(type);
-      if (metaBlock == null)
+      final View detailsBlock = mDetailsBlocks.get(type);
+      if (detailsBlock == null)
         continue;
 
-      anyEditableMeta = true;
-      UiUtils.show(metaBlock);
+      anyEditableDetails = true;
+      UiUtils.show(detailsBlock);
     }
-    UiUtils.showIf(anyEditableMeta, mCardMetadata);
+    UiUtils.showIf(anyEditableDetails, mCardDetails);
   }
 
   private void refreshOpeningTime()
   {
-    final Timetable[] timetables = OpeningHours.nativeTimetablesFromString(Editor.nativeGetOpeningHours());
-    if (timetables == null)
+    final String openingHours = Editor.nativeGetOpeningHours();
+    if (TextUtils.isEmpty(openingHours) || !OpeningHours.nativeIsTimetableStringValid(openingHours))
     {
       UiUtils.show(mEmptyOpeningHours);
       UiUtils.hide(mOpeningHours, mEditOpeningHours);
     }
     else
     {
+      final Timetable[] timetables = OpeningHours.nativeTimetablesFromString(openingHours);
+      String content = timetables == null ? openingHours
+                                          : TimeFormatUtils.formatTimetables(requireContext(),
+                                                                             timetables);
       UiUtils.hide(mEmptyOpeningHours);
-      UiUtils.setTextAndShow(mOpeningHours, TimeFormatUtils.formatTimetables(timetables));
+      UiUtils.setTextAndShow(mOpeningHours, content);
       UiUtils.show(mEditOpeningHours);
     }
   }
@@ -386,7 +413,7 @@ public class EditorFragment extends BaseMwmFragment implements View.OnClickListe
     mCategory = (TextView) categoryBlock.findViewById(R.id.name);
     mCardName = view.findViewById(R.id.cv__name);
     mCardAddress = view.findViewById(R.id.cv__address);
-    mCardMetadata = view.findViewById(R.id.cv__metadata);
+    mCardDetails = view.findViewById(R.id.cv__details);
     initNamesView(view);
 
     // Address
@@ -437,13 +464,13 @@ public class EditorFragment extends BaseMwmFragment implements View.OnClickListe
     mReset = (TextView) view.findViewById(R.id.reset);
     mReset.setOnClickListener(this);
 
-    mMetaBlocks.append(MetadataType.FMD_OPEN_HOURS.toInt(), blockOpeningHours);
-    mMetaBlocks.append(MetadataType.FMD_PHONE_NUMBER.toInt(), blockPhone);
-    mMetaBlocks.append(MetadataType.FMD_WEBSITE.toInt(), blockWeb);
-    mMetaBlocks.append(MetadataType.FMD_EMAIL.toInt(), blockEmail);
-    mMetaBlocks.append(MetadataType.FMD_CUISINE.toInt(), blockCuisine);
-    mMetaBlocks.append(MetadataType.FMD_OPERATOR.toInt(), blockOperator);
-    mMetaBlocks.append(MetadataType.FMD_INTERNET.toInt(), blockWifi);
+    mDetailsBlocks.append(OsmProps.OpeningHours.ordinal(), blockOpeningHours);
+    mDetailsBlocks.append(OsmProps.Phone.ordinal(), blockPhone);
+    mDetailsBlocks.append(OsmProps.Website.ordinal(), blockWeb);
+    mDetailsBlocks.append(OsmProps.Email.ordinal(), blockEmail);
+    mDetailsBlocks.append(OsmProps.Cuisine.ordinal(), blockCuisine);
+    mDetailsBlocks.append(OsmProps.Operator.ordinal(), blockOperator);
+    mDetailsBlocks.append(OsmProps.Internet.ordinal(), blockWifi);
   }
 
   private static EditText findInput(View blockWithInput)
@@ -488,6 +515,8 @@ public class EditorFragment extends BaseMwmFragment implements View.OnClickListe
       break;
     case R.id.more_names:
     case R.id.show_additional_names:
+      if (mNamesAdapter.areAdditionalLanguagesShown() && !validateNames())
+        break;
       showAdditionalNames(!mNamesAdapter.areAdditionalLanguagesShown());
       break;
     case R.id.add_langs:
@@ -621,7 +650,7 @@ public class EditorFragment extends BaseMwmFragment implements View.OnClickListe
                                             public void onClick(DialogInterface dialog, int which)
                                             {
                                               Editor.nativeRollbackMapObject();
-                                              Framework.nativeUpdateUserViewportChanged();
+                                              Framework.nativePokeSearchInViewport();
                                               mParent.onBackPressed();
                                             }
                                           })
@@ -635,10 +664,20 @@ public class EditorFragment extends BaseMwmFragment implements View.OnClickListe
                                 getString(R.string.editor_report_problem_send_button), getString(R.string.cancel), this);
   }
 
+  @NonNull
   @Override
-  public void onSaveText(String text)
+  public EditTextDialogFragment.OnTextSaveListener getSaveTextListener()
   {
-    Editor.nativePlaceDoesNotExist(text);
-    mParent.onBackPressed();
+    return text -> {
+      Editor.nativePlaceDoesNotExist(text);
+      mParent.onBackPressed();
+    };
+  }
+
+  @NonNull
+  @Override
+  public EditTextDialogFragment.Validator getValidator()
+  {
+    return (activity, text) -> !TextUtils.isEmpty(text);
   }
 }

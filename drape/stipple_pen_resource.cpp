@@ -4,13 +4,13 @@
 
 #include "base/shared_buffer_manager.hpp"
 
-#include "std/numeric.hpp"
-#include "std/sstream.hpp"
-#include "std/cstring.hpp"
+#include <cstring>
+#include <iomanip>
+#include <numeric>
+#include <sstream>
 
 namespace dp
 {
-
 uint32_t const kMaxStipplePenLength = 512;
 uint32_t const kStippleHeight = 1;
 
@@ -59,8 +59,8 @@ void StipplePenHandle::Init(buffer_vector<uint8_t, 8> const & pattern)
   // ....
   // 0 - 5 bits = reserved
 
-  uint32_t patternSize = pattern.size();
-  ASSERT(patternSize >= 1 && patternSize < 9, (patternSize));
+  ASSERT(pattern.size() >= 1 && pattern.size() < 9, (pattern.size()));
+  uint32_t const patternSize = static_cast<uint32_t>(pattern.size());
 
   m_keyValue = patternSize - 1; // we code value 1 as 000 and value 8 as 111
   for (size_t i = 0; i < patternSize; ++i)
@@ -78,7 +78,7 @@ void StipplePenHandle::Init(buffer_vector<uint8_t, 8> const & pattern)
 StipplePenRasterizator::StipplePenRasterizator(StipplePenKey const & key)
   : m_key(key)
 {
-  m_patternLength = accumulate(m_key.m_pattern.begin(), m_key.m_pattern.end(), 0);
+  m_patternLength = std::accumulate(m_key.m_pattern.begin(), m_key.m_pattern.end(), 0);
   uint32_t const availableSize = kMaxStipplePenLength - 2; // the first and the last pixel reserved
   ASSERT_LESS(m_patternLength, availableSize, ());
   uint32_t const count = floor(availableSize / m_patternLength);
@@ -123,9 +123,10 @@ void StipplePenRasterizator::Rasterize(void * buffer)
   pixels[offset] = pixels[offset - 1];
 }
 
-ref_ptr<Texture::ResourceInfo> StipplePenIndex::ReserveResource(bool predefined, StipplePenKey const & key, bool & newResource)
+ref_ptr<Texture::ResourceInfo> StipplePenIndex::ReserveResource(bool predefined, StipplePenKey const & key,
+                                                                bool & newResource)
 {
-  lock_guard<mutex> g(m_mappingLock);
+  std::lock_guard<std::mutex> g(m_mappingLock);
 
   newResource = false;
   StipplePenHandle handle(key);
@@ -139,8 +140,8 @@ ref_ptr<Texture::ResourceInfo> StipplePenIndex::ReserveResource(bool predefined,
   StipplePenRasterizator resource(key);
   m2::RectU pixelRect = m_packer.PackResource(resource.GetSize());
   {
-    lock_guard<mutex> g(m_lock);
-    m_pendingNodes.push_back(make_pair(pixelRect, resource));
+    std::lock_guard<std::mutex> g(m_lock);
+    m_pendingNodes.push_back(std::make_pair(pixelRect, resource));
   }
 
   auto res = resourceMapping.emplace(handle, StipplePenResourceInfo(m_packer.MapTextureCoords(pixelRect),
@@ -163,29 +164,28 @@ ref_ptr<Texture::ResourceInfo> StipplePenIndex::MapResource(StipplePenKey const 
   return ReserveResource(false /* predefined */, key, newResource);
 }
 
-void StipplePenIndex::UploadResources(ref_ptr<Texture> texture)
+void StipplePenIndex::UploadResources(ref_ptr<dp::GraphicsContext> context, ref_ptr<Texture> texture)
 {
-  ASSERT(texture->GetFormat() == dp::ALPHA, ());
-  if (m_pendingNodes.empty())
-    return;
-
+  ASSERT(texture->GetFormat() == dp::TextureFormat::Alpha, ());
   TPendingNodes pendingNodes;
   {
-    lock_guard<mutex> g(m_lock);
+    std::lock_guard<std::mutex> g(m_lock);
+    if (m_pendingNodes.empty())
+      return;
     m_pendingNodes.swap(pendingNodes);
   }
 
   SharedBufferManager & mng = SharedBufferManager::instance();
   uint32_t const bytesPerNode = kMaxStipplePenLength * kStippleHeight;
-  uint32_t reserveBufferSize = my::NextPowOf2(pendingNodes.size() * bytesPerNode);
+  uint32_t reserveBufferSize = base::NextPowOf2(static_cast<uint32_t>(pendingNodes.size()) * bytesPerNode);
   SharedBufferManager::shared_buffer_ptr_t ptr = mng.reserveSharedBuffer(reserveBufferSize);
   uint8_t * rawBuffer = SharedBufferManager::GetRawPointer(ptr);
   memset(rawBuffer, 0, reserveBufferSize);
   for (size_t i = 0; i < pendingNodes.size(); ++i)
     pendingNodes[i].second.Rasterize(rawBuffer + i * bytesPerNode);
 
-  texture->UploadData(0, pendingNodes.front().first.minY(),
-                      kMaxStipplePenLength, pendingNodes.size() * kStippleHeight, make_ref(rawBuffer));
+  texture->UploadData(context, 0, pendingNodes.front().first.minY(), kMaxStipplePenLength,
+                      static_cast<uint32_t>(pendingNodes.size()) * kStippleHeight, make_ref(rawBuffer));
 
   mng.freeSharedBuffer(reserveBufferSize, ptr);
 }
@@ -196,12 +196,10 @@ void StipplePenTexture::ReservePattern(buffer_vector<uint8_t, 8> const & pattern
   m_indexer->ReserveResource(true /* predefined */, StipplePenKey(pattern), newResource);
 }
 
-string DebugPrint(StipplePenHandle const & key)
+std::string DebugPrint(StipplePenHandle const & key)
 {
-  ostringstream out;
-  out << "0x" << hex << key.m_keyValue;
+  std::ostringstream out;
+  out << "0x" << std::hex << key.m_keyValue;
   return out.str();
 }
-
-}
-
+}  // namespace dp

@@ -3,11 +3,16 @@
 #include "routing/routing_benchmarks/helpers.hpp"
 
 #include "routing/pedestrian_directions.hpp"
-#include "routing/pedestrian_model.hpp"
 #include "routing/road_graph.hpp"
 
-#include "std/set.hpp"
-#include "std/string.hpp"
+#include "routing_common/pedestrian_model.hpp"
+
+#include <memory>
+#include <set>
+#include <string>
+#include <utility>
+
+using namespace std;
 
 namespace
 {
@@ -33,22 +38,28 @@ set<string> const kMapFiles =
 class PedestrianTest : public RoutingTest
 {
 public:
-  PedestrianTest() : RoutingTest(routing::IRoadGraph::Mode::IgnoreOnewayTag, kMapFiles) {}
+  PedestrianTest()
+    : RoutingTest(routing::IRoadGraph::Mode::IgnoreOnewayTag, routing::VehicleType::Pedestrian,
+                  kMapFiles)
+  {
+  }
 
 protected:
   // RoutingTest overrides:
-  unique_ptr<routing::IDirectionsEngine> CreateDirectionsEngine() override
+  unique_ptr<routing::DirectionsEngine> CreateDirectionsEngine(
+      shared_ptr<routing::NumMwmIds> numMwmIds) override
   {
-    unique_ptr<routing::IDirectionsEngine> engine(new routing::PedestrianDirectionsEngine());
-    return engine;
+    return std::make_unique<routing::PedestrianDirectionsEngine>(m_dataSource, move(numMwmIds));
   }
 
-  unique_ptr<routing::IVehicleModelFactory> CreateModelFactory() override
+  unique_ptr<routing::VehicleModelFactoryInterface> CreateModelFactory() override
   {
-    unique_ptr<routing::IVehicleModelFactory> factory(
+    unique_ptr<routing::VehicleModelFactoryInterface> factory(
         new SimplifiedModelFactory<routing::PedestrianModel>());
     return factory;
   }
+
+  FrozenDataSource m_dataSource;
 };
 }  // namespace
 

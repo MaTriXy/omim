@@ -3,42 +3,53 @@
 #include "search/cancel_exception.hpp"
 #include "search/categories_cache.hpp"
 #include "search/cbv.hpp"
+#include "search/cities_boundaries_table.hpp"
+#include "search/cuisine_filter.hpp"
+#include "search/feature_offset_match.hpp"
 #include "search/features_layer.hpp"
 #include "search/features_layer_path_finder.hpp"
 #include "search/geocoder_context.hpp"
+#include "search/geocoder_locality.hpp"
 #include "search/geometry_cache.hpp"
 #include "search/hotels_filter.hpp"
 #include "search/mode.hpp"
 #include "search/model.hpp"
 #include "search/mwm_context.hpp"
 #include "search/nested_rects_cache.hpp"
+#include "search/postcode_points.hpp"
 #include "search/pre_ranking_info.hpp"
 #include "search/query_params.hpp"
 #include "search/ranking_utils.hpp"
 #include "search/streets_matcher.hpp"
+#include "search/token_range.hpp"
+#include "search/tracer.hpp"
 
-#include "indexer/index.hpp"
 #include "indexer/mwm_set.hpp"
 
 #include "storage/country_info_getter.hpp"
 
 #include "coding/compressed_bit_vector.hpp"
 
+#include "geometry/point2d.hpp"
 #include "geometry/rect2d.hpp"
 
-#include "base/buffer_vector.hpp"
 #include "base/cancellable.hpp"
+#include "base/dfa_helpers.hpp"
+#include "base/levenshtein_dfa.hpp"
 #include "base/macros.hpp"
 #include "base/string_utils.hpp"
 
-#include "std/limits.hpp"
-#include "std/set.hpp"
-#include "std/string.hpp"
-#include "std/unique_ptr.hpp"
-#include "std/unordered_map.hpp"
-#include "std/vector.hpp"
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <map>
+#include <memory>
+#include <optional>
+#include <string>
+#include <vector>
 
-class MwmInfo;
+class CategoriesHolder;
+class DataSource;
 class MwmValue;
 
 namespace storage
@@ -48,11 +59,9 @@ class CountryInfoGetter;
 
 namespace search
 {
-class PreRanker;
-
 class FeaturesFilter;
 class FeaturesLayerMatcher;
-class SearchModel;
+class PreRanker;
 class TokenSlice;
 
 // This class is used to retrieve all features corresponding to a
@@ -75,73 +84,34 @@ class Geocoder
 public:
   struct Params : public QueryParams
   {
-    Params();
-
-    Mode m_mode;
+    Mode m_mode = Mode::Everywhere;
     m2::RectD m_pivot;
-    shared_ptr<hotels_filter::Rule> m_hotelsFilter;
+    std::optional<m2::PointD> m_position;
+    Locales m_categoryLocales;
+    std::shared_ptr<hotels_filter::Rule> m_hotelsFilter;
+    std::vector<uint32_t> m_cuisineTypes;
+    std::vector<uint32_t> m_preferredTypes;
+    std::shared_ptr<Tracer> m_tracer;
+    double m_streetSearchRadiusM = 0.0;
+    double m_villageSearchRadiusM = 0.0;
+    int m_scale = scales::GetUpperScale();
   };
 
-  enum RegionType
+  struct LocalitiesCaches
   {
-    REGION_TYPE_STATE,
-    REGION_TYPE_COUNTRY,
-    REGION_TYPE_COUNT
+    LocalitiesCaches(base::Cancellable const & cancellable);
+    void Clear();
+
+    CountriesCache m_countries;
+    StatesCache m_states;
+    CitiesTownsOrVillagesCache m_citiesTownsOrVillages;
+    VillagesCache m_villages;
   };
 
-  struct Locality
-  {
-    Locality() : m_featureId(0), m_startToken(0), m_endToken(0), m_prob(0.0) {}
-
-    Locality(uint32_t featureId, size_t startToken, size_t endToken)
-      : m_featureId(featureId), m_startToken(startToken), m_endToken(endToken), m_prob(0.0)
-    {
-    }
-
-    MwmSet::MwmId m_countryId;
-    uint32_t m_featureId;
-    size_t m_startToken;
-    size_t m_endToken;
-
-    // Measures our belief in the fact that tokens in the range [m_startToken, m_endToken)
-    // indeed specify a locality. Currently it is set only for villages.
-    double m_prob;
-
-    string m_name;
-  };
-
-  // This struct represents a country or US- or Canadian- state.  It
-  // is used to filter maps before search.
-  struct Region : public Locality
-  {
-    Region(Locality const & l, RegionType type) : Locality(l), m_center(0, 0), m_type(type) {}
-
-    storage::CountryInfoGetter::TRegionIdSet m_ids;
-    string m_defaultName;
-    m2::PointD m_center;
-    RegionType m_type;
-  };
-
-  // This struct represents a city or a village. It is used to filter features
-  // during search.
-  // todo(@m) It works well as is, but consider a new naming scheme
-  // when counties etc. are added. E.g., Region for countries and
-  // states and Locality for smaller settlements.
-  struct City : public Locality
-  {
-    City(Locality const & l, SearchModel::SearchType type) : Locality(l), m_type(type) {}
-
-    m2::RectD m_rect;
-    SearchModel::SearchType m_type;
-#if defined(DEBUG)
-    string m_defaultName;
-#endif
-  };
-
-  Geocoder(Index const & index, storage::CountryInfoGetter const & infoGetter,
-           PreRanker & preRanker, VillagesCache & villagesCache,
-           my::Cancellable const & cancellable);
-
+  Geocoder(DataSource const & dataSource, storage::CountryInfoGetter const & infoGetter,
+           CategoriesHolder const & categories, CitiesBoundariesTable const & citiesBoundaries,
+           PreRanker & preRanker, LocalitiesCaches & localitiesCaches,
+           base::Cancellable const & cancellable);
   ~Geocoder();
 
   // Sets search query params.
@@ -152,64 +122,108 @@ public:
   void GoEverywhere();
   void GoInViewport();
 
+  // Ends geocoding and informs the following stages
+  // of the pipeline (PreRanker and further).
+  // This method must be called from the previous stage
+  // of the pipeline (the Processor).
+  // If |cancelled| is true, the reason for calling Finish must
+  // be the cancellation of processing the search request, otherwise
+  // the reason must be the normal exit from GoEverywhere or GoInViewport.
+  //
+  // *NOTE* The caller assumes that a call to this method will never
+  // result in search::CancelException even if the shutdown takes
+  // noticeable time.
+  void Finish(bool cancelled);
+
+  void CacheWorldLocalities();
   void ClearCaches();
 
 private:
-  enum RectId
+  enum class RectId
   {
-    RECT_ID_PIVOT,
-    RECT_ID_LOCALITY,
-    RECT_ID_COUNT
+    Pivot,
+    Locality,
+    Postcode,
+    Suburb,
+    Count
+  };
+
+  struct ExtendedMwmInfos
+  {
+    struct ExtendedMwmInfo
+    {
+      bool operator<(ExtendedMwmInfo const & rhs) const;
+
+      std::shared_ptr<MwmInfo> m_info;
+      MwmContext::MwmType m_type;
+      double m_similarity;
+      double m_distance;
+    };
+
+    std::vector<ExtendedMwmInfo> m_infos;
+    size_t m_firstBatchSize = 0;
   };
 
   struct Postcodes
   {
     void Clear()
     {
-      m_startToken = 0;
-      m_endToken = 0;
-      m_features.Reset();
+      m_tokenRange.Clear();
+      m_countryFeatures.Reset();
+      m_worldFeatures.Reset();
     }
 
-    size_t m_startToken = 0;
-    size_t m_endToken = 0;
-    CBV m_features;
+    bool Has(uint32_t id, bool searchWorld = false) const
+    {
+      if (searchWorld)
+        return m_worldFeatures.HasBit(id);
+      return m_countryFeatures.HasBit(id);
+    }
+
+    bool IsEmpty() const { return m_countryFeatures.IsEmpty() && m_worldFeatures.IsEmpty(); }
+
+    TokenRange m_tokenRange;
+    CBV m_countryFeatures;
+    CBV m_worldFeatures;
   };
 
-  void GoImpl(vector<shared_ptr<MwmInfo>> & infos, bool inViewport);
+  // Sets search query params for categorial search.
+  void SetParamsForCategorialSearch(Params const & params);
 
-  template <typename TLocality>
-  using TLocalitiesCache = map<pair<size_t, size_t>, vector<TLocality>>;
+  void GoImpl(std::vector<std::shared_ptr<MwmInfo>> const & infos, bool inViewport);
 
-  QueryParams::TSynonymsVector const & GetTokens(size_t i) const;
+  template <typename Locality>
+  using TokenToLocalities = std::map<TokenRange, std::vector<Locality>>;
 
-  // Fills |m_retrievalParams| with [curToken, endToken) subsequence
-  // of search query tokens.
-  void PrepareRetrievalParams(size_t curToken, size_t endToken);
+  QueryParams::Token const & GetTokens(size_t i) const;
 
   // Creates a cache of posting lists corresponding to features in m_context
   // for each token and saves it to m_addressFeatures.
   void InitBaseContext(BaseContext & ctx);
 
-  void InitLayer(SearchModel::SearchType type, size_t startToken, size_t endToken,
-                 FeaturesLayer & layer);
+  void InitLayer(Model::Type type, TokenRange const & tokenRange, FeaturesLayer & layer);
 
   void FillLocalityCandidates(BaseContext const & ctx, CBV const & filter,
-                              size_t const maxNumLocalities, vector<Locality> & preLocalities);
+                              size_t const maxNumLocalities, std::vector<Locality> & preLocalities);
 
   void FillLocalitiesTable(BaseContext const & ctx);
 
   void FillVillageLocalities(BaseContext const & ctx);
 
-  template <typename TFn>
-  void ForEachCountry(vector<shared_ptr<MwmInfo>> const & infos, TFn && fn);
+  bool CityHasPostcode(BaseContext const & ctx) const;
+
+  template <typename Fn>
+  void ForEachCountry(ExtendedMwmInfos const & infos, Fn && fn);
 
   // Throws CancelException if cancelled.
-  inline void BailIfCancelled() { ::search::BailIfCancelled(m_cancellable); }
+  void BailIfCancelled() { ::search::BailIfCancelled(m_cancellable); }
+
+  // A fast-path branch for categorial requests.
+  void MatchCategories(BaseContext & ctx, bool aroundPivot);
 
   // Tries to find all countries and states in a search query and then
   // performs matching of cities in found maps.
-  void MatchRegions(BaseContext & ctx, RegionType type);
+  void MatchRegions(BaseContext & ctx, Region::Type type);
 
   // Tries to find all cities in a search query and then performs
   // matching of streets in found cities.
@@ -224,38 +238,47 @@ private:
   // Tries to do geocoding in a limited scope, assuming that knowledge
   // about high-level features, like cities or countries, is
   // incorporated into |filter|.
-  void LimitedSearch(BaseContext & ctx, FeaturesFilter const & filter);
+  void LimitedSearch(BaseContext & ctx, FeaturesFilter const & filter,
+                     std::vector<m2::PointD> const & centers);
 
-  template <typename TFn>
-  void WithPostcodes(BaseContext & ctx, TFn && fn);
+  template <typename Fn>
+  void WithPostcodes(BaseContext & ctx, Fn && fn);
 
   // Tries to match some adjacent tokens in the query as streets and
   // then performs geocoding in street vicinities.
-  void GreedilyMatchStreets(BaseContext & ctx);
+  void GreedilyMatchStreets(BaseContext & ctx, std::vector<m2::PointD> const & centers);
+  // Matches suburbs and streets inside suburbs like |GreedilyMatchStreets|.
+  void GreedilyMatchStreetsWithSuburbs(BaseContext & ctx, std::vector<m2::PointD> const & centers);
 
   void CreateStreetsLayerAndMatchLowerLayers(BaseContext & ctx,
-                                             StreetsMatcher::Prediction const & prediction);
+                                             StreetsMatcher::Prediction const & prediction,
+                                             std::vector<m2::PointD> const & centers);
 
   // Tries to find all paths in a search tree, where each edge is
   // marked with some substring of the query tokens. These paths are
   // called "layer sequence" and current path is stored in |m_layers|.
-  void MatchPOIsAndBuildings(BaseContext & ctx, size_t curToken);
+  void MatchPOIsAndBuildings(BaseContext & ctx, size_t curToken, CBV const & filter);
 
   // Returns true if current path in the search tree (see comment for
   // MatchPOIsAndBuildings()) looks sane. This method is used as a fast
   // pre-check to cut off unnecessary work.
-  bool IsLayerSequenceSane() const;
+  bool IsLayerSequenceSane(std::vector<FeaturesLayer> const & layers) const;
 
   // Finds all paths through layers and emits reachable features from
   // the lowest layer.
-  void FindPaths(BaseContext const & ctx);
+  void FindPaths(BaseContext & ctx);
+
+  void TraceResult(Tracer & tracer, BaseContext const & ctx, MwmSet::MwmId const & mwmId,
+                   uint32_t ftId, Model::Type type, TokenRange const & tokenRange);
 
   // Forms result and feeds it to |m_preRanker|.
-  void EmitResult(BaseContext const & ctx, MwmSet::MwmId const & mwmId, uint32_t ftId,
-                  SearchModel::SearchType type, size_t startToken, size_t endToken);
-  void EmitResult(BaseContext const & ctx, Region const & region, size_t startToken,
-                  size_t endToken);
-  void EmitResult(BaseContext const & ctx, City const & city, size_t startToken, size_t endToken);
+  void EmitResult(BaseContext & ctx, MwmSet::MwmId const & mwmId, uint32_t ftId, Model::Type type,
+                  TokenRange const & tokenRange, IntersectionResult const * geoParts,
+                  bool allTokensUsed, bool exactMatch);
+  void EmitResult(BaseContext & ctx, Region const & region, TokenRange const & tokenRange,
+                  bool allTokensUsed, bool exactMatch);
+  void EmitResult(BaseContext & ctx, City const & city, TokenRange const & tokenRange,
+                  bool allTokensUsed);
 
   // Tries to match unclassified objects from lower layers, like
   // parks, forests, lakes, rivers, etc. This method finds all
@@ -270,26 +293,45 @@ private:
 
   // This is a faster wrapper around SearchModel::GetSearchType(), as
   // it uses pre-loaded lists of streets and villages.
-  WARN_UNUSED_RESULT bool GetSearchTypeInGeocoding(BaseContext const & ctx, uint32_t featureId,
-                                                   SearchModel::SearchType & searchType);
+  WARN_UNUSED_RESULT bool GetTypeInGeocoding(BaseContext const & ctx, uint32_t featureId,
+                                             Model::Type & type);
 
-  Index const & m_index;
+  ExtendedMwmInfos::ExtendedMwmInfo GetExtendedMwmInfo(
+      std::shared_ptr<MwmInfo> const & info, bool inViewport,
+      std::function<bool(std::shared_ptr<MwmInfo> const &)> const & isMwmWithMatchedCity,
+      std::function<bool(std::shared_ptr<MwmInfo> const &)> const & isMwmWithMatchedState) const;
 
+  // Reorders maps in a way that prefix consists of "best" maps to search and suffix consists of all
+  // other maps ordered by minimum distance from pivot. Returns ExtendedMwmInfos structure which
+  // consists of vector of mwms with MwmType information and number of "best" maps to search.
+  // For viewport mode prefix consists of maps intersecting with pivot ordered by distance from
+  // pivot center.
+  // For non-viewport search mode prefix consists of maps intersecting with pivot, map with user
+  // location and maps with cities matched to the query, sorting prefers mwms that contain the
+  // user's position.
+  ExtendedMwmInfos OrderCountries(bool inViewport,
+                                  std::vector<std::shared_ptr<MwmInfo>> const & infos);
+
+  DataSource const & m_dataSource;
   storage::CountryInfoGetter const & m_infoGetter;
+  CategoriesHolder const & m_categories;
 
   StreetsCache m_streetsCache;
-  VillagesCache & m_villagesCache;
+  SuburbsCache m_suburbsCache;
+  LocalitiesCaches & m_localitiesCaches;
   HotelsCache m_hotelsCache;
+  FoodCache m_foodCache;
   hotels_filter::HotelsFilter m_hotelsFilter;
+  cuisine_filter::CuisineFilter m_cuisineFilter;
 
-  my::Cancellable const & m_cancellable;
+  base::Cancellable const & m_cancellable;
 
   // Geocoder params.
   Params m_params;
 
   // This field is used to map features to a limited number of search
   // classes.
-  SearchModel const & m_model;
+  Model m_model;
 
   // Following fields are set up by Search() method and can be
   // modified and used only from Search() or its callees.
@@ -297,43 +339,43 @@ private:
   MwmSet::MwmId m_worldId;
 
   // Context of the currently processed mwm.
-  unique_ptr<MwmContext> m_context;
+  std::unique_ptr<MwmContext> m_context;
 
   // m_cities stores both big cities that are visible at World.mwm
   // and small villages and hamlets that are not.
-  TLocalitiesCache<City> m_cities;
-  TLocalitiesCache<Region> m_regions[REGION_TYPE_COUNT];
+  TokenToLocalities<City> m_cities;
+  TokenToLocalities<Region> m_regions[Region::TYPE_COUNT];
+  CitiesBoundariesTable const & m_citiesBoundaries;
 
   // Caches of features in rects. These caches are separated from
-  // TLocalitiesCache because the latter are quite lightweight and not
+  // TokenToLocalities because the latter are quite lightweight and not
   // all of them are needed.
   PivotRectsCache m_pivotRectsCache;
+  PivotRectsCache m_postcodesRectsCache;
+  PivotRectsCache m_suburbsRectsCache;
   LocalityRectsCache m_localityRectsCache;
 
-  // Postcodes features in the mwm that is currently being processed.
+  PostcodePointsCache m_postcodePointsCache;
+
+  // Postcodes features in the mwm that is currently being processed and World.mwm.
   Postcodes m_postcodes;
 
   // This filter is used to throw away excess features.
   FeaturesFilter const * m_filter;
 
   // Features matcher for layers intersection.
-  map<MwmSet::MwmId, unique_ptr<FeaturesLayerMatcher>> m_matchersCache;
+  std::map<MwmSet::MwmId, std::unique_ptr<FeaturesLayerMatcher>> m_matchersCache;
   FeaturesLayerMatcher * m_matcher;
 
   // Path finder for interpretations.
   FeaturesLayerPathFinder m_finder;
 
   // Search query params prepared for retrieval.
-  QueryParams m_retrievalParams;
+  std::vector<SearchTrieRequest<strings::LevenshteinDFA>> m_tokenRequests;
+  SearchTrieRequest<strings::PrefixDFAModifier<strings::LevenshteinDFA>> m_prefixTokenRequest;
 
-  // Pointer to the most nested region filled during geocoding.
-  Region const * m_lastMatchedRegion;
-
-  // Stack of layers filled during geocoding.
-  vector<FeaturesLayer> m_layers;
+  ResultTracer m_resultTracer;
 
   PreRanker & m_preRanker;
 };
-
-string DebugPrint(Geocoder::Locality const & locality);
 }  // namespace search

@@ -1,14 +1,16 @@
 package com.mapswithme.maps.editor.data;
 
+import android.content.Context;
 import android.content.res.Resources;
-import android.support.annotation.IntRange;
-import android.support.annotation.NonNull;
+import androidx.annotation.IntRange;
+import androidx.annotation.NonNull;
 
 import java.text.DateFormatSymbols;
 import java.util.Locale;
 
 import com.mapswithme.maps.MwmApplication;
 import com.mapswithme.maps.R;
+import com.mapswithme.util.Utils;
 
 public class TimeFormatUtils
 {
@@ -23,6 +25,10 @@ public class TimeFormatUtils
     {
       sCurrentLocale = Locale.getDefault();
       sShortWeekdays = DateFormatSymbols.getInstance().getShortWeekdays();
+      for (int i = 0; i < sShortWeekdays.length; i++)
+      {
+        sShortWeekdays[i] = Utils.capitalize(sShortWeekdays[i]);
+      }
     }
   }
 
@@ -61,11 +67,12 @@ public class TimeFormatUtils
     return builder.toString();
   }
 
-  public static String formatTimetables(@NonNull Timetable[] timetables)
+  public static String formatTimetables(@NonNull Context context,  @NonNull Timetable[] timetables)
   {
+    final Resources resources = MwmApplication.from(context).getResources();
+
     if (timetables[0].isFullWeek())
     {
-      final Resources resources = MwmApplication.get().getResources();
       return timetables[0].isFullday ? resources.getString(R.string.twentyfour_seven)
                                      : resources.getString(R.string.daily) + " " + timetables[0].workingTimespan;
     }
@@ -73,8 +80,11 @@ public class TimeFormatUtils
     final StringBuilder builder = new StringBuilder();
     for (Timetable tt : timetables)
     {
+      String workingTime = tt.isFullday ? resources.getString(R.string.editor_time_allday)
+                                        : tt.workingTimespan.toString();
+
       builder.append(String.format(Locale.getDefault(), "%-21s", formatWeekdays(tt))).append("   ")
-             .append(tt.workingTimespan)
+             .append(workingTime)
              .append("\n");
     }
 

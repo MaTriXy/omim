@@ -7,15 +7,20 @@
 
 #include "base/logging.hpp"
 
-#include "std/algorithm.hpp"
-#include "std/future.hpp"
-#include "std/regex.hpp"
 #include "std/target_os.hpp"
+
+#include <algorithm>
+#include <future>
+#include <memory>
+#include <regex>
+#include <string>
 
 #include <QtCore/QCoreApplication>
 #include <QtCore/QDir>
 #include <QtCore/QFileInfo>
 #include <QtCore/QLocale>
+
+using namespace std;
 
 unique_ptr<ModelReader> Platform::GetReader(string const & file, string const & searchScope) const
 {
@@ -60,7 +65,8 @@ int Platform::VideoMemoryLimit() const
   return 20 * 1024 * 1024;
 }
 
-Platform::EError Platform::MkDir(string const & dirName) const
+// static
+Platform::EError Platform::MkDir(string const & dirName)
 {
   if (QDir().exists(dirName.c_str()))
     return Platform::ERR_FILE_ALREADY_EXISTS;
@@ -81,34 +87,6 @@ void Platform::SetupMeasurementSystem() const
   units = isMetric ? measurement_utils::Units::Metric : measurement_utils::Units::Imperial;
   settings::Set(settings::kMeasurementUnits, units);
 }
-
-#if defined(OMIM_OS_LINUX)
-void Platform::RunOnGuiThread(TFunctor const & fn)
-{
-  // Following hack is used to post on main message loop |fn| when
-  // |source| is destroyed (at the exit of the code block).
-  QObject source;
-  QObject::connect(&source, &QObject::destroyed, QCoreApplication::instance(), fn);
-}
-
-void Platform::RunAsync(TFunctor const & fn, Priority p)
-{
-  async(fn);
-}
-
-void Platform::SendPushWooshTag(string const & tag)
-{
-}
-
-void Platform::SendPushWooshTag(string const & tag, string const & value)
-{
-}
-
-void Platform::SendPushWooshTag(string const & tag, vector<string> const & values)
-{
-}
-void Platform::SendMarketingEvent(string const & tag, map<string, string> const & params) {}
-#endif  // defined(OMIM_OS_LINUX)
 
 extern Platform & GetPlatform()
 {

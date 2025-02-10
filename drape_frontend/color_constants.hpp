@@ -2,30 +2,21 @@
 
 #include "drape/color.hpp"
 
-#include "indexer/map_style.hpp"
+#include <map>
+#include <string>
 
 namespace df
 {
+using ColorConstant = std::string;
 
-enum ColorConstant
-{
-  GuiText,
-  MyPositionAccuracy,
-  Selection,
-  Route,
-  RoutePedestrian,
-  RouteBicycle,
-  Arrow3D,
-  Arrow3DObsolete,
-  TrackHumanSpeed,
-  TrackCarSpeed,
-  TrackPlaneSpeed,
-  TrackUnknownDistance,
-  TrafficNormal,
-  TrafficSlow,
-  TrafficVerySlow
-};
+inline std::string const kTransitColorPrefix = "transit_";
+inline std::string const kTransitTextPrefix = "text_";
+inline std::string const kTransitLinePrefix = "line_";
 
-dp::Color GetColorConstant(MapStyle style, ColorConstant constant);
+dp::Color GetColorConstant(ColorConstant const & constant);
+std::map<std::string, dp::Color> const & GetTransitClearColors();
+void LoadTransitColors();
 
-} // namespace df
+ColorConstant GetTransitColorName(ColorConstant const & localName);
+ColorConstant GetTransitTextColorName(ColorConstant const & localName);
+} //  namespace df

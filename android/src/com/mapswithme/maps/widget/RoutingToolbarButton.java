@@ -2,9 +2,9 @@ package com.mapswithme.maps.widget;
 
 import android.content.Context;
 import android.os.Build;
-import android.support.annotation.ColorRes;
-import android.support.annotation.DrawableRes;
-import android.support.v7.widget.AppCompatRadioButton;
+import androidx.annotation.ColorRes;
+import androidx.annotation.DrawableRes;
+import androidx.appcompat.widget.AppCompatRadioButton;
 import android.util.AttributeSet;
 
 import com.mapswithme.maps.R;
@@ -36,10 +36,10 @@ public class RoutingToolbarButton extends AppCompatRadioButton
 
   private void initView()
   {
-    setBackgroundResource(ThemeUtils.isNightTheme() ? R.drawable.routing_toolbar_button_night
-                                                    : R.drawable.routing_toolbar_button);
-    setButtonTintList(ThemeUtils.isNightTheme() ? R.color.routing_toolbar_icon_tint_night
-                                                : R.color.routing_toolbar_icon_tint);
+    setBackgroundResource(ThemeUtils.isNightTheme(getContext()) ? R.drawable.routing_toolbar_button_night
+                                                                : R.drawable.routing_toolbar_button);
+    setButtonTintList(ThemeUtils.isNightTheme(getContext()) ? R.color.routing_toolbar_icon_tint_night
+                                                            : R.color.routing_toolbar_icon_tint);
   }
 
   public void progress()
@@ -57,7 +57,7 @@ public class RoutingToolbarButton extends AppCompatRadioButton
   {
     mInProgress = false;
     setSelected(false);
-    setButtonDrawable(R.drawable.ic_reload);
+    setButtonDrawable(R.drawable.ic_routing_error);
     setActivated(true);
   }
 

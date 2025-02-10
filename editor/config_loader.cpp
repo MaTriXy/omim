@@ -1,16 +1,19 @@
 #include "editor/config_loader.hpp"
 #include "editor/editor_config.hpp"
 
+#include "platform/http_client.hpp"
 #include "platform/platform.hpp"
 
 #include "coding/internal/file_data.hpp"
 #include "coding/reader.hpp"
 
-#include "std/fstream.hpp"
-#include "std/iterator.hpp"
+#include <exception>
+#include <fstream>
+#include <iterator>
 
-#include "platform/http_client.hpp"
 #include "3party/pugixml/src/pugixml.hpp"
+
+using namespace std;
 
 namespace
 {
@@ -19,7 +22,7 @@ using platform::HttpClient;
 auto const kConfigFileName = "editor.config";
 auto const kHashFileName = "editor.config.hash";
 
-auto const kSynchroTimeout = hours(4);
+auto const kSynchroTimeout = chrono::hours(4);
 auto const kRemoteHashUrl = "http://osmz.ru/mwm/editor.config.date";
 auto const kRemoteConfigUrl = "http://osmz.ru/mwm/editor.config";
 
@@ -60,7 +63,7 @@ void Waiter::Interrupt()
   m_event.notify_all();
 }
 
-ConfigLoader::ConfigLoader(EditorConfigWrapper & config) : m_config(config)
+ConfigLoader::ConfigLoader(base::AtomicSharedPtr<EditorConfig> & config) : m_config(config)
 {
   pugi::xml_document doc;
   LoadFromLocal(doc);
@@ -107,7 +110,7 @@ bool ConfigLoader::SaveAndReload(pugi::xml_document const & doc)
 
   auto const filePath = GetConfigFilePath();
   auto const result =
-    my::WriteToTempAndRenameToFile(filePath, [&doc](string const & fileName)
+    base::WriteToTempAndRenameToFile(filePath, [&doc](string const & fileName)
     {
       return doc.save_file(fileName.c_str(), "  ");
     });
@@ -173,7 +176,7 @@ void ConfigLoader::GetRemoteConfig(pugi::xml_document & doc)
 bool ConfigLoader::SaveHash(string const & hash, string const & filePath)
 {
   auto const result =
-    my::WriteToTempAndRenameToFile(filePath, [&hash](string const & fileName)
+    base::WriteToTempAndRenameToFile(filePath, [&hash](string const & fileName)
     {
       ofstream ofs(fileName, ofstream::out);
       if (!ofs.is_open())

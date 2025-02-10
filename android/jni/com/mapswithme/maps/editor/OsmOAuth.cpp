@@ -16,7 +16,7 @@ namespace
 using namespace osm;
 using namespace jni;
 
-jobjectArray ToStringArray(JNIEnv * env, TKeySecret const & secret)
+jobjectArray ToStringArray(JNIEnv * env, KeySecret const & secret)
 {
   jobjectArray resultArray = env->NewObjectArray(2, GetStringClass(env), nullptr);
   env->SetObjectArrayElement(resultArray, 0, ToJavaString(env, secret.first));
@@ -25,7 +25,7 @@ jobjectArray ToStringArray(JNIEnv * env, TKeySecret const & secret)
 }
 
 // @returns [url, key, secret]
-jobjectArray ToStringArray(JNIEnv * env, OsmOAuth::TUrlRequestToken const & uks)
+jobjectArray ToStringArray(JNIEnv * env, OsmOAuth::UrlRequestToken const & uks)
 {
   jobjectArray resultArray = env->NewObjectArray(3, GetStringClass(env), nullptr);
   env->SetObjectArrayElement(resultArray, 0, ToJavaString(env, uks.first));
@@ -49,7 +49,7 @@ Java_com_mapswithme_maps_editor_OsmOAuth_nativeAuthWithPassword(JNIEnv * env, jc
       return ToStringArray(env, auth.GetKeySecret());
     LOG(LWARNING, ("nativeAuthWithPassword: invalid login or password."));
   }
-  catch (exception const & ex)
+  catch (std::exception const & ex)
   {
     LOG(LWARNING, ("nativeAuthWithPassword error ", ex.what()));
   }
@@ -62,12 +62,12 @@ Java_com_mapswithme_maps_editor_OsmOAuth_nativeAuthWithWebviewToken(JNIEnv * env
 {
   try
   {
-    TRequestToken const rt = { ToNativeString(env, key), ToNativeString(env, secret) };
+    RequestToken const rt = { ToNativeString(env, key), ToNativeString(env, secret) };
     OsmOAuth auth = OsmOAuth::ServerAuth();
-    TKeySecret const ks = auth.FinishAuthorization(rt, ToNativeString(env, verifier));
+    KeySecret const ks = auth.FinishAuthorization(rt, ToNativeString(env, verifier));
     return ToStringArray(env, ks);
   }
-  catch (exception const & ex)
+  catch (std::exception const & ex)
   {
     LOG(LWARNING, ("nativeAuthWithWebviewToken error ", ex.what()));
     return nullptr;
@@ -79,10 +79,10 @@ Java_com_mapswithme_maps_editor_OsmOAuth_nativeGetFacebookAuthUrl(JNIEnv * env, 
 {
   try
   {
-    OsmOAuth::TUrlRequestToken const uks = OsmOAuth::ServerAuth().GetFacebookOAuthURL();
+    OsmOAuth::UrlRequestToken const uks = OsmOAuth::ServerAuth().GetFacebookOAuthURL();
     return ToStringArray(env, uks);
   }
-  catch (exception const & ex)
+  catch (std::exception const & ex)
   {
     LOG(LWARNING, ("nativeGetFacebookAuthUrl error ", ex.what()));
     return nullptr;
@@ -94,10 +94,10 @@ Java_com_mapswithme_maps_editor_OsmOAuth_nativeGetGoogleAuthUrl(JNIEnv * env, jc
 {
   try
   {
-    OsmOAuth::TUrlRequestToken const uks = OsmOAuth::ServerAuth().GetGoogleOAuthURL();
+    OsmOAuth::UrlRequestToken const uks = OsmOAuth::ServerAuth().GetGoogleOAuthURL();
     return ToStringArray(env, uks);
   }
-  catch (exception const & ex)
+  catch (std::exception const & ex)
   {
     LOG(LWARNING, ("nativeGetGoogleAuthUrl error ", ex.what()));
     return nullptr;
@@ -109,11 +109,11 @@ Java_com_mapswithme_maps_editor_OsmOAuth_nativeGetOsmUsername(JNIEnv * env, jcla
 {
   try
   {
-    TKeySecret keySecret(jni::ToNativeString(env, token), jni::ToNativeString(env, secret));
+    KeySecret keySecret(jni::ToNativeString(env, token), jni::ToNativeString(env, secret));
     ServerApi06 const api(OsmOAuth::ServerAuth(keySecret));
     return jni::ToJavaString(env, api.GetUserPreferences().m_displayName);
   }
-  catch (exception const & ex)
+  catch (std::exception const & ex)
   {
     LOG(LWARNING, ("Can't load user preferences from server: ", ex.what()));
     return nullptr;
@@ -129,7 +129,7 @@ Java_com_mapswithme_maps_editor_OsmOAuth_nativeUpdateOsmUserStats(JNIEnv * env, 
   // static void onUserStatsUpdated(UserStats stats)
   static jmethodID const listenerId = jni::GetStaticMethodID(env, osmAuthClazz, "onUserStatsUpdated", "(Lcom/mapswithme/maps/editor/data/UserStats;)V");
 
-  string const username = jni::ToNativeString(env, jUsername);
+  std::string const username = jni::ToNativeString(env, jUsername);
   auto const policy = forceUpdate ? editor::UserStatsLoader::UpdatePolicy::Force
                                   : editor::UserStatsLoader::UpdatePolicy::Lazy;
   g_framework->NativeFramework()->UpdateUserStats(username, policy, [username]()
@@ -138,14 +138,14 @@ Java_com_mapswithme_maps_editor_OsmOAuth_nativeUpdateOsmUserStats(JNIEnv * env, 
     if (!userStats.IsValid())
       return;
     int32_t count, rank;
-    string levelUp;
+    std::string levelUp;
     userStats.GetChangesCount(count);
     userStats.GetRank(rank);
     userStats.GetLevelUpRequiredFeat(levelUp);
     JNIEnv * env = jni::GetEnv();
     env->CallStaticVoidMethod(osmAuthClazz, listenerId,
                               env->NewObject(statsClazz, statsCtor, count, rank, jni::ToJavaString(env, levelUp),
-                                             my::TimeTToSecondsSinceEpoch(userStats.GetLastUpdate())));
+                                             base::TimeTToSecondsSinceEpoch(userStats.GetLastUpdate())));
   });
 }
 } // extern "C"

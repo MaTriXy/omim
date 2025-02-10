@@ -1,51 +1,53 @@
 #include "testing/testing.hpp"
 
+#include "routing/routing_integration_tests/routing_test_tools.hpp"
+
 #include "indexer/altitude_loader.hpp"
 #include "indexer/classificator.hpp"
 #include "indexer/classificator_loader.hpp"
+#include "indexer/data_source.hpp"
 #include "indexer/feature_altitude.hpp"
 #include "indexer/feature_data.hpp"
 #include "indexer/feature_processor.hpp"
-#include "indexer/index.hpp"
 
 #include "routing/routing_helpers.hpp"
 
 #include "geometry/mercator.hpp"
+#include "geometry/point_with_altitude.hpp"
 
 #include "platform/local_country_file.hpp"
 
 #include "base/math.hpp"
 
-#include "std/string.hpp"
-#include "std/unique_ptr.hpp"
-#include "std/utility.hpp"
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
 
 namespace
 {
 using namespace feature;
+using namespace platform;
+using namespace std;
 
-void TestAltitudeOfAllMwmFeatures(string const & countryId, TAltitude const altitudeLowerBoundMeters,
-                                  TAltitude const altitudeUpperBoundMeters)
+void TestAltitudeOfAllMwmFeatures(string const & countryId,
+                                  geometry::Altitude const altitudeLowerBoundMeters,
+                                  geometry::Altitude const altitudeUpperBoundMeters)
 {
-  Index index;
-  platform::LocalCountryFile const country = platform::LocalCountryFile::MakeForTesting(countryId);
-  pair<MwmSet::MwmId, MwmSet::RegResult> const regResult = index.RegisterMap(country);
+  FrozenDataSource dataSource;
 
+  LocalCountryFile const country = integration::GetLocalCountryFileByCountryId(CountryFile(countryId));
+  TEST_NOT_EQUAL(country, LocalCountryFile(), ());
+  TEST(country.HasFiles(), (country));
+
+  pair<MwmSet::MwmId, MwmSet::RegResult> const regResult = dataSource.RegisterMap(country);
   TEST_EQUAL(regResult.second, MwmSet::RegResult::Success, ());
   TEST(regResult.first.IsAlive(), ());
 
-  MwmSet::MwmHandle handle = index.GetMwmHandleById(regResult.first);
-  TEST(handle.IsAlive(), ());
+  unique_ptr<AltitudeLoader> altitudeLoader =
+      make_unique<AltitudeLoader>(dataSource, regResult.first /* mwmId */);
 
-  MwmValue * mwmValue = handle.GetValue<MwmValue>();
-  TEST(mwmValue != nullptr, ());
-  unique_ptr<AltitudeLoader> altitudeLoader = make_unique<AltitudeLoader>(*mwmValue);
-
-  classificator::Load();
-  classif().SortClassificator();
-
-  ForEachFromDat(country.GetPath(MapOptions::Map), [&](FeatureType const & f, uint32_t const & id)
-  {
+  ForEachFeature(country.GetPath(MapFileType::Map), [&](FeatureType & f, uint32_t const & id) {
     if (!routing::IsRoad(TypesHolder(f)))
       return;
 
@@ -54,13 +56,13 @@ void TestAltitudeOfAllMwmFeatures(string const & countryId, TAltitude const alti
     if (pointsCount == 0)
       return;
 
-    TAltitudes altitudes = altitudeLoader->GetAltitudes(id, pointsCount);
+    geometry::Altitudes altitudes = altitudeLoader->GetAltitudes(id, pointsCount);
     TEST(!altitudes.empty(),
          ("Empty altitude vector. MWM:", countryId, ", feature id:", id, ", altitudes:", altitudes));
 
     for (auto const altitude : altitudes)
     {
-      TEST_EQUAL(my::clamp(altitude, altitudeLowerBoundMeters, altitudeUpperBoundMeters), altitude,
+      TEST_EQUAL(base::Clamp(altitude, altitudeLowerBoundMeters, altitudeUpperBoundMeters), altitude,
                  ("Unexpected altitude. MWM:", countryId, ", feature id:", id, ", altitudes:", altitudes));
     }
   });
@@ -68,6 +70,8 @@ void TestAltitudeOfAllMwmFeatures(string const & countryId, TAltitude const alti
 
 UNIT_TEST(AllMwmFeaturesGetAltitudeTest)
 {
+  classificator::Load();
+
   TestAltitudeOfAllMwmFeatures("Russia_Moscow", 50 /* altitudeLowerBoundMeters */,
                                300 /* altitudeUpperBoundMeters */);
   TestAltitudeOfAllMwmFeatures("Nepal_Kathmandu", 250 /* altitudeLowerBoundMeters */,

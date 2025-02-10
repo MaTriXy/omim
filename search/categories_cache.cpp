@@ -4,94 +4,101 @@
 #include "search/query_params.hpp"
 #include "search/retrieval.hpp"
 
+#include "indexer/classificator.hpp"
 #include "indexer/ftypes_matcher.hpp"
+#include "indexer/search_string_utils.hpp"
 
 #include "base/assert.hpp"
+#include "base/levenshtein_dfa.hpp"
 
-#include "std/vector.hpp"
+using namespace std;
 
 namespace search
 {
-namespace
-{
-// Performs pairwise union of adjacent bit vectors
-// until at most one bit vector is left.
-void UniteCBVs(vector<CBV> & cbvs)
-{
-  while (cbvs.size() > 1)
-  {
-    size_t i = 0;
-    size_t j = 0;
-    for (; j + 1 < cbvs.size(); j += 2)
-      cbvs[i++] = cbvs[j].Union(cbvs[j + 1]);
-    for (; j < cbvs.size(); ++j)
-      cbvs[i++] = move(cbvs[j]);
-    cbvs.resize(i);
-  }
-}
-}  // namespace
-
 // CategoriesCache ---------------------------------------------------------------------------------
 CBV CategoriesCache::Get(MwmContext const & context)
 {
-  if (!context.m_handle.IsAlive() || !context.m_value.HasSearchIndex())
-    return CBV();
+  CHECK(context.m_handle.IsAlive(), ());
+  ASSERT(context.m_value.HasSearchIndex(), ());
 
-  auto id = context.m_handle.GetId();
+  auto const id = context.m_handle.GetId();
   auto const it = m_cache.find(id);
   if (it != m_cache.cend())
     return it->second;
 
-  auto cbv = Load(context);
+  auto const cbv = Load(context);
   m_cache[id] = cbv;
   return cbv;
 }
 
-CBV CategoriesCache::Load(MwmContext const & context)
+CBV CategoriesCache::Load(MwmContext const & context) const
 {
   ASSERT(context.m_handle.IsAlive(), ());
   ASSERT(context.m_value.HasSearchIndex(), ());
 
-  QueryParams params;
-  params.m_tokens.resize(1);
-  params.m_tokens[0].resize(1);
+  auto const & c = classif();
 
-  params.m_types.resize(1);
-  params.m_types[0].resize(1);
+  // Any DFA will do, since we only use requests's m_categories,
+  // but the interface of Retrieval forces us to make a choice.
+  SearchTrieRequest<strings::UniStringDFA> request;
 
-  vector<CBV> cbvs;
-
-  m_categories.ForEach([&](strings::UniString const & key, uint32_t const type) {
-    params.m_tokens[0][0] = key;
-    params.m_types[0][0] = type;
-
-    CBV cbv(RetrieveAddressFeatures(context, m_cancellable, params));
-    if (!cbv.IsEmpty())
-      cbvs.push_back(move(cbv));
+  // m_categories usually has truncated types; add them together with their subtrees.
+  m_categories.ForEach([&request, &c](uint32_t const type) {
+    c.ForEachInSubtree(
+        [&](uint32_t descendantType) {
+          request.m_categories.emplace_back(FeatureTypeToString(c.GetIndexForType(descendantType)));
+        },
+        type);
   });
 
-  UniteCBVs(cbvs);
-  if (cbvs.empty())
-    cbvs.emplace_back();
-
-  return cbvs[0];
+  Retrieval retrieval(context, m_cancellable);
+  return retrieval.RetrieveAddressFeatures(request).m_features;
 }
 
 // StreetsCache ------------------------------------------------------------------------------------
-StreetsCache::StreetsCache(my::Cancellable const & cancellable)
-  : CategoriesCache(ftypes::IsStreetChecker::Instance(), cancellable)
+StreetsCache::StreetsCache(base::Cancellable const & cancellable)
+  : CategoriesCache(ftypes::IsStreetOrSquareChecker::Instance(), cancellable)
 {
 }
 
+// SuburbsCache ------------------------------------------------------------------------------------
+SuburbsCache::SuburbsCache(base::Cancellable const & cancellable)
+  : CategoriesCache(ftypes::IsSuburbChecker::Instance(), cancellable)
+{
+}
 // VillagesCache -----------------------------------------------------------------------------------
-VillagesCache::VillagesCache(my::Cancellable const & cancellable)
+VillagesCache::VillagesCache(base::Cancellable const & cancellable)
   : CategoriesCache(ftypes::IsVillageChecker::Instance(), cancellable)
 {
 }
 
+// CountriesCache ----------------------------------------------------------------------------------
+CountriesCache::CountriesCache(base::Cancellable const & cancellable)
+  : CategoriesCache(ftypes::IsCountryChecker::Instance(), cancellable)
+{
+}
+
+// StatesCache -------------------------------------------------------------------------------------
+StatesCache::StatesCache(base::Cancellable const & cancellable)
+  : CategoriesCache(ftypes::IsStateChecker::Instance(), cancellable)
+{
+}
+
+// CitiesTownsOrVillagesCache ----------------------------------------------------------------------
+CitiesTownsOrVillagesCache::CitiesTownsOrVillagesCache(base::Cancellable const & cancellable)
+  : CategoriesCache(ftypes::IsCityTownOrVillageChecker::Instance(), cancellable)
+{
+}
+
 // HotelsCache -------------------------------------------------------------------------------------
-HotelsCache::HotelsCache(my::Cancellable const & cancellable)
+HotelsCache::HotelsCache(base::Cancellable const & cancellable)
   : CategoriesCache(ftypes::IsHotelChecker::Instance(), cancellable)
+{
+}
+
+// FoodCache ---------------------------------------------------------------------------------------
+FoodCache::FoodCache(base::Cancellable const & cancellable)
+  : CategoriesCache(ftypes::IsEatChecker::Instance(), cancellable)
 {
 }
 }  // namespace search

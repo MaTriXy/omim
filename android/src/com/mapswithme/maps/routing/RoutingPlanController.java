@@ -1,71 +1,64 @@
 package com.mapswithme.maps.routing;
 
-import android.animation.ValueAnimator;
 import android.app.Activity;
-import android.graphics.Bitmap;
 import android.os.Bundle;
-import android.support.annotation.DrawableRes;
-import android.support.annotation.IdRes;
-import android.support.annotation.NonNull;
-import android.support.annotation.Nullable;
-import android.support.annotation.StringRes;
-import android.support.v4.view.PagerAdapter;
-import android.support.v4.view.ViewPager;
+import androidx.annotation.DrawableRes;
+import androidx.annotation.IdRes;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import androidx.annotation.StringRes;
 import android.view.View;
-import android.view.ViewGroup;
-import android.widget.Button;
 import android.widget.CompoundButton;
-import android.widget.ImageView;
 import android.widget.RadioButton;
 import android.widget.RadioGroup;
 import android.widget.TextView;
 
 import com.mapswithme.maps.Framework;
-import com.mapswithme.maps.MwmActivity;
 import com.mapswithme.maps.MwmApplication;
 import com.mapswithme.maps.R;
-import com.mapswithme.maps.uber.Uber;
-import com.mapswithme.maps.uber.UberAdapter;
-import com.mapswithme.maps.uber.UberInfo;
-import com.mapswithme.maps.uber.UberLinks;
-import com.mapswithme.maps.widget.DotPager;
-import com.mapswithme.maps.widget.RotateDrawable;
+import com.mapswithme.maps.settings.DrivingOptionsActivity;
+import com.mapswithme.maps.taxi.TaxiInfo;
+import com.mapswithme.maps.taxi.TaxiManager;
 import com.mapswithme.maps.widget.RoutingToolbarButton;
 import com.mapswithme.maps.widget.ToolbarController;
 import com.mapswithme.maps.widget.WheelProgressView;
 import com.mapswithme.util.UiUtils;
-import com.mapswithme.util.Utils;
 import com.mapswithme.util.statistics.AlohaHelper;
 import com.mapswithme.util.statistics.Statistics;
 
 public class RoutingPlanController extends ToolbarController
 {
-  static final int ANIM_TOGGLE = MwmApplication.get().getResources().getInteger(R.integer.anim_slots_toggle);
-  private static final String STATE_ALTITUDE_CHART_SHOWN = "altitude_chart_shown";
-  private static final String STATE_TAXI_INFO = "taxi_info";
+  private static final String BUNDLE_HAS_DRIVING_OPTIONS_VIEW = "has_driving_options_view";
 
-
-  protected final View mFrame;
-  private final ImageView mToggle;
-  private final SlotFrame mSlotFrame;
+  private final View mFrame;
+  @NonNull
+  private final RoutingPlanInplaceController.RoutingPlanListener mRoutingPlanListener;
   private final RadioGroup mRouterTypes;
+  @NonNull
   private final WheelProgressView mProgressVehicle;
+  @NonNull
   private final WheelProgressView mProgressPedestrian;
+  @NonNull
+  private final WheelProgressView mProgressTransit;
+  @NonNull
   private final WheelProgressView mProgressBicycle;
+  @NonNull
   private final WheelProgressView mProgressTaxi;
 
-  private final View mAltitudeChartFrame;
-  private final View mUberFrame;
+  @NonNull
+  private final RoutingBottomMenuController mRoutingBottomMenuController;
 
-  private final RotateDrawable mToggleImage = new RotateDrawable(R.drawable.ic_down);
-  private int mFrameHeight;
-  private int mToolbarHeight;
-  private boolean mOpen;
-  @Nullable
-  private UberInfo mUberInfo;
+  int mFrameHeight;
+  final int mAnimToggle;
 
-  @Nullable
-  private UberInfo.Product mUberProduct;
+  @NonNull
+  private final View mDrivingOptionsBtnContainer;
+
+  @NonNull
+  private final View.OnLayoutChangeListener mDriverOptionsLayoutListener;
+
+  @NonNull
+  private final View mDrivingOptionsImage;
 
   private RadioButton setupRouterButton(@IdRes int buttonId, final @DrawableRes int iconRes, View.OnClickListener clickListener)
   {
@@ -90,80 +83,91 @@ public class RoutingPlanController extends ToolbarController
     return rb;
   }
 
-  RoutingPlanController(View root, Activity activity)
+  RoutingPlanController(View root, Activity activity,
+                        @NonNull RoutingPlanInplaceController.RoutingPlanListener routingPlanListener,
+                        @Nullable RoutingBottomMenuListener listener)
   {
     super(root, activity);
     mFrame = root;
+    mRoutingPlanListener = routingPlanListener;
 
-    mToggle = (ImageView) mToolbar.findViewById(R.id.toggle);
-    mSlotFrame = (SlotFrame) root.findViewById(R.id.slots);
-    mRouterTypes = (RadioGroup) mToolbar.findViewById(R.id.route_type);
+    mRouterTypes = (RadioGroup) getToolbar().findViewById(R.id.route_type);
 
-    setupRouterButton(R.id.vehicle, R.drawable.ic_car, new View.OnClickListener()
-    {
-      @Override
-      public void onClick(View v)
-      {
-        AlohaHelper.logClick(AlohaHelper.ROUTING_VEHICLE_SET);
-        Statistics.INSTANCE.trackEvent(Statistics.EventName.ROUTING_VEHICLE_SET);
-        RoutingController.get().setRouterType(Framework.ROUTER_TYPE_VEHICLE);
-      }
-    });
+    setupRouterButtons();
 
-    setupRouterButton(R.id.pedestrian, R.drawable.ic_pedestrian, new View.OnClickListener()
-    {
-      @Override
-      public void onClick(View v)
-      {
-        AlohaHelper.logClick(AlohaHelper.ROUTING_PEDESTRIAN_SET);
-        Statistics.INSTANCE.trackEvent(Statistics.EventName.ROUTING_PEDESTRIAN_SET);
-        RoutingController.get().setRouterType(Framework.ROUTER_TYPE_PEDESTRIAN);
-      }
-    });
-
-    setupRouterButton(R.id.bicycle, R.drawable.ic_bike, new View.OnClickListener()
-    {
-      @Override
-      public void onClick(View v)
-      {
-        AlohaHelper.logClick(AlohaHelper.ROUTING_BICYCLE_SET);
-        Statistics.INSTANCE.trackEvent(Statistics.EventName.ROUTING_BICYCLE_SET);
-        RoutingController.get().setRouterType(Framework.ROUTER_TYPE_BICYCLE);
-      }
-    });
-
-    setupRouterButton(R.id.taxi, R.drawable.ic_taxi, new View.OnClickListener()
-    {
-      @Override
-      public void onClick(View v)
-      {
-        AlohaHelper.logClick(AlohaHelper.ROUTING_TAXI_SET);
-        Statistics.INSTANCE.trackEvent(Statistics.EventName.ROUTING_TAXI_SET);
-        RoutingController.get().setRouterType(Framework.ROUTER_TYPE_TAXI);
-      }
-    });
-
-    View progressFrame = mToolbar.findViewById(R.id.progress_frame);
+    View progressFrame = getToolbar().findViewById(R.id.progress_frame);
     mProgressVehicle = (WheelProgressView) progressFrame.findViewById(R.id.progress_vehicle);
     mProgressPedestrian = (WheelProgressView) progressFrame.findViewById(R.id.progress_pedestrian);
+    mProgressTransit = (WheelProgressView) progressFrame.findViewById(R.id.progress_transit);
     mProgressBicycle = (WheelProgressView) progressFrame.findViewById(R.id.progress_bicycle);
     mProgressTaxi = (WheelProgressView) progressFrame.findViewById(R.id.progress_taxi);
 
-    mAltitudeChartFrame = getViewById(R.id.altitude_chart_panel);
-    UiUtils.hide(mAltitudeChartFrame);
+    mRoutingBottomMenuController = RoutingBottomMenuController.newInstance(requireActivity(), mFrame, listener);
 
-    mUberFrame = getViewById(R.id.uber_panel);
-    UiUtils.hide(mUberFrame);
+    mDrivingOptionsBtnContainer = mFrame.findViewById(R.id.driving_options_btn_container);
+    View btn = mDrivingOptionsBtnContainer.findViewById(R.id.driving_options_btn);
+    mDrivingOptionsImage = mFrame.findViewById(R.id.driving_options_btn_img);
 
-    mToggle.setImageDrawable(mToggleImage);
-    mToggle.setOnClickListener(new View.OnClickListener()
-    {
-      @Override
-      public void onClick(View v)
-      {
-        toggleSlots();
-      }
-    });
+    btn.setOnClickListener(v -> DrivingOptionsActivity.start(requireActivity()));
+    mDriverOptionsLayoutListener = new SelfTerminatedDrivingOptionsLayoutListener();
+    mAnimToggle = MwmApplication.from(activity.getApplicationContext())
+                                .getResources().getInteger(R.integer.anim_default);
+  }
+
+  @NonNull
+  protected View getFrame()
+  {
+    return mFrame;
+  }
+
+  @NonNull
+  private View getDrivingOptionsBtnContainer()
+  {
+    return mDrivingOptionsBtnContainer;
+  }
+
+  private void setupRouterButtons()
+  {
+    setupRouterButton(R.id.vehicle, R.drawable.ic_car, this::onVehicleModeSelected);
+    setupRouterButton(R.id.pedestrian, R.drawable.ic_pedestrian, this::onPedestrianModeSelected);
+    setupRouterButton(R.id.bicycle, R.drawable.ic_bike, this::onBicycleModeSelected);
+    setupRouterButton(R.id.taxi, R.drawable.ic_taxi, this::onTaxiModeSelected);
+    setupRouterButton(R.id.transit, R.drawable.ic_transit, v -> onTransitModeSelected());
+  }
+
+  private void onTransitModeSelected()
+  {
+    AlohaHelper.logClick(AlohaHelper.ROUTING_TRANSIT_SET);
+    Statistics.INSTANCE.trackEvent(Statistics.EventName.ROUTING_TRANSIT_SET);
+    RoutingController.get().setRouterType(Framework.ROUTER_TYPE_TRANSIT);
+  }
+
+  private void onTaxiModeSelected(@NonNull View v)
+  {
+    AlohaHelper.logClick(AlohaHelper.ROUTING_TAXI_SET);
+    Statistics.INSTANCE.trackEvent(Statistics.EventName.ROUTING_TAXI_SET);
+    RoutingController.get().setRouterType(Framework.ROUTER_TYPE_TAXI);
+  }
+
+  private void onBicycleModeSelected(@NonNull View v)
+  {
+    AlohaHelper.logClick(AlohaHelper.ROUTING_BICYCLE_SET);
+    Statistics.INSTANCE.trackEvent(Statistics.EventName.ROUTING_BICYCLE_SET);
+    RoutingController.get().setRouterType(Framework.ROUTER_TYPE_BICYCLE);
+  }
+
+  private void onPedestrianModeSelected(@NonNull View v)
+  {
+    AlohaHelper.logClick(AlohaHelper.ROUTING_PEDESTRIAN_SET);
+    Statistics.INSTANCE.trackEvent(Statistics.EventName.ROUTING_PEDESTRIAN_SET);
+    RoutingController.get().setRouterType(Framework.ROUTER_TYPE_PEDESTRIAN);
+  }
+
+  private void onVehicleModeSelected(@NonNull View v)
+  {
+    AlohaHelper.logClick(AlohaHelper.ROUTING_VEHICLE_SET);
+    Statistics.INSTANCE.trackEvent(Statistics.EventName.ROUTING_VEHICLE_SET);
+    RoutingController.get().setRouterType(Framework.ROUTER_TYPE_VEHICLE);
   }
 
   @Override
@@ -171,29 +175,16 @@ public class RoutingPlanController extends ToolbarController
   {
     AlohaHelper.logClick(AlohaHelper.ROUTING_CANCEL);
     Statistics.INSTANCE.trackEvent(Statistics.EventName.ROUTING_CANCEL);
-    RoutingController.get().cancelPlanning();
+    RoutingController.get().cancel();
   }
 
-  private boolean checkFrameHeight()
+  boolean checkFrameHeight()
   {
     if (mFrameHeight > 0)
       return true;
 
-    mFrameHeight = mSlotFrame.getHeight();
-    mToolbarHeight = mToolbar.getHeight();
+    mFrameHeight = mFrame.getHeight();
     return (mFrameHeight > 0);
-  }
-
-  private void animateSlotFrame(int offset)
-  {
-    ViewGroup.MarginLayoutParams lp = (ViewGroup.MarginLayoutParams) mSlotFrame.getLayoutParams();
-    lp.topMargin = (mToolbarHeight - offset);
-    mSlotFrame.setLayoutParams(lp);
-  }
-
-  public void updatePoints()
-  {
-    mSlotFrame.update();
   }
 
   private void updateProgressLabels()
@@ -204,63 +195,29 @@ public class RoutingPlanController extends ToolbarController
 
     if (!ready) 
     {
-      hideAltitudeChartAndRoutingDetails();
+      mRoutingBottomMenuController.hideAltitudeChartAndRoutingDetails();
       return;
     }
 
-    if (!isTaxiRouteChecked())
-      setStartButton();
-    showAltitudeChartAndRoutingDetails();
-  }
-
-  private void showAltitudeChartAndRoutingDetails()
-  {
-    if (isTaxiRouteChecked())
-      return;
-
-    UiUtils.hide(getViewById(R.id.error));
-    UiUtils.hide(mUberFrame);
-
-    showRouteAltitudeChart();
-    showRoutingDetails();
-    UiUtils.show(mAltitudeChartFrame);
-  }
-
-  private void showRoutingDetails()
-  {
-    final View numbersFrame = mAltitudeChartFrame.findViewById(R.id.numbers);
-    final RoutingInfo rinfo = RoutingController.get().getCachedRoutingInfo();
-    if (rinfo == null)
+    if (isTransitType())
     {
-      UiUtils.hide(numbersFrame);
+      TransitRouteInfo info = RoutingController.get().getCachedTransitInfo();
+      if (info != null)
+        mRoutingBottomMenuController.showTransitInfo(info);
       return;
     }
 
-    TextView numbersTime = (TextView) numbersFrame.findViewById(R.id.time);
-    TextView numbersDistance = (TextView) numbersFrame.findViewById(R.id.distance);
-    TextView numbersArrival = (TextView) numbersFrame.findViewById(R.id.arrival);
-    numbersTime.setText(RoutingController.formatRoutingTime(mFrame.getContext(), rinfo.totalTimeInSeconds,
-                                                            R.dimen.text_size_routing_number));
-    numbersDistance.setText(rinfo.distToTarget + " " + rinfo.targetUnits);
-
-    if (numbersArrival != null)
+    if (!isTaxiRouterType())
     {
-      String arrivalTime = RoutingController.formatArrivalTime(rinfo.totalTimeInSeconds);
-      numbersArrival.setText(arrivalTime);
+      mRoutingBottomMenuController.setStartButton();
+      mRoutingBottomMenuController.showAltitudeChartAndRoutingDetails();
     }
-  }
-
-  private void hideAltitudeChartAndRoutingDetails()
-  {
-    if (UiUtils.isHidden(mAltitudeChartFrame))
-      return;
-
-    UiUtils.hide(mAltitudeChartFrame);
   }
 
   public void updateBuildProgress(int progress, @Framework.RouterType int router)
   {
-    UiUtils.invisible(mProgressVehicle, mProgressPedestrian, mProgressBicycle, mProgressTaxi);
+    UiUtils.invisible(mProgressVehicle, mProgressPedestrian, mProgressTransit,
+                      mProgressBicycle, mProgressTaxi);
     WheelProgressView progressView;
     if (router == Framework.ROUTER_TYPE_VEHICLE)
     {
@@ -277,6 +234,11 @@ public class RoutingPlanController extends ToolbarController
       mRouterTypes.check(R.id.taxi);
       progressView = mProgressTaxi;
     }
+    else if (router == Framework.ROUTER_TYPE_TRANSIT)
+    {
+      mRouterTypes.check(R.id.transit);
+      progressView = mProgressTransit;
+    }
     else
     {
       mRouterTypes.check(R.id.bicycle);
@@ -289,7 +251,7 @@ public class RoutingPlanController extends ToolbarController
 
     updateProgressLabels();
 
-    if (RoutingController.get().isUberRequestHandled())
+    if (RoutingController.get().isTaxiRequestHandled())
     {
       if (!RoutingController.get().isInternetConnected())
       {
@@ -300,7 +262,7 @@ public class RoutingPlanController extends ToolbarController
       return;
     }
 
-    if (!RoutingController.get().isBuilding() && !RoutingController.get().isUberPlanning())
+    if (!RoutingController.get().isBuilding() && !RoutingController.get().isTaxiPlanning())
     {
       button.complete();
       return;
@@ -312,126 +274,22 @@ public class RoutingPlanController extends ToolbarController
       progressView.setProgress(progress);
   }
 
-  private void toggleSlots()
+  private boolean isTaxiRouterType()
   {
-    AlohaHelper.logClick(AlohaHelper.ROUTING_TOGGLE);
-    Statistics.INSTANCE.trackEvent(Statistics.EventName.ROUTING_TOGGLE);
-    showSlots(!mOpen, true);
+    return RoutingController.get().isTaxiRouterType();
   }
 
-  void showSlots(final boolean show, final boolean animate)
+  private boolean isTransitType()
   {
-    if (!checkFrameHeight())
-    {
-      mFrame.post(new Runnable()
-      {
-        @Override
-        public void run()
-        {
-          showSlots(show, animate);
-        }
-      });
-      return;
-    }
-
-    mOpen = show;
-
-    if (animate)
-    {
-      ValueAnimator animator = ValueAnimator.ofFloat(mOpen ? 1.0f : 0, mOpen ? 0 : 1.0f);
-      animator.addUpdateListener(new ValueAnimator.AnimatorUpdateListener()
-      {
-        @Override
-        public void onAnimationUpdate(ValueAnimator animation)
-        {
-          float fraction = (float)animation.getAnimatedValue();
-          animateSlotFrame((int)(fraction * mFrameHeight));
-          mToggleImage.setAngle((1.0f - fraction) * 180.0f);
-        }
-      });
-
-      animator.setDuration(ANIM_TOGGLE);
-      animator.start();
-      mSlotFrame.fadeSlots(!mOpen);
-    }
-    else
-    {
-      animateSlotFrame(mOpen ? 0 : mFrameHeight);
-      mToggleImage.setAngle(mOpen ? 180.0f : 0.0f);
-      mSlotFrame.unfadeSlots();
-    }
+    return RoutingController.get().isTransitType();
   }
 
-  private boolean isVehicleRouteChecked()
+  public void showTaxiInfo(@NonNull TaxiInfo info)
   {
-    return mRouterTypes.getCheckedRadioButtonId() == R.id.vehicle;
+    mRoutingBottomMenuController.showTaxiInfo(info);
   }
 
-  private boolean isTaxiRouteChecked()
-  {
-    return mRouterTypes.getCheckedRadioButtonId() == R.id.taxi;
-  }
-
-  void disableToggle()
-  {
-    UiUtils.hide(mToggle);
-    showSlots(true, false);
-  }
-
-  public boolean isOpen()
-  {
-    return mOpen;
-  }
-
-  public void showRouteAltitudeChart()
-  {
-    ImageView altitudeChart = (ImageView) mFrame.findViewById(R.id.altitude_chart);
-    showRouteAltitudeChartInternal(altitudeChart);
-  }
-
-  void showRouteAltitudeChartInternal(@NonNull ImageView altitudeChart)
-  {
-    if (isVehicleRouteChecked())
-    {
-      UiUtils.hide(altitudeChart);
-      return;
-    }
-
-    int chartWidth = UiUtils.dimen(mActivity, R.dimen.altitude_chart_image_width);
-    int chartHeight = UiUtils.dimen(mActivity, R.dimen.altitude_chart_image_height);
-    Bitmap bm = Framework.GenerateRouteAltitudeChart(chartWidth, chartHeight);
-    if (bm != null)
-    {
-      altitudeChart.setImageBitmap(bm);
-      UiUtils.show(altitudeChart);
-    }
-  }
-
-  public void showUberInfo(@NonNull UberInfo info)
-  {
-    UiUtils.hide(getViewById(R.id.error), mAltitudeChartFrame);
-
-    final UberInfo.Product[] products = info.getProducts();
-    mUberInfo = info;
-    mUberProduct = products[0];
-    final PagerAdapter adapter = new UberAdapter(mActivity, products);
-    DotPager pager = new DotPager.Builder(mActivity, (ViewPager) mUberFrame.findViewById(R.id.pager), adapter)
-        .setIndicatorContainer((ViewGroup) mUberFrame.findViewById(R.id.indicator))
-        .setPageChangedListener(new DotPager.OnPageChangedListener()
-        {
-          @Override
-          public void onPageChanged(int position)
-          {
-            mUberProduct = products[position];
-          }
-        }).build();
-    pager.show();
-
-    setStartButton();
-    UiUtils.show(mUberFrame);
-  }
-
-  public void showUberError(@NonNull Uber.ErrorCode code)
+  public void showTaxiError(@NonNull TaxiManager.ErrorCode code)
   {
     switch (code)
     {
@@ -439,7 +297,10 @@ public class RoutingPlanController extends ToolbarController
         showError(R.string.taxi_not_found);
         break;
       case RemoteError:
-        showError(R.string.uber_remote_error);
+        showError(R.string.dialog_taxi_error);
+        break;
+      case NoProviders:
+        showError(R.string.taxi_no_providers);
         break;
       default:
         throw new AssertionError("Unsupported uber error: " + code);
@@ -452,84 +313,87 @@ public class RoutingPlanController extends ToolbarController
     int checkedId = mRouterTypes.getCheckedRadioButtonId();
     RoutingToolbarButton rb = (RoutingToolbarButton) mRouterTypes.findViewById(checkedId);
     rb.error();
-    showError(R.string.uber_no_internet);
+    showError(R.string.dialog_taxi_offline);
   }
 
   private void showError(@StringRes int message)
   {
-    UiUtils.hide(mUberFrame, mAltitudeChartFrame);
-    TextView error = (TextView) getViewById(R.id.error);
-    error.setText(message);
-    error.setVisibility(View.VISIBLE);
-    getViewById(R.id.start).setVisibility(View.GONE);
+    mRoutingBottomMenuController.showError(message);
   }
 
-  @NonNull
-  private View getViewById(@IdRes int resourceId)
+  void showStartButton(boolean show)
   {
-    View view = mFrame.findViewById(resourceId);
-    if (view == null)
-      view = mActivity.findViewById(resourceId);
-    return view;
+    mRoutingBottomMenuController.showStartButton(show);
   }
 
   void saveRoutingPanelState(@NonNull Bundle outState)
   {
-    outState.putBoolean(STATE_ALTITUDE_CHART_SHOWN, UiUtils.isVisible(mAltitudeChartFrame));
-    outState.putParcelable(STATE_TAXI_INFO, mUberInfo);
+    mRoutingBottomMenuController.saveRoutingPanelState(outState);
+    outState.putBoolean(BUNDLE_HAS_DRIVING_OPTIONS_VIEW, UiUtils.isVisible(mDrivingOptionsBtnContainer));
   }
 
   void restoreRoutingPanelState(@NonNull Bundle state)
   {
-    if (state.getBoolean(STATE_ALTITUDE_CHART_SHOWN))
-      showRouteAltitudeChart();
-
-    UberInfo info = state.getParcelable(STATE_TAXI_INFO);
-    if (info != null)
-      showUberInfo(info);
+    mRoutingBottomMenuController.restoreRoutingPanelState(state);
+    boolean hasView = state.getBoolean(BUNDLE_HAS_DRIVING_OPTIONS_VIEW);
+    if (hasView)
+      showDrivingOptionView();
   }
 
-  private void setStartButton()
+  public void showAddStartFrame()
   {
-    Button start = (Button) getViewById(R.id.start);
-
-    if (isTaxiRouteChecked())
-    {
-      start.setText(Utils.isUberInstalled(mActivity) ? R.string.taxi_order : R.string.install_app);
-      start.setOnClickListener(new View.OnClickListener()
-      {
-        @Override
-        public void onClick(View v)
-        {
-          if (mUberProduct != null)
-          {
-            UberLinks links = RoutingController.get().getUberLink(mUberProduct.getProductId());
-            Utils.launchUber(mActivity, links);
-          }
-        }
-      });
-    } else
-    {
-      start.setText(mActivity.getText(R.string.p2p_start));
-      start.setOnClickListener(new View.OnClickListener()
-      {
-        @Override
-        public void onClick(View v)
-        {
-          ((MwmActivity)mActivity).closeMenu(Statistics.EventName.ROUTING_START, AlohaHelper.ROUTING_START, new Runnable()
-          {
-            @Override
-            public void run()
-            {
-              RoutingController.get().start();
-            }
-          });
-        }
-      });
-    }
-
-    UiUtils.updateAccentButton(start);
-    UiUtils.show(start);
+    mRoutingBottomMenuController.showAddStartFrame();
   }
 
+  public void showAddFinishFrame()
+  {
+    mRoutingBottomMenuController.showAddFinishFrame();
+  }
+
+  public void hideActionFrame()
+  {
+    mRoutingBottomMenuController.hideActionFrame();
+  }
+
+  public void showDrivingOptionView()
+  {
+    mDrivingOptionsBtnContainer.addOnLayoutChangeListener(mDriverOptionsLayoutListener);
+    UiUtils.show(mDrivingOptionsBtnContainer);
+    boolean hasAnyOptions = RoutingOptions.hasAnyOptions();
+    UiUtils.showIf(hasAnyOptions, mDrivingOptionsImage);
+    TextView title = mDrivingOptionsBtnContainer.findViewById(R.id.driving_options_btn_title);
+    title.setText(hasAnyOptions ? R.string.change_driving_options_btn
+                                : R.string.define_to_avoid_btn);
+  }
+
+  public void hideDrivingOptionsView()
+  {
+    UiUtils.hide(mDrivingOptionsBtnContainer);
+    mRoutingPlanListener.onRoutingPlanStartAnimate(UiUtils.isVisible(getFrame()));
+  }
+
+  public int calcHeight()
+  {
+    int frameHeight = getFrame().getHeight();
+    if (frameHeight == 0)
+      return 0;
+
+    View driverOptionsView = getDrivingOptionsBtnContainer();
+    int extraOppositeOffset = UiUtils.isVisible(driverOptionsView)
+                              ? 0
+                              : driverOptionsView.getHeight();
+
+    return frameHeight - extraOppositeOffset;
+  }
+
+  private class SelfTerminatedDrivingOptionsLayoutListener implements View.OnLayoutChangeListener
+  {
+    @Override
+    public void onLayoutChange(View v, int left, int top, int right, int bottom, int oldLeft,
+                               int oldTop, int oldRight, int oldBottom)
+    {
+      mRoutingPlanListener.onRoutingPlanStartAnimate(UiUtils.isVisible(getFrame()));
+      mDrivingOptionsBtnContainer.removeOnLayoutChangeListener(this);
+    }
+  }
 }

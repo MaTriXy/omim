@@ -1,165 +1,56 @@
 package com.mapswithme.util.statistics;
 
-import android.content.Context;
-import android.os.AsyncTask;
-import android.os.Handler;
-import android.os.Looper;
-import android.util.Log;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
 
-import com.mapswithme.maps.Framework;
-import com.pushwoosh.PushManager;
-import com.pushwoosh.SendPushTagsCallBack;
+import com.mapswithme.util.log.Logger;
+import com.mapswithme.util.log.LoggerFactory;
+import com.pushwoosh.Pushwoosh;
+import com.pushwoosh.exception.PushwooshException;
+import com.pushwoosh.function.Result;
+import com.pushwoosh.tags.TagsBundle;
 
-import java.lang.ref.WeakReference;
-import java.util.HashMap;
-import java.util.LinkedList;
-import java.util.List;
-import java.util.Map;
+import java.util.Arrays;
 
-public final class PushwooshHelper implements SendPushTagsCallBack
+public final class PushwooshHelper
 {
-  public final static String ADD_MAP_OBJECT = "editor_add_discovered";
-  public final static String EDIT_MAP_OBJECT = "editor_edit_discovered";
+  private static final Logger LOGGER = LoggerFactory.INSTANCE.getLogger(LoggerFactory.Type.MISC);
 
-  private static final PushwooshHelper sInstance = new PushwooshHelper();
-
-  private WeakReference<Context> mContext;
-
-  private final Object mSyncObject = new Object();
-  private AsyncTask<Void, Void, Void> mTask;
-  private List<Map<String, Object>> mTagsQueue = new LinkedList<>();
-
-  private PushwooshHelper() {}
-
-  public static PushwooshHelper get() { return sInstance; }
-
-  public void setContext(Context context)
+  public void sendTags(@NonNull String tag, @Nullable String[] params)
   {
-    synchronized (mSyncObject)
-    {
-      mContext = new WeakReference<>(context);
-    }
+    //TODO: move notifylib code to another place when Pushwoosh is deleted.
+    if (params == null)
+      return;
+
+    TagsBundle.Builder builder = new TagsBundle.Builder();
+    boolean isSingleParam = params.length == 1;
+    TagsBundle tagsBundle = isSingleParam ? builder.putString(tag, params[0]).build()
+                                          : builder.putList(tag, Arrays.asList(params)).build();
+    Pushwoosh.getInstance().sendTags(tagsBundle, this::onPostExecute);
   }
 
-  public void synchronize()
+  private void onPostExecute(@NonNull Result<Void, PushwooshException> result)
   {
-    sendTags(null);
-  }
-
-  public void sendTag(String tag)
-  {
-    sendTag(tag, "1");
-  }
-
-  public void sendTag(String tag, Object value)
-  {
-    Map<String, Object> tags = new HashMap<>();
-    tags.put(tag, value);
-    sendTags(tags);
-  }
-
-  public void sendTags(Map<String, Object> tags)
-  {
-    synchronized (mSyncObject)
-    {
-      if (!canSendTags())
-      {
-        mTagsQueue.add(tags);
-        return;
-      }
-
-      final Map<String, Object> tagsToSend = new HashMap<>();
-      for (Map<String, Object> t: mTagsQueue)
-      {
-        if (t != null)
-          tagsToSend.putAll(t);
-      }
-      if (tags != null)
-        tagsToSend.putAll(tags);
-
-      mTagsQueue.clear();
-
-      if (tagsToSend.isEmpty())
-        return;
-
-      mTask = new AsyncTask<Void, Void, Void>()
-      {
-        @Override
-        protected Void doInBackground(Void... params)
-        {
-          final Context context = mContext.get();
-          if (context == null)
-            return null;
-
-          PushManager.sendTags(context, tagsToSend, PushwooshHelper.this);
-          return null;
-        }
-      };
-      mTask.execute((Void) null);
-    }
-  }
-
-  @Override
-  public void taskStarted() {}
-
-  @Override
-  public void onSentTagsSuccess(Map<String, String> map)
-  {
-    new Handler(Looper.getMainLooper()).post(new Runnable()
-    {
-      @Override
-      public void run()
-      {
-        synchronized (mSyncObject)
-        {
-          mTask = null;
-        }
-      }
-    });
-  }
-
-  @Override
-  public void onSentTagsError(final Exception e)
-  {
-    new Handler(Looper.getMainLooper()).post(new Runnable()
-    {
-      @Override
-      public void run()
-      {
-        synchronized (mSyncObject)
-        {
-          if (e != null)
-          {
-            String msg = e.getLocalizedMessage();
-            Log.e("Pushwoosh", msg != null ? msg : "onSentTagsError");
-          }
-          mTask = null;
-        }
-      }
-    });
-  }
-
-  private boolean canSendTags()
-  {
-    return mContext != null && mTask == null;
-  }
-
-  public static String getRoutingTag(int routerType, boolean isP2P)
-  {
-    String result = "routing_";
-    if (isP2P)
-      result += "p2p_";
-
-    if (routerType == Framework.ROUTER_TYPE_VEHICLE)
-      result += "vehicle";
-    else if (routerType == Framework.ROUTER_TYPE_PEDESTRIAN)
-      result += "pedestrian";
-    else if (routerType == Framework.ROUTER_TYPE_BICYCLE)
-      result += "bicycle";
+    if (result.isSuccess())
+      onSuccess(result);
     else
-      result += "unknown";
-
-    result += "_discovered";
-    return result;
+      onError(result);
   }
+
+  private void onError(@NonNull Result<Void, PushwooshException> result)
+  {
+    PushwooshException exception = result.getException();
+    String msg = exception == null ? null : exception.getLocalizedMessage();
+    LOGGER.e("Pushwoosh", msg != null ? msg : "onSentTagsError");
+  }
+
+  private void onSuccess(@NonNull Result<Void, PushwooshException> result)
+  {
+    /* Do nothing by default */
+  }
+
+  public static native void nativeProcessFirstLaunch();
+  public static native void nativeSendEditorAddObjectTag();
+  public static native void nativeSendEditorEditObjectTag();
+  public static native @NonNull String nativeGetFormattedTimestamp();
 }

@@ -24,11 +24,15 @@
 
 package com.mapswithme.util;
 
-import android.support.annotation.NonNull;
+import android.os.Build;
 import android.text.TextUtils;
-import android.util.Base64;
-import android.util.Log;
 
+import androidx.annotation.NonNull;
+import com.mapswithme.util.log.Logger;
+import com.mapswithme.util.log.LoggerFactory;
+
+import javax.net.ssl.HttpsURLConnection;
+import javax.net.ssl.SSLSocketFactory;
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
 import java.io.ByteArrayOutputStream;
@@ -36,19 +40,29 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.zip.GZIPInputStream;
+import java.util.zip.InflaterInputStream;
 
 public final class HttpClient
 {
+  public static final String HEADER_USER_AGENT = "User-Agent";
+  public static final String HEADER_AUTHORIZATION = "Authorization";
+  public static final String HEADER_BEARER_PREFFIX = "Bearer ";
+  public static final String HEADER_BUNDLE_TIERS = "X-Mapsme-Bundle-Tiers";
+  public static final String HEADER_THEME_KEY = "x-mapsme-theme";
+  public static final String HEADER_THEME_DARK = "dark";
+  private final static String TAG = HttpClient.class.getSimpleName();
   // TODO(AlexZ): tune for larger files
   private final static int STREAM_BUFFER_SIZE = 1024 * 64;
-  private final static String TAG = "Alohalytics-Http";
-  // Globally accessible for faster unit-testing
-  public static int TIMEOUT_IN_MILLISECONDS = 30000;
+  private static final Logger LOGGER = LoggerFactory.INSTANCE.getLogger(LoggerFactory.Type.NETWORK);
 
   public static Params run(@NonNull final Params p) throws IOException, NullPointerException
   {
@@ -56,11 +70,15 @@ public final class HttpClient
       throw new IllegalArgumentException("Please set valid HTTP method for request at Params.httpMethod field.");
 
     HttpURLConnection connection = null;
-    if (p.debugMode)
-      Log.d(TAG, "Connecting to " + p.url);
+
+    LOGGER.d(TAG, "Connecting to " + Utils.makeUrlSafe(p.url));
+
     try
     {
-      connection = (HttpURLConnection) new URL(p.url).openConnection(); // NullPointerException, MalformedUrlException, IOException
+      connection = (HttpURLConnection) new URL(p.url).openConnection();
+      setupTLSForPreLollipop(connection);
+
+      // NullPointerException, MalformedUrlException, IOException
       // Redirects from http to https or vice versa are not supported by Android implementation.
       // There is also a nasty bug on Androids before 4.4:
       // if you send any request with Content-Length set, and it is redirected, and your instance is set to automatically follow redirects,
@@ -77,35 +95,29 @@ public final class HttpClient
       // Looks like this bug was fixed by switching to OkHttp implementation in this commit:
       // https://android.googlesource.com/platform/libcore/+/2503556d17b28c7b4e6e514540a77df1627857d0
       connection.setInstanceFollowRedirects(p.followRedirects);
-      connection.setConnectTimeout(TIMEOUT_IN_MILLISECONDS);
-      connection.setReadTimeout(TIMEOUT_IN_MILLISECONDS);
+      connection.setConnectTimeout(p.timeoutMillisec);
+      connection.setReadTimeout(p.timeoutMillisec);
       connection.setUseCaches(false);
       connection.setRequestMethod(p.httpMethod);
-      if (!TextUtils.isEmpty(p.basicAuthUser))
-      {
-        final String encoded = Base64.encodeToString((p.basicAuthUser + ":" + p.basicAuthPassword).getBytes(), Base64.NO_WRAP);
-        connection.setRequestProperty("Authorization", "Basic " + encoded);
-      }
-      if (!TextUtils.isEmpty(p.userAgent))
-        connection.setRequestProperty("User-Agent", p.userAgent);
 
       if (!TextUtils.isEmpty(p.cookies))
         connection.setRequestProperty("Cookie", p.cookies);
 
+      for (KeyValue header : p.headers)
+      {
+        connection.setRequestProperty(header.getKey(), header.getValue());
+      }
+
       if (!TextUtils.isEmpty(p.inputFilePath) || p.data != null)
       {
         // Send (POST, PUT...) data to the server.
-        if (TextUtils.isEmpty(p.contentType))
+        if (TextUtils.isEmpty(connection.getRequestProperty("Content-Type")))
           throw new NullPointerException("Please set Content-Type for request.");
 
         // Work-around for situation when more than one consequent POST requests can lead to stable
         // "java.net.ProtocolException: Unexpected status line:" on a client and Nginx HTTP 499 errors.
         // The only found reference to this bug is http://stackoverflow.com/a/24303115/1209392
         connection.setRequestProperty("Connection", "close");
-        connection.setRequestProperty("Content-Type", p.contentType);
-        if (!TextUtils.isEmpty(p.contentEncoding))
-          connection.setRequestProperty("Content-Encoding", p.contentEncoding);
-
         connection.setDoOutput(true);
         if (p.data != null)
         {
@@ -119,8 +131,7 @@ public final class HttpClient
           {
             os.close();
           }
-          if (p.debugMode)
-            Log.d(TAG, "Sent " + p.httpMethod + " with content of size " + p.data.length);
+          LOGGER.d(TAG, "Sent " + p.httpMethod + " with content of size " + p.data.length);
         }
         else
         {
@@ -136,52 +147,58 @@ public final class HttpClient
           }
           istream.close(); // IOException
           ostream.close(); // IOException
-          if (p.debugMode)
-            Log.d(TAG, "Sent " + p.httpMethod + " with file of size " + file.length());
+          LOGGER.d(TAG, "Sent " + p.httpMethod + " with file of size " + file.length());
         }
       }
       // GET data from the server or receive response body
       p.httpResponseCode = connection.getResponseCode();
-      if (p.debugMode)
-        Log.d(TAG, "Received HTTP " + p.httpResponseCode + " from server.");
+      LOGGER.d(TAG, "Received HTTP " + p.httpResponseCode + " from server, content encoding = "
+                    + connection.getContentEncoding() + ", for request = " + Utils.makeUrlSafe(p.url));
 
       if (p.httpResponseCode >= 300 && p.httpResponseCode < 400)
         p.receivedUrl = connection.getHeaderField("Location");
       else
         p.receivedUrl = connection.getURL().toString();
 
-      p.contentType = connection.getContentType();
-      p.contentEncoding = connection.getContentEncoding();
-      final Map<String, List<String>> headers = connection.getHeaderFields();
-      if (headers != null && headers.containsKey("Set-Cookie"))
+      p.headers.clear();
+      if (p.loadHeaders)
       {
-        // Multiple Set-Cookie headers are normalized in C++ code.
-        p.cookies = android.text.TextUtils.join(", ", headers.get("Set-Cookie"));
-      }
-      // This implementation receives any data only if we have HTTP::OK (200).
-      if (p.httpResponseCode == HttpURLConnection.HTTP_OK)
-      {
-        OutputStream ostream;
-        if (!TextUtils.isEmpty(p.outputFilePath))
-          ostream = new BufferedOutputStream(new FileOutputStream(p.outputFilePath), STREAM_BUFFER_SIZE);
-        else
-          ostream = new ByteArrayOutputStream(STREAM_BUFFER_SIZE);
-        // TODO(AlexZ): Add HTTP resume support in the future for partially downloaded files
-        final BufferedInputStream istream = new BufferedInputStream(connection.getInputStream(), STREAM_BUFFER_SIZE);
-        final byte[] buffer = new byte[STREAM_BUFFER_SIZE];
-        // gzip encoding is transparently enabled and we can't use Content-Length for
-        // body reading if server has gzipped it.
-        int bytesRead;
-        while ((bytesRead = istream.read(buffer, 0, STREAM_BUFFER_SIZE)) > 0)
+        for (Map.Entry<String, List<String>> header : connection.getHeaderFields().entrySet())
         {
-          // Read everything if Content-Length is not known in advance.
-          ostream.write(buffer, 0, bytesRead);
+          // Some implementations include a mapping for the null key.
+          if (header.getKey() == null || header.getValue() == null)
+            continue;
+
+          p.headers.add(new KeyValue(header.getKey().toLowerCase(), TextUtils.join(", ", header.getValue())));
         }
-        istream.close(); // IOException
-        ostream.close(); // IOException
-        if (ostream instanceof ByteArrayOutputStream)
-          p.data = ((ByteArrayOutputStream) ostream).toByteArray();
       }
+      else
+      {
+        List<String> cookies = connection.getHeaderFields().get("Set-Cookie");
+        if (cookies != null)
+          p.headers.add(new KeyValue("Set-Cookie", TextUtils.join(", ", cookies)));
+      }
+
+      OutputStream ostream;
+      if (!TextUtils.isEmpty(p.outputFilePath))
+        ostream = new BufferedOutputStream(new FileOutputStream(p.outputFilePath), STREAM_BUFFER_SIZE);
+      else
+        ostream = new ByteArrayOutputStream(STREAM_BUFFER_SIZE);
+      // TODO(AlexZ): Add HTTP resume support in the future for partially downloaded files
+      final BufferedInputStream istream = new BufferedInputStream(getInputStream(connection), STREAM_BUFFER_SIZE);
+      final byte[] buffer = new byte[STREAM_BUFFER_SIZE];
+      // gzip encoding is transparently enabled and we can't use Content-Length for
+      // body reading if server has gzipped it.
+      int bytesRead;
+      while ((bytesRead = istream.read(buffer, 0, STREAM_BUFFER_SIZE)) > 0)
+      {
+        // Read everything if Content-Length is not known in advance.
+        ostream.write(buffer, 0, bytesRead);
+      }
+      istream.close(); // IOException
+      ostream.close(); // IOException
+      if (ostream instanceof ByteArrayOutputStream)
+        p.data = ((ByteArrayOutputStream) ostream).toByteArray();
     }
     finally
     {
@@ -191,51 +208,80 @@ public final class HttpClient
     return p;
   }
 
-  public static class Params
+  private static void setupTLSForPreLollipop(@NonNull HttpURLConnection connection)
   {
+    // On PreLollipop devices we use the custom ssl factory which enables TLSv1.2 forcibly, because
+    // TLS of the mentioned version is not enabled by default on PreLollipop devices, but some of
+    // used by us APIs (as Viator) requires TLSv1.2. For more info see
+    // https://developer.android.com/reference/javax/net/ssl/SSLEngine.html.
+    if ((connection instanceof HttpsURLConnection)
+        && Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP)
+    {
+      HttpsURLConnection sslConnection = (HttpsURLConnection) connection;
+      SSLSocketFactory factory = sslConnection.getSSLSocketFactory();
+      sslConnection.setSSLSocketFactory(new PreLollipopSSLSocketFactory(factory));
+    }
+  }
+
+  @NonNull
+  private static InputStream getInputStream(@NonNull HttpURLConnection connection) throws IOException
+  {
+    InputStream in;
+    try
+    {
+      if ("gzip".equals(connection.getContentEncoding()))
+        in = new GZIPInputStream(connection.getInputStream());
+      else if ("deflate".equals(connection.getContentEncoding()))
+        in = new InflaterInputStream(connection.getInputStream());
+      else
+        in = connection.getInputStream();
+    }
+    catch (IOException e)
+    {
+      in = connection.getErrorStream();
+      if (in == null)
+        throw e;
+    }
+    return in;
+  }
+
+  private static class Params
+  {
+    public void setHeaders(@NonNull KeyValue[] array)
+    {
+      headers = new ArrayList<>(Arrays.asList(array));
+    }
+
+    public Object[] getHeaders()
+    {
+      return headers.toArray();
+    }
+
     public String url;
     // Can be different from url in case of redirects.
-    public String receivedUrl;
-    public String httpMethod;
+    String receivedUrl;
+    String httpMethod;
     // Should be specified for any request whose method allows non-empty body.
     // On return, contains received Content-Type or null.
-    public String contentType;
     // Can be specified for any request whose method allows non-empty body.
     // On return, contains received Content-Encoding or null.
-    public String contentEncoding;
     public byte[] data;
     // Send from input file if specified instead of data.
-    public String inputFilePath;
+    String inputFilePath;
     // Received data is stored here if not null or in data otherwise.
-    public String outputFilePath;
-    // Optionally client can override default HTTP User-Agent.
-    public String userAgent;
-    public String basicAuthUser;
-    public String basicAuthPassword;
-    public String cookies;
-    public int httpResponseCode = -1;
-    public boolean debugMode = false;
-    public boolean followRedirects = true;
+    String outputFilePath;
+    String cookies;
+    ArrayList<KeyValue> headers = new ArrayList<>();
+    int httpResponseCode = -1;
+    boolean followRedirects = true;
+    boolean loadHeaders;
+    int timeoutMillisec = Constants.READ_TIMEOUT_MS;
 
     // Simple GET request constructor.
     public Params(String url)
     {
       this.url = url;
       httpMethod = "GET";
-    }
-
-    public void setData(byte[] data, String contentType, String httpMethod)
-    {
-      this.data = data;
-      this.contentType = contentType;
-      this.httpMethod = httpMethod;
-    }
-
-    public void setInputFilePath(String path, String contentType, String httpMethod)
-    {
-      this.inputFilePath = path;
-      this.contentType = contentType;
-      this.httpMethod = httpMethod;
     }
   }
 }

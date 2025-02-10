@@ -1,13 +1,15 @@
 package com.mapswithme.util;
 
+import android.content.Context;
 import android.text.Editable;
 import android.text.TextWatcher;
 import android.util.Pair;
 
-import java.util.Locale;
-
+import androidx.annotation.NonNull;
 import com.mapswithme.maps.MwmApplication;
 import com.mapswithme.maps.R;
+
+import java.util.Locale;
 
 public class StringUtils
 {
@@ -22,6 +24,17 @@ public class StringUtils
   public static native String[] nativeFilterContainsNormalized(String[] strings, String substr);
 
   public static native Pair<String, String> nativeFormatSpeedAndUnits(double metersPerSecond);
+  public static native String nativeFormatDistance(double meters);
+  @NonNull
+  public static native String nativeFormatDistanceWithLocalization(double meters,
+                                                                   @NonNull String high,
+                                                                   @NonNull String low);
+  @NonNull
+  public static native Pair<String, String> nativeGetLocalizedDistanceUnits();
+  @NonNull
+  public static native Pair<String, String> nativeGetLocalizedAltitudeUnits();
+  @NonNull
+  public static native String nativeGetLocalizedSpeedUnits();
 
   /**
    * Removes html tags, generated from edittext content after it's transformed to html.
@@ -40,10 +53,11 @@ public class StringUtils
    * Formats size in bytes to "x MB" or "x.x GB" format.
    * Small values rounded to 1 MB without fractions.
    *
+   * @param context context for getString()
    * @param size size in bytes
    * @return formatted string
    */
-  public static String getFileSizeString(long size)
+  public static String getFileSizeString(@NonNull Context context, long size)
   {
     if (size < Constants.GB)
     {
@@ -51,11 +65,13 @@ public class StringUtils
       if (value == 0)
         value = 1;
 
-      return String.format(Locale.US, "%1$d %2$s", value, MwmApplication.get().getString(R.string.mb));
+      return String.format(Locale.US, "%1$d %2$s", value,
+                           MwmApplication.from(context).getString(R.string.mb));
     }
 
-    float value = ((float)size / Constants.GB);
-    return String.format(Locale.US, "%1$.1f %2$s", value, MwmApplication.get().getString(R.string.gb));
+    float value = ((float) size / Constants.GB);
+    return String.format(Locale.US, "%1$.1f %2$s", value,
+                         MwmApplication.from(context).getString(R.string.gb));
   }
 
   public static boolean isRtl()

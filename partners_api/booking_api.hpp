@@ -1,138 +1,174 @@
 #pragma once
 
-#include "platform/http_request.hpp"
+#include "partners_api/booking_availability_params.hpp"
+#include "partners_api/booking_block_params.hpp"
 
-#include "std/chrono.hpp"
-#include "std/function.hpp"
-#include "std/initializer_list.hpp"
-#include "std/limits.hpp"
-#include "std/string.hpp"
-#include "std/unique_ptr.hpp"
-#include "std/utility.hpp"
+#include "platform/safe_callback.hpp"
 
-class BookingApi
+#include <chrono>
+#include <functional>
+#include <memory>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+namespace booking
 {
-  string m_affiliateId;
-  string m_apiUrl;
-  bool m_testingMode;
-
-public:
-  struct HotelPhotoUrls
-  {
-    string m_small;
-    string m_original;
-  };
-
-  struct HotelReview
-  {
-    HotelReview() = default;
-    // C++11 doesn't allow aggragate initialization for structs with default member initializer.
-    // But C++14 does.
-    HotelReview(string const & reviewPositive,
-                string const & reviewNegative,
-                string const & reviewNeutral,
-                string const & author,
-                string const & authorPictUrl,
-                float const rating,
-                time_point<system_clock> const date)
-      : m_reviewPositive(reviewPositive)
-      , m_reviewNegative(reviewNegative)
-      , m_reviewNeutral(reviewNeutral)
-      , m_author(author)
-      , m_authorPictUrl(authorPictUrl)
-      , m_rating(rating)
-      , m_date(date)
-    {
-    }
-
-
-    static HotelReview CriticReview(string const & reviewPositive,
-                                    string const & reviewNegative,
-                                    string const & author,
-                                    string const & authorPictUrl,
-                                    float const rating,
-                                    time_point<system_clock> const date)
-    {
-      return {
-        reviewPositive,
-        reviewNegative,
-        "",
-        author,
-        authorPictUrl,
-        rating,
-        date
-     };
-    }
-
-    static HotelReview NeutralReview(string const & reviewNeutral,
-                                     string const & author,
-                                     string const & authorPictUrl,
-                                     float const rating,
-                                     time_point<system_clock> const date)
-    {
-      return {
-        "",
-        "",
-        reviewNeutral,
-        author,
-        authorPictUrl,
-        rating,
-        date
-     };
-    }
-
-    static auto constexpr kInvalidRating = numeric_limits<float>::max();
-
-    /// Review text. There can be either one or both positive/negative review or
-    /// a neutral one.
-    string m_reviewPositive;
-    string m_reviewNegative;
-    string m_reviewNeutral;
-    /// Review author name.
-    string m_author;
-    /// Url to a author's picture.
-    string m_authorPictUrl;
-    /// Author's hotel evaluation.
-    float m_rating = kInvalidRating;
-    /// An issue date.
-    time_point<system_clock> m_date;
-  };
-
-  struct Facility
-  {
-    string m_id;
-    string m_localizedName;
-  };
-
-  struct HotelInfo
-  {
-    string m_hotelId;
-
-    string m_description;
-    vector<HotelPhotoUrls> m_photos;
-    vector<Facility> m_facilities;
-    vector<HotelReview> m_reviews;
-  };
-
-  static constexpr const char kDefaultCurrency[1] = {0};
-
-  BookingApi();
-  string GetBookHotelUrl(string const & baseUrl, string const & lang = string()) const;
-  string GetDescriptionUrl(string const & baseUrl, string const & lang = string()) const;
-  inline void SetTestingMode(bool testing) { m_testingMode = testing; }
-
-  // Real-time information methods (used for retriving rapidly changing information).
-  // These methods send requests directly to Booking.
-  void GetMinPrice(string const & hotelId, string const & currency,
-                   function<void(string const &, string const &)> const & fn);
-
-
-  // Static information methods (use for information that can be cached).
-  // These methods use caching server to prevent Booking from being ddossed.
-  void GetHotelInfo(string const & hotelId, string const & lang,
-                    function<void(HotelInfo const & hotelInfo)> const & fn);
-
-protected:
-  unique_ptr<downloader::HttpRequest> m_request;
-  string MakeApiUrl(string const & func, initializer_list<pair<string, string>> const & params);
+struct HotelPhotoUrls
+{
+  std::string m_small;
+  std::string m_original;
 };
+
+struct HotelReview
+{
+  /// An issue date.
+  std::chrono::time_point<std::chrono::system_clock> m_date;
+  /// Author's hotel evaluation.
+  float m_score = 0.0;
+  /// Review author name.
+  std::string m_author;
+  /// Review text. There can be either one or both positive/negative review.
+  std::string m_pros;
+  std::string m_cons;
+};
+
+struct HotelFacility
+{
+  std::string m_type;
+  std::string m_name;
+};
+
+struct HotelInfo
+{
+  std::string m_hotelId;
+
+  std::string m_description;
+  std::vector<HotelPhotoUrls> m_photos;
+  std::vector<HotelFacility> m_facilities;
+  std::vector<HotelReview> m_reviews;
+  float m_score = 0.0;
+  uint32_t m_scoreCount = 0;
+};
+
+struct Deals
+{
+  enum class Type
+  {
+    /// Good price.
+    Smart,
+    /// Sale with discount in percent from base price.
+    LastMinute
+  };
+
+  std::vector<Type> m_types;
+  uint8_t m_discount = 0;
+};
+
+struct BlockInfo
+{
+  static double constexpr kIncorrectPrice = std::numeric_limits<double>::max();
+  std::string m_blockId;
+  std::string m_name;
+  std::string m_description;
+  uint8_t m_maxOccupancy = 0;
+  double m_minPrice = kIncorrectPrice;
+  std::string m_currency;
+  std::vector<std::string> m_photos;
+  Deals m_deals;
+  std::chrono::time_point<std::chrono::system_clock> m_refundableUntil;
+  bool m_breakfastIncluded = false;
+  bool m_depositRequired = false;
+};
+
+struct Blocks
+{
+  void Add(BlockInfo && block)
+  {
+    if (block.m_minPrice < m_totalMinPrice)
+    {
+      m_totalMinPrice = block.m_minPrice;
+      m_currency = block.m_currency;
+    }
+    if (!m_hasSmartDeal)
+    {
+      auto const & types = block.m_deals.m_types;
+      m_hasSmartDeal = std::find(types.cbegin(), types.cend(), Deals::Type::Smart) != types.cend();
+    }
+    if (block.m_deals.m_discount > m_maxDiscount)
+      m_maxDiscount = block.m_deals.m_discount;
+
+    m_blocks.emplace_back(block);
+  }
+
+  double m_totalMinPrice = BlockInfo::kIncorrectPrice;
+  std::string m_currency;
+
+  uint8_t m_maxDiscount = 0;
+  bool m_hasSmartDeal = false;
+
+  std::vector<BlockInfo> m_blocks;
+};
+struct Extras
+{
+  Extras() = default;
+  Extras(double price, std::string const & currency) : m_price(price), m_currency(currency) {}
+
+  double m_price = 0.0;
+  std::string m_currency;
+};
+
+using HotelsWithExtras = std::unordered_map<std::string, Extras>;
+
+class RawApi
+{
+public:
+  static bool GetExtendedInfo(std::string const & hotelId, std::string const & lang, std::string & result);
+  // Booking Api v2 methods:
+  static bool HotelAvailability(AvailabilityParams const & params, std::string & result);
+  static bool BlockAvailability(BlockParams const & params, std::string & result);
+  static size_t constexpr GetMaxHotelsInAvailabilityRequest() { return 300; };
+};
+
+using BlockAvailabilityCallback =
+    platform::SafeCallback<void(std::string const & hotelId, Blocks const & blocks)>;
+using GetHotelInfoCallback = platform::SafeCallback<void(HotelInfo const & hotelInfo)>;
+// NOTE: this callback will be called on the network thread.
+using GetHotelAvailabilityCallback = std::function<void(HotelsWithExtras && hotels)>;
+
+/// Callbacks will be called in the same order as methods are called.
+class Api
+{
+public:
+  Api();
+
+  std::string GetBookHotelUrl(std::string const & baseUrl) const;
+  std::string GetDeepLink(std::string const & hotelId) const;
+  std::string GetDescriptionUrl(std::string const & baseUrl) const;
+  std::string GetMoreUrl(std::string const & baseUrl) const;
+  std::string GetHotelReviewsUrl(std::string const & hotelId, std::string const & baseUrl) const;
+  std::string GetSearchUrl(std::string const & city, std::string const & name) const;
+  std::string ApplyAvailabilityParams(std::string const & url,
+                                      AvailabilityParams const & params) const;
+
+  /// Real-time information methods (used for retrieving rapidly changing information).
+  /// These methods send requests directly to Booking.
+  void GetBlockAvailability(BlockParams && params, BlockAvailabilityCallback const & fn) const;
+
+  /// NOTE: callback will be called on the network thread.
+  void GetHotelAvailability(AvailabilityParams const & params,
+                            GetHotelAvailabilityCallback const & fn) const;
+
+  /// Static information methods (use for information that can be cached).
+  /// These methods use caching server to prevent Booking from being ddossed.
+  void GetHotelInfo(std::string const & hotelId, std::string const & lang,
+                    GetHotelInfoCallback const & fn) const;
+
+  void SetAffiliateId(std::string const & affiliateId);
+  
+private:
+  std::string m_affiliateId;
+};
+
+void SetBookingUrlForTesting(std::string const & url);
+}  // namespace booking

@@ -1,37 +1,26 @@
 #import "MWMSideButtons.h"
-#import "Common.h"
 #import "MWMButton.h"
+#import "MWMLocationManager.h"
+#import "MWMMapViewControlsManager.h"
 #import "MWMRouter.h"
 #import "MWMSettings.h"
 #import "MWMSideButtonsView.h"
 #import "Statistics.h"
-#import "UIColor+MapsMeColor.h"
-
+#import "SwiftBridge.h"
 #import "3party/Alohalytics/src/alohalytics_objc.h"
 
-#include "Framework.h"
-#include "indexer/scales.hpp"
-#include "platform/settings.hpp"
-
-extern NSString * const kAlohalyticsTapEventKey;
+#include <CoreApi/Framework.h>
 
 namespace
 {
 NSString * const kMWMSideButtonsViewNibName = @"MWMSideButtonsView";
-
-NSArray<UIImage *> * animationImages(NSString * animationTemplate, NSUInteger imagesCount)
-{
-  NSMutableArray<UIImage *> * images = [NSMutableArray arrayWithCapacity:imagesCount];
-  NSString * mode = [UIColor isNightMode] ? @"dark" : @"light";
-  for (NSUInteger i = 1; i <= imagesCount; i += 1)
-  {
-    NSString * name =
-        [NSString stringWithFormat:@"%@_%@_%@", animationTemplate, mode, @(i).stringValue];
-    [images addObject:[UIImage imageNamed:name]];
-  }
-  return images.copy;
-}
 }  // namespace
+
+@interface MWMMapViewControlsManager ()
+
+@property(nonatomic) MWMSideButtons * sideButtons;
+
+@end
 
 @interface MWMSideButtons ()
 
@@ -43,30 +32,32 @@ NSArray<UIImage *> * animationImages(NSString * animationTemplate, NSUInteger im
 @property(nonatomic) BOOL zoomSwipeEnabled;
 @property(nonatomic, readonly) BOOL isZoomEnabled;
 
-@property(nonatomic) location::EMyPositionMode locationMode;
+@property(nonatomic) MWMMyPositionMode locationMode;
 
 @end
 
 @implementation MWMSideButtons
 
+- (UIView *)view {
+  return self.sideView;
+}
+
++ (MWMSideButtons *)buttons { return [MWMMapViewControlsManager manager].sideButtons; }
 - (instancetype)initWithParentView:(UIView *)view
 {
   self = [super init];
   if (self)
   {
-    [[NSBundle mainBundle] loadNibNamed:kMWMSideButtonsViewNibName owner:self options:nil];
+    [NSBundle.mainBundle loadNibNamed:kMWMSideButtonsViewNibName owner:self options:nil];
     [view addSubview:self.sideView];
-    [self.sideView layoutIfNeeded];
-    self.sideView.topBound = 0.0;
-    self.sideView.bottomBound = view.height;
+    [self.sideView setNeedsLayout];
     self.zoomSwipeEnabled = NO;
     self.zoomHidden = NO;
   }
   return self;
 }
 
-- (void)setTopBound:(CGFloat)bound { self.sideView.topBound = bound; }
-- (void)setBottomBound:(CGFloat)bound { self.sideView.bottomBound = bound; }
++ (void)updateAvailableArea:(CGRect)frame { [[self buttons].sideView updateAvailableArea:frame]; }
 - (void)zoomIn
 {
   [Statistics logEvent:kStatEventName(kStatZoom, kStatIn)];
@@ -81,88 +72,31 @@ NSArray<UIImage *> * animationImages(NSString * animationTemplate, NSUInteger im
   GetFramework().Scale(Framework::SCALE_MIN, true);
 }
 
-- (void)mwm_refreshUI
+- (void)processMyPositionStateModeEvent:(MWMMyPositionMode)mode
 {
-  [self.sideView mwm_refreshUI];
-  [self.locationButton.imageView stopAnimating];
-  [self refreshLocationButtonState:self.locationMode];
-}
-
-- (void)processMyPositionStateModeEvent:(location::EMyPositionMode)mode
-{
-  UIButton * locBtn = self.locationButton;
-  locBtn.hidden = GetFramework().IsOnRoute() && mode == location::FollowAndRotate;
-  [locBtn.imageView stopAnimating];
-
-  NSArray<UIImage *> * images =
-      ^NSArray<UIImage *> *(location::EMyPositionMode oldMode, location::EMyPositionMode newMode)
-  {
-    switch (newMode)
-    {
-    case location::NotFollow:
-    case location::NotFollowNoPosition:
-      if (oldMode == location::FollowAndRotate)
-        return animationImages(@"btn_follow_and_rotate_to_get_position", 3);
-      else if (oldMode == location::Follow)
-        return animationImages(@"btn_follow_to_get_position", 3);
-      return nil;
-    case location::Follow:
-      if (oldMode == location::FollowAndRotate)
-        return animationImages(@"btn_follow_and_rotate_to_follow", 3);
-      else if (oldMode == location::NotFollow || oldMode == location::NotFollowNoPosition)
-        return animationImages(@"btn_get_position_to_follow", 3);
-      return nil;
-    case location::PendingPosition: return nil;
-    case location::FollowAndRotate:
-      if (oldMode == location::Follow)
-        return animationImages(@"btn_follow_to_follow_and_rotate", 3);
-      return nil;
-    }
-  }
-  (self.locationMode, mode);
-  locBtn.imageView.animationImages = images;
-  if (images)
-  {
-    locBtn.imageView.animationDuration = 0.0;
-    locBtn.imageView.animationRepeatCount = 1;
-    locBtn.imageView.image = images.lastObject;
-    [locBtn.imageView startAnimating];
-  }
   [self refreshLocationButtonState:mode];
   self.locationMode = mode;
 }
 
 #pragma mark - Location button
 
-- (void)refreshLocationButtonState:(location::EMyPositionMode)state
+- (void)refreshLocationButtonState:(MWMMyPositionMode)state
 {
-  dispatch_async(dispatch_get_main_queue(), ^{
-    if (self.locationButton.imageView.isAnimating)
+  MWMButton * locBtn = self.locationButton;
+  [locBtn.imageView stopRotation];
+  switch (state)
+  {
+    case MWMMyPositionModePendingPosition:
     {
-      [self refreshLocationButtonState:state];
+      [locBtn setStyleAndApply: @"ButtonPending"];
+      [locBtn.imageView startRotation:1];
+      break;
     }
-    else
-    {
-      MWMButton * locBtn = self.locationButton;
-      switch (state)
-      {
-      case location::PendingPosition:
-      {
-        NSArray<UIImage *> * images = animationImages(@"btn_pending", 12);
-        locBtn.imageView.animationDuration = 1.2;
-        locBtn.imageView.animationImages = images;
-        locBtn.imageView.animationRepeatCount = 0;
-        locBtn.imageView.image = images.lastObject;
-        [locBtn.imageView startAnimating];
-        break;
-      }
-      case location::NotFollow:
-      case location::NotFollowNoPosition: locBtn.imageName = @"btn_get_position"; break;
-      case location::Follow: locBtn.imageName = @"btn_follow"; break;
-      case location::FollowAndRotate: locBtn.imageName = @"btn_follow_and_rotate"; break;
-      }
-    }
-  });
+    case MWMMyPositionModeNotFollow:
+    case MWMMyPositionModeNotFollowNoPosition: [locBtn setStyleAndApply: @"ButtonGetPosition"]; break;
+    case MWMMyPositionModeFollow: [locBtn setStyleAndApply: @"ButtonFollow"]; break;
+    case MWMMyPositionModeFollowAndRotate: [locBtn setStyleAndApply: @"ButtonFollowAndRotate"]; break;
+  }
 }
 
 #pragma mark - Actions
@@ -193,6 +127,7 @@ NSArray<UIImage *> * animationImages(NSString * animationTemplate, NSUInteger im
 - (IBAction)locationTouchUpInside
 {
   [Statistics logEvent:kStatMenu withParameters:@{kStatButton : kStatLocation}];
+  [MWMLocationManager enableLocationAlert];
   GetFramework().SwitchMyPositionNextMode();
 }
 
@@ -201,7 +136,7 @@ NSArray<UIImage *> * animationImages(NSString * animationTemplate, NSUInteger im
 - (BOOL)zoomHidden { return self.sideView.zoomHidden; }
 - (void)setZoomHidden:(BOOL)zoomHidden
 {
-  if (GetFramework().IsRoutingActive())
+  if ([MWMRouter isRoutingActive])
     self.sideView.zoomHidden = NO;
   else
     self.sideView.zoomHidden = [MWMSettings zoomButtonsEnabled] ? zoomHidden : YES;

@@ -2,7 +2,7 @@
 
 #include "platform/preferred_languages.hpp"
 
-#include "indexer/new_feature_categories.hpp"
+#include "editor/new_feature_categories.hpp"
 
 #include <QtWidgets/QDialogButtonBox>
 #include <QtWidgets/QListWidget>
@@ -16,11 +16,10 @@ CreateFeatureDialog::CreateFeatureDialog(QWidget * parent, osm::NewFeatureCatego
 
   QListWidget * allSortedList = new QListWidget();
 
-  auto const & categories = cats.GetAllCategoryNames(languages::GetCurrentNorm());
-  for (auto const & entry : categories)
+  auto const & typeNames = cats.GetAllCreatableTypeNames();
+  for (auto const & name : typeNames)
   {
-    QListWidgetItem * lwi = new QListWidgetItem(entry.first.c_str() /* name */, allSortedList);
-    lwi->setData(Qt::UserRole, entry.second /* type */);
+    new QListWidgetItem(name.c_str() /* name */, allSortedList);
   }
   connect(allSortedList, SIGNAL(clicked(QModelIndex const &)), this,
           SLOT(OnListItemSelected(QModelIndex const &)));

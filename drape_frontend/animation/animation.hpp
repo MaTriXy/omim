@@ -1,10 +1,17 @@
 #pragma once
 
+#include "drape_frontend/animation/interpolators.hpp"
+
 #include "drape/pointers.hpp"
 
 #include "geometry/point2d.hpp"
+#include "geometry/screenbase.hpp"
 
-#include "std/unordered_set.hpp"
+#include <functional>
+#include <map>
+#include <set>
+#include <string>
+#include <utility>
 
 namespace df
 {
@@ -12,7 +19,7 @@ namespace df
 class Animation
 {
 public:
-  enum Type
+  enum class Type
   {
     Sequence,
     Parallel,
@@ -23,14 +30,14 @@ public:
     KineticScroll
   };
 
-  enum Object
+  enum class Object
   {
     MyPositionArrow,
     MapPlane,
     Selection
   };
 
-  enum ObjectProperty
+  enum class ObjectProperty
   {
     Position,
     Scale,
@@ -39,7 +46,7 @@ public:
 
   struct PropertyValue
   {
-    enum Type
+    enum class Type
     {
       ValueD,
       ValuePointD
@@ -49,12 +56,12 @@ public:
     {}
 
     explicit PropertyValue(double value)
-      : m_type(ValueD)
+      : m_type(Type::ValueD)
       , m_valueD(value)
     {}
 
     explicit PropertyValue(m2::PointD const & value)
-      : m_type(ValuePointD)
+      : m_type(Type::ValuePointD)
       , m_valuePointD(value)
     {}
 
@@ -66,11 +73,10 @@ public:
     };
   };
 
-  using TObject = uint32_t;
-  using TProperty = uint32_t;
-  using TAnimObjects = unordered_set<TObject>;
-  using TObjectProperties = unordered_set<TProperty>;
-  using TAction = function<void(ref_ptr<Animation>)>;
+  using TAnimObjects = std::set<Object>;
+  using TObjectProperties = std::set<ObjectProperty>;
+  using TAction = std::function<void(ref_ptr<Animation>)>;
+  using TPropertyCache = std::map<std::pair<Object, ObjectProperty>, Animation::PropertyValue>;
 
   Animation(bool couldBeInterrupted, bool couldBeBlended)
     : m_couldBeInterrupted(couldBeInterrupted)
@@ -81,28 +87,34 @@ public:
 
   virtual ~Animation() = default;
 
+  virtual void Init(ScreenBase const & screen, TPropertyCache const & properties) {}
   virtual void OnStart() { if (m_onStartAction != nullptr) m_onStartAction(this); }
   virtual void OnFinish() { if (m_onFinishAction != nullptr) m_onFinishAction(this); }
   virtual void Interrupt() { if (m_onInterruptAction != nullptr) m_onInterruptAction(this); }
 
   virtual Type GetType() const = 0;
-  virtual string GetCustomType() const { return string(); }
+  virtual std::string GetCustomType() const { return std::string(); }
 
   virtual TAnimObjects const & GetObjects() const = 0;
-  virtual bool HasObject(TObject object) const = 0;
-  virtual TObjectProperties const & GetProperties(TObject object) const = 0;
-  virtual bool HasProperty(TObject object, TProperty property) const = 0;
-  virtual bool HasTargetProperty(TObject object, TProperty property) const;
+  virtual bool HasObject(Object object) const = 0;
+  virtual TObjectProperties const & GetProperties(Object object) const = 0;
+  virtual bool HasProperty(Object object, ObjectProperty property) const = 0;
+  virtual bool HasTargetProperty(Object object, ObjectProperty property) const;
+
+  static double constexpr kInvalidAnimationDuration = -1.0;
 
   virtual void SetMaxDuration(double maxDuration) = 0;
+  virtual void SetMinDuration(double minDuration) = 0;
   virtual double GetDuration() const = 0;
+  virtual double GetMaxDuration() const = 0;
+  virtual double GetMinDuration() const = 0;
   virtual bool IsFinished() const = 0;
 
   virtual void Advance(double elapsedSeconds) = 0;
   virtual void Finish() { OnFinish(); }
 
-  virtual bool GetProperty(TObject object, TProperty property, PropertyValue & value) const = 0;
-  virtual bool GetTargetProperty(TObject object, TProperty property, PropertyValue & value) const = 0;
+  virtual bool GetProperty(Object object, ObjectProperty property, PropertyValue & value) const = 0;
+  virtual bool GetTargetProperty(Object object, ObjectProperty property, PropertyValue & value) const = 0;
 
   void SetOnStartAction(TAction const & action) { m_onStartAction = action; }
   void SetOnFinishAction(TAction const & action) { m_onFinishAction = action; }
@@ -111,6 +123,7 @@ public:
   bool CouldBeBlended() const { return m_couldBeBlended; }
   bool CouldBeInterrupted() const { return m_couldBeInterrupted; }
   bool CouldBeBlendedWith(Animation const & animation) const;
+  bool HasSameObjects(Animation const & animation) const;
 
   void SetInterruptedOnCombine(bool enable) { m_interruptedOnCombine = enable; }
   bool GetInterruptedOnCombine() const { return m_interruptedOnCombine; }
@@ -122,6 +135,12 @@ public:
   bool CouldBeRewinded() const { return m_couldBeRewinded; }
 
 protected:
+  static void GetCurrentScreen(TPropertyCache const & properties, ScreenBase const & screen, ScreenBase & currentScreen);
+  static bool GetCachedProperty(TPropertyCache const & properties, Object object, ObjectProperty property, PropertyValue & value);
+
+  static bool GetMinDuration(Interpolator const & interpolator, double & minDuration);
+  static bool GetMaxDuration(Interpolator const & interpolator, double & maxDuration);
+
   TAction m_onStartAction;
   TAction m_onFinishAction;
   TAction m_onInterruptAction;
@@ -135,6 +154,10 @@ protected:
   // Animation could be rewinded in case of finishing.
   bool m_couldBeRewinded;
 };
+
+std::string DebugPrint(Animation::Type const & type);
+std::string DebugPrint(Animation::Object const & object);
+std::string DebugPrint(Animation::ObjectProperty const & property);
 
 } // namespace df
 

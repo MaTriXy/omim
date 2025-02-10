@@ -3,8 +3,9 @@
 
 #include "base/math.hpp"
 
-#include "std/algorithm.hpp"
+#include <algorithm>
 
+using namespace std;
 
 namespace scales
 {
@@ -24,8 +25,8 @@ namespace scales
   double GetScaleLevelD(m2::RectD const & r)
   {
     // TODO: fix scale factors for mercator projection
-    double const dx = (MercatorBounds::maxX - MercatorBounds::minX) / r.SizeX();
-    double const dy = (MercatorBounds::maxY - MercatorBounds::minY) / r.SizeY();
+    double const dx = mercator::Bounds::kRangeX / r.SizeX();
+    double const dy = mercator::Bounds::kRangeY / r.SizeY();
 
     // get the average ratio
     return GetScaleLevelD((dx + dy) / 2.0);
@@ -33,12 +34,12 @@ namespace scales
 
   int GetScaleLevel(double ratio)
   {
-    return my::rounds(GetScaleLevelD(ratio));
+    return base::SignedRound(GetScaleLevelD(ratio));
   }
 
   int GetScaleLevel(m2::RectD const & r)
   {
-    return my::rounds(GetScaleLevelD(r));
+    return base::SignedRound(GetScaleLevelD(r));
   }
 
   double GetRationForLevel(double level)
@@ -55,22 +56,20 @@ namespace scales
     ASSERT_GREATER ( dy, 0.0, () );
     ASSERT_GREATER ( dx, 0.0, () );
 
-    double const xL = (MercatorBounds::maxX - MercatorBounds::minX) / (2.0 * dx);
-    double const yL = (MercatorBounds::maxY - MercatorBounds::minY) / (2.0 * dy);
-    ASSERT_GREATER ( xL, 0.0, () );
-    ASSERT_GREATER ( yL, 0.0, () );
+    double const xL = mercator::Bounds::kRangeX / (2.0 * dx);
+    double const yL = mercator::Bounds::kRangeY / (2.0 * dy);
+    ASSERT_GREATER(xL, 0.0, ());
+    ASSERT_GREATER(yL, 0.0, ());
 
-    return m2::RectD(MercatorBounds::ClampX(center.x - xL),
-                     MercatorBounds::ClampY(center.y - yL),
-                     MercatorBounds::ClampX(center.x + xL),
-                     MercatorBounds::ClampY(center.y + yL));
+    return m2::RectD(mercator::ClampX(center.x - xL), mercator::ClampY(center.y - yL),
+                     mercator::ClampX(center.x + xL), mercator::ClampY(center.y + yL));
   }
 
   namespace
   {
     double GetEpsilonImpl(long level, double pixelTolerance)
     {
-      return (MercatorBounds::maxX - MercatorBounds::minX) * pixelTolerance / double(256L << level);
+      return mercator::Bounds::kRangeX * pixelTolerance / double(256L << level);
     }
   }
 

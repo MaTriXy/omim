@@ -1,7 +1,7 @@
 #include "testing/testing.hpp"
 #include "routing/routing_integration_tests/routing_test_tools.hpp"
 
-#include "generator/borders_loader.hpp"
+#include "generator/borders.hpp"
 
 #include "storage/country_decl.hpp"
 
@@ -11,12 +11,15 @@
 
 #include "base/logging.hpp"
 
-#include "std/string.hpp"
-#include "std/fstream.hpp"
+#include <fstream>
+#include <iostream>
+#include <map>
+#include <string>
 
 #include "3party/gflags/src/gflags/gflags.h"
 
 using namespace routing;
+using namespace std;
 using storage::CountryInfo;
 
 double constexpr kMinimumRouteDistanceM = 10000.;
@@ -69,23 +72,23 @@ bool ParseUserString(string const & incomeString, UserRoutingRecord & result)
 
   // Extract numbers from a record.
   result.distance = GetDouble(incomeString, "distance");
-  result.start = MercatorBounds::FromLatLon(GetDouble(incomeString, "startLat"), GetDouble(incomeString, "startLon"));
-  result.stop = MercatorBounds::FromLatLon(GetDouble(incomeString, "finalLat"), GetDouble(incomeString, "finalLon"));
+  result.start = mercator::FromLatLon(GetDouble(incomeString, "startLat"), GetDouble(incomeString, "startLon"));
+  result.stop = mercator::FromLatLon(GetDouble(incomeString, "finalLat"), GetDouble(incomeString, "finalLon"));
   return true;
 }
 
 class RouteTester
 {
 public:
-  RouteTester() :  m_components(integration::GetOsrmComponents())
+  RouteTester() : m_components(integration::GetVehicleComponents(VehicleType::Car))
   {
   }
 
   bool BuildRoute(UserRoutingRecord const & record)
   {
-    m_components.GetRouter()->ClearState();
+    m_components.GetRouter().ClearState();
     auto const result = integration::CalculateRoute(m_components, record.start, m2::PointD::Zero(), record.stop);
-    if (result.second != IRouter::NoError)
+    if (result.second != RouterResultCode::NoError)
     {
       LOG(LINFO, ("Can't build the route. Code:", result.second));
       return false;

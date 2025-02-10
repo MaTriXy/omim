@@ -3,13 +3,13 @@ package com.mapswithme.maps.gallery;
 import android.content.Context;
 import android.content.Intent;
 import android.graphics.Bitmap;
-import android.os.Build;
 import android.os.Bundle;
-import android.support.annotation.NonNull;
-import android.support.v4.graphics.drawable.RoundedBitmapDrawable;
-import android.support.v4.graphics.drawable.RoundedBitmapDrawableFactory;
-import android.support.v4.view.ViewPager;
-import android.support.v7.widget.Toolbar;
+import androidx.annotation.NonNull;
+import androidx.annotation.StyleRes;
+import androidx.core.graphics.drawable.RoundedBitmapDrawable;
+import androidx.core.graphics.drawable.RoundedBitmapDrawableFactory;
+import androidx.viewpager.widget.ViewPager;
+import androidx.appcompat.widget.Toolbar;
 import android.text.TextUtils;
 import android.text.format.DateFormat;
 import android.view.View;
@@ -55,18 +55,16 @@ public class FullScreenGalleryActivity extends BaseMwmFragmentActivity
   }
 
   @Override
-  protected void onCreate(Bundle savedInstanceState)
+  protected void onSafeCreate(Bundle savedInstanceState)
   {
     requestWindowFeature(Window.FEATURE_NO_TITLE);
     getWindow().setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN, WindowManager.LayoutParams.FLAG_FULLSCREEN);
 
-    super.onCreate(savedInstanceState);
+    super.onSafeCreate(savedInstanceState);
     Toolbar toolbar = getToolbar();
     toolbar.setTitle("");
     UiUtils.showHomeUpButton(toolbar);
     displayToolbarAsActionBar();
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT)
-      getWindow().addFlags(WindowManager.LayoutParams.FLAG_TRANSLUCENT_STATUS);
 
     mUserBlock = findViewById(R.id.rl__user_block);
     mDescription = (TextView) findViewById(R.id.tv__description);
@@ -95,12 +93,15 @@ public class FullScreenGalleryActivity extends BaseMwmFragmentActivity
   }
 
   @Override
-  public int getThemeResourceId(String theme)
+  @StyleRes
+  public int getThemeResourceId(@NonNull String theme)
   {
-    if (ThemeUtils.isDefaultTheme(theme))
+    Context context = getApplicationContext();
+
+    if (ThemeUtils.isDefaultTheme(context, theme))
       return R.style.MwmTheme_FullScreenGalleryActivity;
 
-    if (ThemeUtils.isNightTheme(theme))
+    if (ThemeUtils.isNightTheme(context, theme))
       return R.style.MwmTheme_Night_FullScreenGalleryActivity;
 
     throw new IllegalArgumentException("Attempt to apply unsupported theme: " + theme);

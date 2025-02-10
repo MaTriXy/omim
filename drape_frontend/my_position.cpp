@@ -1,38 +1,39 @@
 #include "drape_frontend/my_position.hpp"
+#include "drape_frontend/batcher_bucket.hpp"
 #include "drape_frontend/color_constants.hpp"
 #include "drape_frontend/map_shape.hpp"
 #include "drape_frontend/shape_view_params.hpp"
 #include "drape_frontend/tile_utils.hpp"
+
+#include "shaders/programs.hpp"
 
 #include "drape/constants.hpp"
 #include "drape/glsl_func.hpp"
 #include "drape/glsl_types.hpp"
 #include "drape/overlay_handle.hpp"
 #include "drape/render_bucket.hpp"
-#include "drape/shader_def.hpp"
 
 #include "indexer/map_style_reader.hpp"
 
 namespace df
 {
-
 namespace
 {
+df::ColorConstant const kMyPositionAccuracyColor = "MyPositionAccuracy";
 
-struct Vertex
+struct MarkerVertex
 {
-  Vertex() = default;
-  Vertex(glsl::vec2 const & normal, glsl::vec2 const & texCoord)
+  MarkerVertex() = default;
+  MarkerVertex(glsl::vec2 const & normal, glsl::vec2 const & texCoord)
     : m_normal(normal)
     , m_texCoord(texCoord)
-  {
-  }
+  {}
 
   glsl::vec2 m_normal;
   glsl::vec2 m_texCoord;
 };
 
-dp::BindingInfo GetBindingInfo()
+dp::BindingInfo GetMarkerBindingInfo()
 {
   dp::BindingInfo info(2);
   dp::BindingDecl & normal = info.GetBindingDecl(0);
@@ -40,21 +41,20 @@ dp::BindingInfo GetBindingInfo()
   normal.m_componentCount = 2;
   normal.m_componentType = gl_const::GLFloatType;
   normal.m_offset = 0;
-  normal.m_stride = sizeof(Vertex);
+  normal.m_stride = sizeof(MarkerVertex);
 
   dp::BindingDecl & texCoord = info.GetBindingDecl(1);
   texCoord.m_attributeName = "a_colorTexCoords";
   texCoord.m_componentCount = 2;
   texCoord.m_componentType = gl_const::GLFloatType;
   texCoord.m_offset = sizeof(glsl::vec2);
-  texCoord.m_stride = sizeof(Vertex);
+  texCoord.m_stride = sizeof(MarkerVertex);
 
   return info;
 }
+}  // namespace
 
-} // namespace
-
-MyPosition::MyPosition(ref_ptr<dp::TextureManager> mng)
+MyPosition::MyPosition(ref_ptr<dp::GraphicsContext> context, ref_ptr<dp::TextureManager> mng)
   : m_position(m2::PointF::Zero())
   , m_azimuth(0.0f)
   , m_accuracy(0.0f)
@@ -63,8 +63,14 @@ MyPosition::MyPosition(ref_ptr<dp::TextureManager> mng)
   , m_obsoletePosition(false)
 {
   m_parts.resize(4);
-  CacheAccuracySector(mng);
-  CachePointPosition(mng);
+  CacheAccuracySector(context, mng);
+  CachePointPosition(context, mng);
+}
+
+void MyPosition::InitArrow(ref_ptr<dp::GraphicsContext> context, ref_ptr<dp::TextureManager> mng)
+{
+  m_arrow3d = make_unique_dp<Arrow3d>(context);
+  m_arrow3d->SetTexture(mng);
 }
 
 void MyPosition::SetPosition(m2::PointF const & pt)
@@ -95,106 +101,115 @@ void MyPosition::SetRoutingMode(bool routingMode)
 void MyPosition::SetPositionObsolete(bool obsolete)
 {
   m_obsoletePosition = obsolete;
-  m_arrow3d.SetPositionObsolete(obsolete);
+  CHECK(m_arrow3d != nullptr, ());
+  m_arrow3d->SetPositionObsolete(obsolete);
 }
 
-void MyPosition::RenderAccuracy(ScreenBase const & screen, int zoomLevel,
-                                ref_ptr<dp::GpuProgramManager> mng,
-                                dp::UniformValuesStorage const & commonUniforms)
+void MyPosition::RenderAccuracy(ref_ptr<dp::GraphicsContext> context, ref_ptr<gpu::ProgramManager> mng,
+                                ScreenBase const & screen, int zoomLevel, FrameValues const & frameValues)
 {
-  dp::UniformValuesStorage uniforms = commonUniforms;
   m2::PointD accuracyPoint(m_position.x + m_accuracy, m_position.y);
-  float pixelAccuracy = (screen.GtoP(accuracyPoint) - screen.GtoP(m_position)).Length();
+  auto const pixelAccuracy =
+    static_cast<float>((screen.GtoP(accuracyPoint) - screen.GtoP(m2::PointD(m_position))).Length());
 
-  TileKey const key = GetTileKeyByPoint(m_position, ClipTileZoomByMaxDataZoom(zoomLevel));
+  gpu::ShapesProgramParams params;
+  frameValues.SetTo(params);
+  TileKey const key = GetTileKeyByPoint(m2::PointD(m_position), ClipTileZoomByMaxDataZoom(zoomLevel));
   math::Matrix<float, 4, 4> mv = key.GetTileBasedModelView(screen);
-  uniforms.SetMatrix4x4Value("modelView", mv.m_data);
+  params.m_modelView = glsl::make_mat4(mv.m_data);
 
-  m2::PointD const pos = MapShape::ConvertToLocal(m_position, key.GetGlobalRect().Center(), kShapeCoordScalar);
-  uniforms.SetFloatValue("u_position", pos.x, pos.y, 0.0f);
-  uniforms.SetFloatValue("u_accuracy", pixelAccuracy);
-  uniforms.SetFloatValue("u_opacity", 1.0f);
-  RenderPart(mng, uniforms, MY_POSITION_ACCURACY);
+  auto const pos = static_cast<m2::PointF>(
+    MapShape::ConvertToLocal(m2::PointD(m_position), key.GetGlobalRect().Center(), kShapeCoordScalar));
+  params.m_position = glsl::vec3(pos.x, pos.y, 0.0f);
+  params.m_accuracy = pixelAccuracy;
+  RenderPart(context, mng, params, MyPositionAccuracy);
 }
 
-void MyPosition::RenderMyPosition(ScreenBase const & screen, int zoomLevel,
-                                  ref_ptr<dp::GpuProgramManager> mng,
-                                  dp::UniformValuesStorage const & commonUniforms)
+void MyPosition::RenderMyPosition(ref_ptr<dp::GraphicsContext> context, ref_ptr<gpu::ProgramManager> mng,
+                                  ScreenBase const & screen, int zoomLevel, FrameValues const & frameValues)
 {
   if (m_showAzimuth)
   {
-    m_arrow3d.SetPosition(m_position);
-    m_arrow3d.SetAzimuth(m_azimuth);
-    m_arrow3d.Render(screen, zoomLevel, mng);
+    CHECK(m_arrow3d != nullptr, ());
+    m_arrow3d->SetPosition(m2::PointD(m_position));
+    m_arrow3d->SetAzimuth(m_azimuth);
+    m_arrow3d->Render(context, mng, screen, m_isRoutingMode);
   }
   else
   {
-    dp::UniformValuesStorage uniforms = commonUniforms;
-    TileKey const key = GetTileKeyByPoint(m_position, ClipTileZoomByMaxDataZoom(zoomLevel));
+    gpu::ShapesProgramParams params;
+    frameValues.SetTo(params);
+    TileKey const key = GetTileKeyByPoint(m2::PointD(m_position), ClipTileZoomByMaxDataZoom(zoomLevel));
     math::Matrix<float, 4, 4> mv = key.GetTileBasedModelView(screen);
-    uniforms.SetMatrix4x4Value("modelView", mv.m_data);
+    params.m_modelView = glsl::make_mat4(mv.m_data);
 
-    m2::PointD const pos = MapShape::ConvertToLocal(m_position, key.GetGlobalRect().Center(), kShapeCoordScalar);
-    uniforms.SetFloatValue("u_position", pos.x, pos.y, dp::depth::MY_POSITION_MARK);
-    uniforms.SetFloatValue("u_azimut", -(m_azimuth + screen.GetAngle()));
-    uniforms.SetFloatValue("u_opacity", 1.0);
-    RenderPart(mng, uniforms, MY_POSITION_POINT);
+    auto const pos = static_cast<m2::PointF>(
+      MapShape::ConvertToLocal(m2::PointD(m_position), key.GetGlobalRect().Center(), kShapeCoordScalar));
+    params.m_position = glsl::vec3(pos.x, pos.y, dp::depth::kMyPositionMarkDepth);
+    params.m_azimut = -(m_azimuth + static_cast<float>(screen.GetAngle()));
+    RenderPart(context, mng, params, MyPositionPoint);
   }
 }
 
-void MyPosition::CacheAccuracySector(ref_ptr<dp::TextureManager> mng)
+void MyPosition::CacheAccuracySector(ref_ptr<dp::GraphicsContext> context,
+                                     ref_ptr<dp::TextureManager> mng)
 {
-  int const TriangleCount = 40;
-  int const VertexCount = 3 * TriangleCount;
-  float const etalonSector = math::twicePi / static_cast<double>(TriangleCount);
+  size_t constexpr kTriangleCount = 40;
+  size_t constexpr kVertexCount = 3 * kTriangleCount;
+  auto const etalonSector = static_cast<float>(2.0 * math::pi / kTriangleCount);
 
   dp::TextureManager::ColorRegion color;
-  mng->GetColorRegion(df::GetColorConstant(GetStyleReader().GetCurrentStyle(), df::MyPositionAccuracy), color);
+  mng->GetColorRegion(df::GetColorConstant(df::kMyPositionAccuracyColor), color);
   glsl::vec2 colorCoord = glsl::ToVec2(color.GetTexRect().Center());
 
-  buffer_vector<Vertex, TriangleCount> buffer;
+  buffer_vector<MarkerVertex, kTriangleCount> buffer;
   glsl::vec2 startNormal(0.0f, 1.0f);
 
-  for (size_t i = 0; i < TriangleCount + 1; ++i)
+  for (size_t i = 0; i < kTriangleCount + 1; ++i)
   {
     glsl::vec2 normal = glsl::rotate(startNormal, i * etalonSector);
     glsl::vec2 nextNormal = glsl::rotate(startNormal, (i + 1) * etalonSector);
 
-    buffer.emplace_back(startNormal, colorCoord);
+    buffer.emplace_back(glsl::vec2(0.0f, 0.0f), colorCoord);
     buffer.emplace_back(normal, colorCoord);
     buffer.emplace_back(nextNormal, colorCoord);
   }
 
-  dp::GLState state(gpu::ACCURACY_PROGRAM, dp::GLState::OverlayLayer);
+  auto state = CreateRenderState(gpu::Program::Accuracy, DepthLayer::OverlayLayer);
+  state.SetDepthTestEnabled(false);
   state.SetColorTexture(color.GetTexture());
 
   {
-    dp::Batcher batcher(TriangleCount * dp::Batcher::IndexPerTriangle, VertexCount);
-    dp::SessionGuard guard(batcher, [this](dp::GLState const & state, drape_ptr<dp::RenderBucket> && b)
+    dp::Batcher batcher(kTriangleCount * dp::Batcher::IndexPerTriangle, kVertexCount);
+    batcher.SetBatcherHash(static_cast<uint64_t>(BatcherBucket::Default));
+    dp::SessionGuard guard(context, batcher,
+      [this](dp::RenderState const & state, drape_ptr<dp::RenderBucket> && b)
     {
-      drape_ptr<dp::RenderBucket> bucket = move(b);
+      drape_ptr<dp::RenderBucket> bucket = std::move(b);
       ASSERT(bucket->GetOverlayHandlesCount() == 0, ());
 
       m_nodes.emplace_back(state, bucket->MoveBuffer());
-      m_parts[MY_POSITION_ACCURACY].second = m_nodes.size() - 1;
+      m_parts[MyPositionAccuracy].second = m_nodes.size() - 1;
     });
 
-    dp::AttributeProvider provider(1 /*stream count*/, VertexCount);
-    provider.InitStream(0 /*stream index*/, GetBindingInfo(), make_ref(buffer.data()));
+    dp::AttributeProvider provider(1 /* stream count */, kVertexCount);
+    provider.InitStream(0 /* stream index */, GetMarkerBindingInfo(), make_ref(buffer.data()));
 
-    m_parts[MY_POSITION_ACCURACY].first = batcher.InsertTriangleList(state, make_ref(&provider), nullptr);
-    ASSERT(m_parts[MY_POSITION_ACCURACY].first.IsValid(), ());
+    m_parts[MyPositionAccuracy].first = batcher.InsertTriangleList(context, state,
+                                                                   make_ref(&provider), nullptr);
+    ASSERT(m_parts[MyPositionAccuracy].first.IsValid(), ());
   }
 }
 
-void MyPosition::CacheSymbol(dp::TextureManager::SymbolRegion const & symbol,
-                             dp::GLState const & state, dp::Batcher & batcher,
+void MyPosition::CacheSymbol(ref_ptr<dp::GraphicsContext> context,
+                             dp::TextureManager::SymbolRegion const & symbol,
+                             dp::RenderState const & state, dp::Batcher & batcher,
                              EMyPositionPart part)
 {
   m2::RectF const & texRect = symbol.GetTexRect();
-  m2::PointF const halfSize = m2::PointF(symbol.GetPixelSize()) * 0.5f;
+  m2::PointF const halfSize = symbol.GetPixelSize() * 0.5f;
 
-  Vertex data[4] =
+  MarkerVertex data[4] =
   {
     { glsl::vec2(-halfSize.x,  halfSize.y), glsl::ToVec2(texRect.LeftTop()) },
     { glsl::vec2(-halfSize.x, -halfSize.y), glsl::ToVec2(texRect.LeftBottom()) },
@@ -203,49 +218,49 @@ void MyPosition::CacheSymbol(dp::TextureManager::SymbolRegion const & symbol,
   };
 
   dp::AttributeProvider provider(1 /* streamCount */, dp::Batcher::VertexPerQuad);
-  provider.InitStream(0 /* streamIndex */, GetBindingInfo(), make_ref(data));
-  m_parts[part].first = batcher.InsertTriangleStrip(state, make_ref(&provider), nullptr);
+  provider.InitStream(0 /* streamIndex */, GetMarkerBindingInfo(), make_ref(data));
+  m_parts[part].first = batcher.InsertTriangleStrip(context, state, make_ref(&provider), nullptr);
   ASSERT(m_parts[part].first.IsValid(), ());
 }
 
-void MyPosition::CachePointPosition(ref_ptr<dp::TextureManager> mng)
+void MyPosition::CachePointPosition(ref_ptr<dp::GraphicsContext> context, ref_ptr<dp::TextureManager> mng)
 {
   int const kSymbolsCount = 1;
   dp::TextureManager::SymbolRegion pointSymbol;
   mng->GetSymbolRegion("current-position", pointSymbol);
 
-  m_arrow3d.SetTexture(mng);
-
-  dp::GLState state(gpu::MY_POSITION_PROGRAM, dp::GLState::OverlayLayer);
+  auto state = CreateRenderState(gpu::Program::MyPosition, DepthLayer::OverlayLayer);
+  state.SetDepthTestEnabled(false);
   state.SetColorTexture(pointSymbol.GetTexture());
+  state.SetTextureIndex(pointSymbol.GetTextureIndex());
 
   dp::TextureManager::SymbolRegion * symbols[kSymbolsCount] = { &pointSymbol };
-  EMyPositionPart partIndices[kSymbolsCount] = { MY_POSITION_POINT };
+  EMyPositionPart partIndices[kSymbolsCount] = { MyPositionPoint };
   {
     dp::Batcher batcher(kSymbolsCount * dp::Batcher::IndexPerQuad, kSymbolsCount * dp::Batcher::VertexPerQuad);
-    dp::SessionGuard guard(batcher, [this](dp::GLState const & state, drape_ptr<dp::RenderBucket> && b)
+    batcher.SetBatcherHash(static_cast<uint64_t>(BatcherBucket::Default));
+    dp::SessionGuard guard(context, batcher,
+      [this](dp::RenderState const & state, drape_ptr<dp::RenderBucket> && b)
     {
-      drape_ptr<dp::RenderBucket> bucket = move(b);
+      drape_ptr<dp::RenderBucket> bucket = std::move(b);
       ASSERT(bucket->GetOverlayHandlesCount() == 0, ());
 
       m_nodes.emplace_back(state, bucket->MoveBuffer());
     });
 
-    int const partIndex = m_nodes.size();
+    auto const partIndex = m_nodes.size();
     for (int i = 0; i < kSymbolsCount; i++)
     {
       m_parts[partIndices[i]].second = partIndex;
-      CacheSymbol(*symbols[i], state, batcher, partIndices[i]);
+      CacheSymbol(context, *symbols[i], state, batcher, partIndices[i]);
     }
   }
 }
 
-void MyPosition::RenderPart(ref_ptr<dp::GpuProgramManager> mng,
-                            dp::UniformValuesStorage const & uniforms,
-                            MyPosition::EMyPositionPart part)
+void MyPosition::RenderPart(ref_ptr<dp::GraphicsContext> context, ref_ptr<gpu::ProgramManager> mng,
+                            gpu::ShapesProgramParams const & params, EMyPositionPart part)
 {
   TPart const & p = m_parts[part];
-  m_nodes[p.second].Render(mng, uniforms, p.first);
+  m_nodes[p.second].Render(context, mng, params, p.first);
 }
-
-} // namespace df
+}  // namespace df

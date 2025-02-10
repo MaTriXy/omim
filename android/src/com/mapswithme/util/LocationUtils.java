@@ -1,23 +1,31 @@
 package com.mapswithme.util;
 
 import android.annotation.SuppressLint;
+import android.app.Application;
 import android.content.ContentResolver;
+import android.content.Context;
 import android.location.Location;
+import android.location.LocationManager;
 import android.os.Build;
 import android.os.SystemClock;
 import android.provider.Settings;
+import androidx.annotation.NonNull;
 import android.text.TextUtils;
 import android.view.Surface;
 
 import com.mapswithme.maps.MwmApplication;
 import com.mapswithme.maps.location.LocationHelper;
+import com.mapswithme.util.log.Logger;
+import com.mapswithme.util.log.LoggerFactory;
+
+import java.util.List;
 
 public class LocationUtils
 {
   private LocationUtils() {}
 
-  public static final long LOCATION_EXPIRATION_TIME_MILLIS_SHORT = 60 * 1000; // 1 minute
-  public static final long LOCATION_EXPIRATION_TIME_MILLIS_LONG = 6 * 60 * 60 * 1000; // 6 hours
+  private static final Logger LOGGER = LoggerFactory.INSTANCE.getLogger(LoggerFactory.Type.LOCATION);
+  private static final String TAG = LocationUtils.class.getSimpleName();
 
   /**
    * Correct compass angles due to display orientation.
@@ -27,6 +35,8 @@ public class LocationUtils
     double correction = 0;
     switch (displayOrientation)
     {
+    case Surface.ROTATION_0:
+      return angle;
     case Surface.ROTATION_90:
       correction = Math.PI / 2.0;
       break;
@@ -38,11 +48,7 @@ public class LocationUtils
       break;
     }
 
-    // negative values (like -1.0) should remain negative (indicates that no direction available)
-    if (angle >= 0.0)
-      angle = correctAngle(angle, correction);
-
-    return angle;
+    return correctAngle(angle, correction);
   }
 
   public static double correctAngle(double angle, double correction)
@@ -96,18 +102,50 @@ public class LocationUtils
 
   @SuppressLint("InlinedApi")
   @SuppressWarnings("deprecation")
-  public static boolean areLocationServicesTurnedOn()
+  public static boolean areLocationServicesTurnedOn(@NonNull Context context)
   {
-    final ContentResolver resolver = MwmApplication.get().getContentResolver();
+    final ContentResolver resolver = context.getContentResolver();
     try
     {
-      return Build.VERSION.SDK_INT < Build.VERSION_CODES.KITKAT
-             ? !TextUtils.isEmpty(Settings.Secure.getString(resolver, Settings.Secure.LOCATION_PROVIDERS_ALLOWED))
-             : Settings.Secure.getInt(resolver, Settings.Secure.LOCATION_MODE) != Settings.Secure.LOCATION_MODE_OFF;
+      return Settings.Secure.getInt(resolver, Settings.Secure.LOCATION_MODE)
+             != Settings.Secure.LOCATION_MODE_OFF;
     } catch (Settings.SettingNotFoundException e)
     {
       e.printStackTrace();
       return false;
     }
+  }
+
+  private static void logAvailableProviders(@NonNull Context context)
+  {
+    LocationManager locMngr = (LocationManager) context.getSystemService(Context.LOCATION_SERVICE);
+    List<String> providers = locMngr.getProviders(true);
+    StringBuilder sb;
+    if (!providers.isEmpty())
+    {
+      sb = new StringBuilder("Available location providers:");
+      for (String provider : providers)
+        sb.append(" ").append(provider);
+    }
+    else
+    {
+      sb = new StringBuilder("There are no enabled location providers!");
+    }
+    LOGGER.i(TAG, sb.toString());
+  }
+
+  public static boolean checkProvidersAvailability(@NonNull Context context)
+  {
+    LocationManager locationManager = (LocationManager) context.getSystemService(Context.LOCATION_SERVICE);
+    if (locationManager == null)
+    {
+      LOGGER.e(TAG, "This device doesn't support the location service.");
+      return false;
+    }
+
+    boolean networkEnabled = locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER);
+    boolean gpsEnabled = locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER);
+    LocationUtils.logAvailableProviders(context);
+    return networkEnabled || gpsEnabled;
   }
 }

@@ -2,19 +2,26 @@
 
 #include "search/result.hpp"
 
+#include "editor/editable_data_source.hpp"
+
+#include "indexer/data_source.hpp"
+
 #include "storage/country_info_getter.hpp"
 #include "storage/storage.hpp"
-
-#include "indexer/index.hpp"
 
 #include "base/logging.hpp"
 #include "base/string_utils.hpp"
 
+#include <set>
+#include <string>
+#include <utility>
+
 namespace
 {
-bool GetGroupCountryIdFromFeature(storage::Storage const & storage, FeatureType const & ft,
-                                  string & name)
+bool GetGroupCountryIdFromFeature(storage::Storage const & storage, FeatureType & ft,
+                                  std::string & name)
 {
+  auto const & synonyms = storage.GetCountryNameSynonyms();
   int8_t const langIndices[] = {StringUtf8Multilang::kEnglishCode,
                                 StringUtf8Multilang::kDefaultCode,
                                 StringUtf8Multilang::kInternationalCode};
@@ -25,6 +32,13 @@ bool GetGroupCountryIdFromFeature(storage::Storage const & storage, FeatureType 
       continue;
     if (storage.IsInnerNode(name))
       return true;
+    auto const it = synonyms.find(name);
+    if (it == synonyms.end())
+      continue;
+    if (!storage.IsInnerNode(it->second))
+      continue;
+    name = it->second;
+    return true;
   }
   return false;
 }
@@ -32,50 +46,52 @@ bool GetGroupCountryIdFromFeature(storage::Storage const & storage, FeatureType 
 
 namespace search
 {
-DownloaderSearchCallback::DownloaderSearchCallback(Delegate & delegate, Index const & index,
+DownloaderSearchCallback::DownloaderSearchCallback(Delegate & delegate,
+                                                   DataSource const & dataSource,
                                                    storage::CountryInfoGetter const & infoGetter,
                                                    storage::Storage const & storage,
                                                    storage::DownloaderSearchParams params)
   : m_delegate(delegate)
-  , m_index(index)
+  , m_dataSource(dataSource)
   , m_infoGetter(infoGetter)
   , m_storage(storage)
-  , m_params(move(params))
+  , m_params(std::move(params))
 {
 }
 
 void DownloaderSearchCallback::operator()(search::Results const & results)
 {
   storage::DownloaderSearchResults downloaderSearchResults;
+  std::set<storage::DownloaderSearchResult> uniqueResults;
 
   for (auto const & result : results)
   {
     if (!result.HasPoint())
       continue;
 
-    if (result.GetResultType() != search::Result::RESULT_LATLON)
+    if (result.GetResultType() != search::Result::Type::LatLon)
     {
       FeatureID const & fid = result.GetFeatureID();
-      Index::FeaturesLoaderGuard loader(m_index, fid.m_mwmId);
-      FeatureType ft;
-      if (!loader.GetFeatureByIndex(fid.m_index, ft))
+      FeaturesLoaderGuard loader(m_dataSource, fid.m_mwmId);
+      auto ft = loader.GetFeatureByIndex(fid.m_index);
+      if (!ft)
       {
         LOG(LERROR, ("Feature can't be loaded:", fid));
         continue;
       }
 
-      ftypes::Type const type = ftypes::IsLocalityChecker::Instance().GetType(ft);
+      ftypes::LocalityType const type = ftypes::IsLocalityChecker::Instance().GetType(*ft);
 
-      if (type == ftypes::COUNTRY || type == ftypes::STATE)
+      if (type == ftypes::LocalityType::Country || type == ftypes::LocalityType::State)
       {
-        string groupFeatureName;
-        if (GetGroupCountryIdFromFeature(m_storage, ft, groupFeatureName))
+        std::string groupFeatureName;
+        if (GetGroupCountryIdFromFeature(m_storage, *ft, groupFeatureName))
         {
           storage::DownloaderSearchResult downloaderResult(groupFeatureName,
                                                            result.GetString() /* m_matchedName */);
-          if (m_uniqueResults.find(downloaderResult) == m_uniqueResults.end())
+          if (uniqueResults.find(downloaderResult) == uniqueResults.end())
           {
-            m_uniqueResults.insert(downloaderResult);
+            uniqueResults.insert(downloaderResult);
             downloaderSearchResults.m_results.push_back(downloaderResult);
           }
           continue;
@@ -83,15 +99,15 @@ void DownloaderSearchCallback::operator()(search::Results const & results)
       }
     }
     auto const & mercator = result.GetFeatureCenter();
-    storage::TCountryId const & countryId = m_infoGetter.GetRegionCountryId(mercator);
+    storage::CountryId const & countryId = m_infoGetter.GetRegionCountryId(mercator);
     if (countryId == storage::kInvalidCountryId)
       continue;
 
     storage::DownloaderSearchResult downloaderResult(countryId,
                                                      result.GetString() /* m_matchedName */);
-    if (m_uniqueResults.find(downloaderResult) == m_uniqueResults.end())
+    if (uniqueResults.find(downloaderResult) == uniqueResults.end())
     {
-      m_uniqueResults.insert(downloaderResult);
+      uniqueResults.insert(downloaderResult);
       downloaderSearchResults.m_results.push_back(downloaderResult);
     }
   }

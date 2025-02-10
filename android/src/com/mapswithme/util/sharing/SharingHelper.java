@@ -1,70 +1,88 @@
 package com.mapswithme.util.sharing;
 
 import android.app.Activity;
+import android.app.ProgressDialog;
 import android.content.Context;
-import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.ActivityInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
-import android.support.annotation.DrawableRes;
-import android.support.annotation.StringRes;
 import android.text.TextUtils;
 
+import androidx.annotation.DrawableRes;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import androidx.annotation.StringRes;
+import com.cocosw.bottomsheet.BottomSheet;
+import com.google.gson.Gson;
+import com.mapswithme.maps.MwmApplication;
+import com.mapswithme.maps.R;
+import com.mapswithme.maps.base.Initializable;
+import com.mapswithme.maps.bookmarks.data.BookmarkManager;
+import com.mapswithme.maps.bookmarks.data.BookmarkSharingResult;
+import com.mapswithme.maps.dialog.DialogUtils;
+import com.mapswithme.util.BottomSheetHelper;
+import com.mapswithme.util.concurrency.ThreadPool;
+import com.mapswithme.util.concurrency.UiThread;
+import com.mapswithme.util.log.Logger;
+import com.mapswithme.util.log.LoggerFactory;
+
+import java.io.File;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-import com.cocosw.bottomsheet.BottomSheet;
-import com.google.gson.Gson;
-import com.mapswithme.maps.MwmApplication;
-import com.mapswithme.maps.R;
-import com.mapswithme.maps.bookmarks.data.BookmarkManager;
-import com.mapswithme.util.BottomSheetHelper;
-import com.mapswithme.util.concurrency.ThreadPool;
-import com.mapswithme.util.concurrency.UiThread;
-
-public final class SharingHelper
+public enum SharingHelper implements Initializable<Context>
 {
+  INSTANCE;
+
+  private static final Logger LOGGER = LoggerFactory.INSTANCE.getLogger(LoggerFactory.Type.MISC);
+  private static final String TAG = SharingHelper.class.getSimpleName();
   private static final String PREFS_STORAGE = "sharing";
   private static final String PREFS_KEY_ITEMS = "items";
+  private static final String KMZ_MIME_TYPE = "application/vnd.google-earth.kmz";
 
-  private static boolean sInitialized;
-  private static final SharingHelper sInstance = new SharingHelper();
-
-  private final SharedPreferences mPrefs = MwmApplication.get().getSharedPreferences(PREFS_STORAGE, Context.MODE_PRIVATE);
+  @SuppressWarnings("NotNullFieldNotInitialized")
+  @NonNull
+  private Context mContext;
+  @SuppressWarnings("NotNullFieldNotInitialized")
+  @NonNull
+  private SharedPreferences mPrefs;
   private final Map<String, SharingTarget> mItems = new HashMap<>();
 
-  private SharingHelper()
-  {}
+  @Nullable
+  private ProgressDialog mProgressDialog;
 
-  public static void prepare()
+  @Override
+  public void initialize(@Nullable Context context)
   {
-    if (sInitialized)
-      return;
+    mContext = context;
+    mPrefs = MwmApplication.from(context).getSharedPreferences(PREFS_STORAGE, Context.MODE_PRIVATE);
 
-    sInitialized = true;
+    ThreadPool.getStorage().execute(
+        () ->
+        {
+          SharingTarget[] items;
+          String json = mPrefs.getString(PREFS_KEY_ITEMS, null);
+          items = parse(json);
 
-    ThreadPool.getStorage().execute(new Runnable()
-    {
-      @Override
-      public void run()
-      {
-        SharingTarget[] items;
-        String json = sInstance.mPrefs.getString(PREFS_KEY_ITEMS, null);
-        items = parse(json);
+          if (items != null)
+          {
+            for (SharingTarget item : items)
+              INSTANCE.mItems.put(item.packageName, item);
+          }
+        });
+  }
 
-        if (items != null)
-          for (SharingTarget item : items)
-            sInstance.mItems.put(item.packageName, item);
-      }
-    });
+  @Override
+  public void destroy()
+  {
+    // No op.
   }
 
   private static SharingTarget[] parse(String json)
@@ -107,7 +125,7 @@ public final class SharingHelper
     Set<String> missed = new HashSet<>(mItems.keySet());
 
     Intent it = data.getTargetIntent(null);
-    PackageManager pm = MwmApplication.get().getPackageManager();
+    PackageManager pm = MwmApplication.from(mContext).getPackageManager();
     List<ResolveInfo> rlist = pm.queryIntentActivities(it, 0);
 
     final List<SharingTarget> res = new ArrayList<>(rlist.size());
@@ -131,14 +149,7 @@ public final class SharingHelper
       res.add(target);
     }
 
-    Collections.sort(res, new Comparator<SharingTarget>()
-    {
-      @Override
-      public int compare(SharingTarget left, SharingTarget right)
-      {
-        return left.compareTo(right);
-      }
-    });
+    Collections.sort(res, SharingTarget::compareTo);
 
     for (String item : missed)
       mItems.remove(item);
@@ -156,12 +167,11 @@ public final class SharingHelper
 
   public static void shareOutside(final BaseShareable data, @StringRes int titleRes)
   {
-    shareInternal(data, titleRes, sInstance.findItems(data));
+    shareInternal(data, titleRes, INSTANCE.findItems(data));
   }
 
   private static void shareInternal(final BaseShareable data, int titleRes, final List<SharingTarget> items)
   {
-    boolean showing = BottomSheetHelper.isShowing();
     final BottomSheet.Builder builder = BottomSheetHelper.createGrid(data.getActivity(), titleRes)
                                                          .limit(R.integer.sharing_initial_rows);
 
@@ -169,35 +179,18 @@ public final class SharingHelper
     for (SharingTarget item : items)
       builder.sheet(i++, item.drawableIcon, item.name);
 
-    builder.listener(new DialogInterface.OnClickListener()
-    {
-      @Override
-      public void onClick(DialogInterface dialog, int which)
-      {
-        if (which < 0)
-          return;
+    builder.listener((dialog, which) ->
+                     {
+                       if (which < 0)
+                         return;
 
-        SharingTarget target = items.get(which);
-        sInstance.updateItem(target);
+                       SharingTarget target = items.get(which);
+                       INSTANCE.updateItem(target);
 
-        data.share(target);
-      }
-    });
+                       data.share(target);
+                     });
 
-    if (!showing)
-    {
-      builder.show();
-      return;
-    }
-
-    UiThread.runLater(new Runnable()
-    {
-      @Override
-      public void run()
-      {
-        builder.show();
-      }
-    }, 500);
+    UiThread.runLater(builder::show, 500);
   }
 
   private void updateItem(SharingTarget item)
@@ -213,17 +206,47 @@ public final class SharingHelper
     save();
   }
 
-  public static void shareBookmarksCategory(Activity context, int id)
+  public void prepareBookmarkCategoryForSharing(@NonNull Activity context, long catId)
   {
-    String path = MwmApplication.get().getTempPath();
-    String name = BookmarkManager.INSTANCE.nativeSaveToKmzFile(id, path);
-    if (name == null)
-      return;
+    mProgressDialog = DialogUtils.createModalProgressDialog(context, R.string.please_wait);
+    mProgressDialog.show();
+    BookmarkManager.INSTANCE.prepareCategoryForSharing(catId);
+  }
 
-    shareOutside(new LocalFileShareable(context, path + name + ".kmz", "application/vnd.google-earth.kmz")
-                              // TODO fix translation for some languages, that doesn't contain holder for filename
-                     .setText(context.getString(R.string.share_bookmarks_email_body, name))
-                     .setSubject(R.string.share_bookmarks_email_subject));
+  public void onPreparedFileForSharing(@NonNull Activity context,
+                                       @NonNull BookmarkSharingResult result)
+  {
+    if (mProgressDialog != null && mProgressDialog.isShowing())
+      mProgressDialog.dismiss();
+    shareBookmarksCategory(context, result);
+  }
+
+  private static void shareBookmarksCategory(@NonNull Activity context,
+                                             @NonNull BookmarkSharingResult result)
+  {
+    switch (result.getCode())
+    {
+      case BookmarkSharingResult.SUCCESS:
+        String name = new File(result.getSharingPath()).getName();
+        shareOutside(new LocalFileShareable(context, result.getSharingPath(), KMZ_MIME_TYPE)
+                         .setText(context.getString(R.string.share_bookmarks_email_body))
+                         .setSubject(R.string.share_bookmarks_email_subject));
+        break;
+      case BookmarkSharingResult.EMPTY_CATEGORY:
+        DialogUtils.showAlertDialog(context, R.string.bookmarks_error_title_share_empty,
+                                    R.string.bookmarks_error_message_share_empty);
+        break;
+      case BookmarkSharingResult.ARCHIVE_ERROR:
+      case BookmarkSharingResult.FILE_ERROR:
+        DialogUtils.showAlertDialog(context, R.string.dialog_routing_system_error,
+                                    R.string.bookmarks_error_message_share_general);
+        String catName = BookmarkManager.INSTANCE.getCategoryById(result.getCategoryId()).getName();
+        LOGGER.e(TAG, "Failed to share bookmark category '" + catName + "', error code: "
+                      + result.getCode());
+        break;
+      default:
+        throw new AssertionError("Unsupported bookmark sharing code: " + result.getCode());
+    }
   }
 
   public static void shareViralEditor(Activity context, @DrawableRes int imageId, @StringRes int subject, @StringRes int text)

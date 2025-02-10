@@ -5,10 +5,18 @@
 #include "search/ranking_utils.hpp"
 #include "search/result.hpp"
 
+#include "storage/storage_defines.hpp"
+
 #include "indexer/feature_data.hpp"
 
+#include "geometry/point2d.hpp"
+
+#include <cstdint>
+#include <string>
+#include <utility>
+#include <vector>
+
 class FeatureType;
-class CategoriesHolder;
 
 namespace storage
 {
@@ -20,179 +28,146 @@ namespace search
 {
 class ReverseGeocoder;
 
-/// First pass results class. Objects are creating during search in trie.
-/// Works fast without feature loading and provide ranking.
-class PreResult1
+// First pass results class. Objects are created during search in trie.
+// Works fast because it does not load features.
+class PreRankerResult
 {
 public:
-  PreResult1(FeatureID const & fID, PreRankingInfo const & info);
+  PreRankerResult(FeatureID const & id, PreRankingInfo const & info,
+                  std::vector<ResultTracer::Branch> const & provenance);
 
-  static bool LessRank(PreResult1 const & r1, PreResult1 const & r2);
-  static bool LessDistance(PreResult1 const & r1, PreResult1 const & r2);
+  static bool LessRankAndPopularity(PreRankerResult const & lhs, PreRankerResult const & rhs);
+  static bool LessDistance(PreRankerResult const & lhs, PreRankerResult const & rhs);
+  static bool LessByExactMatch(PreRankerResult const & lhs, PreRankerResult const & rhs);
 
-  inline FeatureID GetId() const { return m_id; }
-  inline double GetDistance() const { return m_info.m_distanceToPivot; }
-  inline uint8_t GetRank() const { return m_info.m_rank; }
-  inline PreRankingInfo & GetInfo() { return m_info; }
-  inline PreRankingInfo const & GetInfo() const { return m_info; }
+  struct CategoriesComparator
+  {
+    bool operator()(PreRankerResult const & lhs, PreRankerResult const & rhs) const;
+
+    m2::RectD m_viewport;
+    bool m_positionIsInsideViewport = false;
+    bool m_detailedScale = false;
+  };
+
+  FeatureID const & GetId() const { return m_id; }
+  double GetDistance() const { return m_info.m_distanceToPivot; }
+  uint8_t GetRank() const { return m_info.m_rank; }
+  uint8_t GetPopularity() const { return m_info.m_popularity; }
+  std::pair<uint8_t, float> GetRating() const { return m_info.m_rating; }
+  PreRankingInfo const & GetInfo() const { return m_info; }
+  std::vector<ResultTracer::Branch> const & GetProvenance() const { return m_provenance; }
+  size_t GetInnermostTokensNumber() const { return m_info.InnermostTokenRange().Size(); }
+  size_t GetMatchedTokensNumber() const { return m_matchedTokensNumber; }
+
+  void SetRank(uint8_t rank) { m_info.m_rank = rank; }
+  void SetPopularity(uint8_t popularity) { m_info.m_popularity = popularity; }
+  void SetRating(std::pair<uint8_t, float> const & rating) { m_info.m_rating = rating; }
+  void SetDistanceToPivot(double distance) { m_info.m_distanceToPivot = distance; }
+  void SetCenter(m2::PointD const & center)
+  {
+    m_info.m_center = center;
+    m_info.m_centerLoaded = true;
+  }
 
 private:
-  friend class PreResult2;
+  friend class RankerResult;
 
   FeatureID m_id;
   PreRankingInfo m_info;
+
+  size_t m_matchedTokensNumber = 0;
+
+  // The call path in the Geocoder that leads to this result.
+  std::vector<ResultTracer::Branch> m_provenance;
 };
 
-/// Second result class. Objects are creating during reading of features.
-/// Read and fill needed info for ranking and getting final results.
-class PreResult2
+// Second result class. Objects are created during reading of features.
+// Read and fill needed info for ranking and getting final results.
+class RankerResult
 {
-  friend class PreResult2Maker;
-
 public:
-  enum ResultType
+  enum class Type
   {
-    RESULT_LATLON,
-    RESULT_FEATURE,
-    RESULT_BUILDING  //!< Buildings are not filtered out in duplicates filter.
+    LatLon,
+    Feature,
+    Building,  //!< Buildings are not filtered out in duplicates filter.
+    Postcode
   };
 
-  /// For RESULT_FEATURE and RESULT_BUILDING.
-  PreResult2(FeatureType const & f, PreResult1 const * p, m2::PointD const & center,
-             m2::PointD const & pivot, string const & displayName, string const & fileName);
+  /// For Type::Feature and Type::Building.
+  RankerResult(FeatureType & f, m2::PointD const & center, m2::PointD const & pivot,
+               std::string const & displayName, std::string const & fileName);
 
-  /// For RESULT_LATLON.
-  PreResult2(double lat, double lon);
+  /// For Type::LatLon.
+  RankerResult(double lat, double lon);
 
-  inline search::RankingInfo const & GetRankingInfo() const { return m_info; }
-
-  template <typename TInfo>
-  inline void SetRankingInfo(TInfo && info)
-  {
-    m_info = forward<TInfo>(info);
-  }
-
-  /// @param[in]  infoGetter Need to get region for result.
-  /// @param[in]  pCat    Categories need to display readable type string.
-  /// @param[in]  pTypes  Set of preffered types that match input tokens by categories.
-  /// @param[in]  lang    Current system language.
-  /// @param[in]  coder   May be nullptr - no need to calculate address.
-  Result GenerateFinalResult(storage::CountryInfoGetter const & infoGetter,
-                             CategoriesHolder const * pCat, set<uint32_t> const * pTypes,
-                             int8_t locale, ReverseGeocoder const * coder) const;
-
-  /// Filter equal features for different mwm's.
-  class StrictEqualF
-  {
-  public:
-    StrictEqualF(PreResult2 const & r, double const epsMeters);
-
-    bool operator()(PreResult2 const & r) const;
-
-  private:
-    PreResult2 const & m_r;
-    double const m_epsMeters;
-  };
-
-  /// To filter equal linear objects.
-  //@{
-  struct LessLinearTypesF
-  {
-    bool operator() (PreResult2 const & r1, PreResult2 const & r2) const;
-  };
-  class EqualLinearTypesF
-  {
-  public:
-    bool operator() (PreResult2 const & r1, PreResult2 const & r2) const;
-  };
-  //@}
-
-  string DebugPrint() const;
+  /// For Type::Postcode.
+  RankerResult(m2::PointD const & coord, std::string const & postcode);
 
   bool IsStreet() const;
 
-  inline FeatureID const & GetID() const { return m_id; }
-  inline string const & GetName() const { return m_str; }
-  inline feature::TypesHolder const & GetTypes() const { return m_types; }
-  inline m2::PointD GetCenter() const { return m_region.m_point; }
+  search::RankingInfo const & GetRankingInfo() const { return m_info; }
+
+  template <typename Info>
+  inline void SetRankingInfo(Info && info)
+  {
+    m_info = std::forward<Info>(info);
+  }
+
+  FeatureID const & GetID() const { return m_id; }
+  std::string const & GetName() const { return m_str; }
+  feature::TypesHolder const & GetTypes() const { return m_types; }
+  Type const & GetResultType() const { return m_resultType; }
+  m2::PointD GetCenter() const { return m_region.m_point; }
+  double GetDistance() const { return m_distance; }
+  feature::GeomType GetGeomType() const { return m_geomType; }
+  Result::Details GetDetails() const { return m_details; }
+
+  double GetDistanceToPivot() const { return m_info.m_distanceToPivot; }
+  double GetLinearModelRank() const { return m_info.GetLinearModelRank(); }
+
+  bool GetCountryId(storage::CountryInfoGetter const & infoGetter, uint32_t ftype,
+                    storage::CountryId & countryId) const;
+
+  bool IsEqualCommon(RankerResult const & r) const;
+
+  uint32_t GetBestType(std::vector<uint32_t> const & preferredTypes = {}) const;
+
+  std::vector<ResultTracer::Branch> const & GetProvenance() const { return m_provenance; }
 
 private:
-  bool IsEqualCommon(PreResult2 const & r) const;
-
-  FeatureID m_id;
-  feature::TypesHolder m_types;
-
-  uint32_t GetBestType(set<uint32_t> const * pPrefferedTypes = 0) const;
-
-  string m_str;
+  friend class RankerResultMaker;
 
   struct RegionInfo
   {
-    string m_file;
+    storage::CountryId m_countryId;
     m2::PointD m_point;
 
-    inline void SetParams(string const & file, m2::PointD const & pt)
+    void SetParams(storage::CountryId const & countryId, m2::PointD const & point)
     {
-      m_file = file;
-      m_point = pt;
+      m_countryId = countryId;
+      m_point = point;
     }
 
-    void GetRegion(storage::CountryInfoGetter const & infoGetter,
-                   storage::CountryInfo & info) const;
-  } m_region;
+    bool GetCountryId(storage::CountryInfoGetter const & infoGetter,
+                      storage::CountryId & countryId) const;
+  };
 
-  string GetRegionName(storage::CountryInfoGetter const & infoGetter, uint32_t fType) const;
+  RegionInfo m_region;
+  FeatureID m_id;
+  feature::TypesHolder m_types;
+  std::string m_str;
+  double m_distance = 0.0;
+  Type m_resultType;
+  RankingInfo m_info = {};
+  feature::GeomType m_geomType = feature::GeomType::Undefined;
+  Result::Details m_details;
 
-  double m_distance;
-  ResultType m_resultType;
-  RankingInfo m_info;
-  feature::EGeomType m_geomType;
-
-  Result::Metadata m_metadata;
+  // The call path in the Geocoder that leads to this result.
+  std::vector<ResultTracer::Branch> m_provenance;
 };
 
-inline string DebugPrint(PreResult2 const & t)
-{
-  return t.DebugPrint();
-}
+void FillDetails(FeatureType & ft, Result::Details & meta);
 
-void ProcessMetadata(FeatureType const & ft, Result::Metadata & meta);
-
-class IndexedValue
-{
-  /// @todo Do not use shared_ptr for optimization issues.
-  /// Need to rewrite std::unique algorithm.
-  unique_ptr<PreResult2> m_value;
-
-  double m_rank;
-  double m_distanceToPivot;
-
-  friend string DebugPrint(IndexedValue const & value)
-  {
-    ostringstream os;
-    os << "IndexedValue [";
-    if (value.m_value)
-      os << DebugPrint(*value.m_value);
-    os << "]";
-    return os.str();
-  }
-
-public:
-  explicit IndexedValue(unique_ptr<PreResult2> value)
-    : m_value(move(value)), m_rank(0.0), m_distanceToPivot(numeric_limits<double>::max())
-  {
-    if (!m_value)
-      return;
-
-    auto const & info = m_value->GetRankingInfo();
-    m_rank = info.GetLinearModelRank();
-    m_distanceToPivot = info.m_distanceToPivot;
-  }
-
-  PreResult2 const & operator*() const { return *m_value; }
-
-  inline double GetRank() const { return m_rank; }
-
-  inline double GetDistanceToPivot() const { return m_distanceToPivot; }
-};
+std::string DebugPrint(RankerResult const & r);
 }  // namespace search

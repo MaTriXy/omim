@@ -1,68 +1,139 @@
 #include "drape_frontend/color_constants.hpp"
+#include "drape_frontend/apply_feature_functors.hpp"
+
+#include "platform/platform.hpp"
+
+#include "indexer/drawing_rules.hpp"
+#include "indexer/map_style_reader.hpp"
+
+#include "coding/reader.hpp"
 
 #include "base/assert.hpp"
+#include "base/string_utils.hpp"
 
-#include "std/array.hpp"
-#include "std/unordered_map.hpp"
+#include "3party/jansson/myjansson.hpp"
+
+#include <fstream>
+
+using namespace std;
+
+namespace
+{
+string const kTransitColorFileName = "transit_colors.txt";
+
+class TransitColorsHolder
+{
+public:
+  dp::Color GetColor(string const & name) const
+  {
+    auto const style = GetStyleReader().GetCurrentStyle();
+    auto const isDarkStyle = style == MapStyle::MapStyleDark || style == MapStyle::MapStyleVehicleDark;
+    auto const & colors = isDarkStyle ? m_nightColors : m_clearColors;
+    auto const it = colors.find(name);
+    if (it == colors.cend())
+      return dp::Color();
+    return it->second;
+  }
+
+  void Load()
+  {
+    string data;
+    try
+    {
+      ReaderPtr<Reader>(GetPlatform().GetReader(kTransitColorFileName)).ReadAsString(data);
+    }
+    catch (RootException const & ex)
+    {
+      LOG(LWARNING, ("Loading transit colors failed:", ex.what()));
+      return;
+    }
+
+    try
+    {
+      base::Json root(data);
+
+      if (root.get() == nullptr)
+        return;
+
+      auto colors = json_object_get(root.get(), "colors");
+      if (colors == nullptr)
+        return;
+
+      const char * name = nullptr;
+      json_t * colorInfo = nullptr;
+      json_object_foreach(colors, name, colorInfo)
+      {
+        ASSERT(name != nullptr, ());
+        ASSERT(colorInfo != nullptr, ());
+
+        string strValue;
+        FromJSONObject(colorInfo, "clear", strValue);
+        m_clearColors[df::GetTransitColorName(name)] = ParseColor(strValue);
+        FromJSONObject(colorInfo, "night", strValue);
+        m_nightColors[df::GetTransitColorName(name)] = ParseColor(strValue);
+        FromJSONObject(colorInfo, "text", strValue);
+        m_clearColors[df::GetTransitTextColorName(name)] = ParseColor(strValue);
+        m_nightColors[df::GetTransitTextColorName(name)] = ParseColor(strValue);
+      }
+    }
+    catch (base::Json::Exception const & e)
+    {
+      LOG(LWARNING, ("Reading transit colors failed:", e.Msg()));
+    }
+  }
+
+  map<string, dp::Color> const & GetClearColors() const { return m_clearColors; }
+
+private:
+  dp::Color ParseColor(string const & colorStr)
+  {
+    unsigned int color;
+    if (strings::to_uint(colorStr, color, 16))
+      return df::ToDrapeColor(static_cast<uint32_t>(color));
+    LOG(LWARNING, ("Color parsing failed:", colorStr));
+    return dp::Color();
+  }
+
+  map<string, dp::Color> m_clearColors;
+  map<string, dp::Color> m_nightColors;
+};
+
+TransitColorsHolder & TransitColors()
+{
+  static TransitColorsHolder h;
+  return h;
+}
+}  // namespace
 
 namespace df
 {
-
-unordered_map<int, unordered_map<int, dp::Color>> kColorConstants =
+ColorConstant GetTransitColorName(ColorConstant const & localName)
 {
-  { MapStyleClear,
-    {
-      { GuiText, dp::Color(77, 77, 77, 221) },
-      { MyPositionAccuracy, dp::Color(0, 0, 0, 20) },
-      { Selection, dp::Color(30, 150, 240, 164) },
-      { Route, dp::Color(21, 121, 244, 204) },
-      { RoutePedestrian, dp::Color(29, 51, 158, 204) },
-      { RouteBicycle, dp::Color(156, 39, 176, 204) },
-      { Arrow3D, dp::Color(80, 170, 255, 255) },
-      { Arrow3DObsolete, dp::Color(130, 170, 200, 183) },
-      { TrackHumanSpeed, dp::Color(29, 51, 158, 255) },
-      { TrackCarSpeed, dp::Color(21, 121, 244, 255) },
-      { TrackPlaneSpeed, dp::Color(10, 196, 255, 255) },
-      { TrackUnknownDistance, dp::Color(97, 97, 97, 255) },
-      { TrafficNormal, dp::Color(60, 170, 60, 255) },
-      { TrafficSlow, dp::Color(255, 219, 88, 255) },
-      { TrafficVerySlow, dp::Color(227, 38, 54, 255) },
-    }
-  },
-  { MapStyleDark,
-    {
-      { GuiText, dp::Color(255, 255, 255, 178) },
-      { MyPositionAccuracy, dp::Color(255, 255, 255, 15) },
-      { Selection, dp::Color(255, 230, 140, 164) },
-      { Route, dp::Color(255, 202, 40, 180) },
-      { RoutePedestrian, dp::Color(255, 152, 0, 180) },
-      { RouteBicycle, dp::Color(216, 27, 96, 180) },
-      { Arrow3D, dp::Color(255, 220, 120, 255) },
-      { Arrow3DObsolete, dp::Color(215, 200, 160, 183) },
-      { TrackHumanSpeed, dp::Color(255, 152, 0, 255) },
-      { TrackCarSpeed, dp::Color(255, 202, 40, 255) },
-      { TrackPlaneSpeed, dp::Color(255, 245, 160, 255) },
-      { TrackUnknownDistance, dp::Color(150, 150, 150, 255) },
-      { TrafficNormal, dp::Color(60, 170, 60, 255) },
-      { TrafficSlow, dp::Color(255, 219, 88, 255) },
-      { TrafficVerySlow, dp::Color(227, 38, 54, 255) },
-    }
-  },
-};
-
-dp::Color GetColorConstant(MapStyle style, ColorConstant constant)
-{
-  // "Light" and "clear" theme share the same colors.
-  if (style == MapStyle::MapStyleLight)
-    style = MapStyle::MapStyleClear;
-
-  int const styleIndex = static_cast<int>(style);
-  int const colorIndex = static_cast<int>(constant);
-
-  ASSERT(kColorConstants.find(styleIndex) != kColorConstants.end(), ());
-  ASSERT(kColorConstants[styleIndex].find(colorIndex) != kColorConstants[styleIndex].end(), ());
-
-  return kColorConstants[styleIndex][colorIndex];
+  return kTransitColorPrefix + kTransitLinePrefix + localName;
 }
 
-} // namespace df
+ColorConstant GetTransitTextColorName(ColorConstant const & localName)
+{
+  return kTransitColorPrefix + kTransitTextPrefix + localName;
+}
+
+bool IsTransitColor(ColorConstant const & constant)
+{
+  return strings::StartsWith(constant, kTransitColorPrefix);
+}
+
+dp::Color GetColorConstant(ColorConstant const & constant)
+{
+  if (IsTransitColor(constant))
+    return TransitColors().GetColor(constant);
+  uint32_t const color = drule::rules().GetColor(constant);
+  return ToDrapeColor(color);
+}
+
+map<string, dp::Color> const & GetTransitClearColors() { return TransitColors().GetClearColors(); }
+
+void LoadTransitColors()
+{
+  TransitColors().Load();
+}
+}  // namespace df

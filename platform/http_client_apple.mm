@@ -26,16 +26,7 @@ SOFTWARE.
 #error This file must be compiled with ARC. Either turn on ARC for the project or use -fobjc-arc flag
 #endif
 
-#import <Foundation/NSString.h>
-#import <Foundation/NSURL.h>
-#import <Foundation/NSURLError.h>
-#import <Foundation/NSData.h>
-#import <Foundation/NSStream.h>
-#import <Foundation/NSURLRequest.h>
-#import <Foundation/NSURLResponse.h>
-#import <Foundation/NSURLConnection.h>
-#import <Foundation/NSError.h>
-#import <Foundation/NSFileManager.h>
+#import <Foundation/Foundation.h>
 
 #include <TargetConditionals.h> // TARGET_OS_IPHONE
 #if (TARGET_OS_IPHONE > 0)  // Works for all iOS devices, including iPad.
@@ -43,51 +34,86 @@ extern NSString * gBrowserUserAgent;
 #endif
 
 #include "platform/http_client.hpp"
+#import "platform/http_session_manager.h"
 
 #include "base/logging.hpp"
 
+@interface Connection : NSObject
++ (nullable NSData *)sendSynchronousRequest:(NSURLRequest *)request
+                          returningResponse:(NSURLResponse **)response
+                                      error:(NSError **)error;
+@end
+
+@implementation Connection
+
++ (NSData *)sendSynchronousRequest:(NSURLRequest *)request
+                 returningResponse:(NSURLResponse * __autoreleasing *)response
+                             error:(NSError * __autoreleasing *)error
+{
+  Connection * connection = [[Connection alloc] init];
+  return [connection sendSynchronousRequest:request returningResponse:response error:error];
+}
+
+- (NSData *)sendSynchronousRequest:(NSURLRequest *)request
+                 returningResponse:(NSURLResponse * __autoreleasing *)response
+                             error:(NSError * __autoreleasing *)error {
+  __block NSData * resultData = nil;
+  __block NSURLResponse * resultResponse = nil;
+  __block NSError * resultError = nil;
+
+  dispatch_group_t group = dispatch_group_create();
+  dispatch_group_enter(group);
+
+  [[[HttpSessionManager sharedManager]
+      dataTaskWithRequest:request
+                 delegate:nil
+        completionHandler:^(NSData * _Nullable data, NSURLResponse * _Nullable response,
+                            NSError * _Nullable error) {
+          resultData = data;
+          resultResponse = response;
+          resultError = error;
+          dispatch_group_leave(group);
+        }] resume];
+
+  dispatch_group_wait(group, DISPATCH_TIME_FOREVER);
+  *response = resultResponse;
+  *error = resultError;
+  return resultData;
+}
+@end
+
 namespace platform
 {
-// If we try to upload our data from the background fetch handler on iOS, we have ~30 seconds to do that gracefully.
-static const double kTimeoutInSeconds = 24.0;
-
-// TODO(AlexZ): Rewrite to use async implementation for better redirects handling and ability to cancel request from destructor.
 bool HttpClient::RunHttpRequest()
 {
   NSMutableURLRequest * request = [NSMutableURLRequest requestWithURL:
-      [NSURL URLWithString:[NSString stringWithUTF8String:m_urlRequested.c_str()]]
-      cachePolicy:NSURLRequestReloadIgnoringLocalCacheData timeoutInterval:kTimeoutInSeconds];
+      static_cast<NSURL *>([NSURL URLWithString:@(m_urlRequested.c_str())])
+      cachePolicy:NSURLRequestReloadIgnoringLocalCacheData timeoutInterval:m_timeoutSec];
   // We handle cookies manually.
   request.HTTPShouldHandleCookies = NO;
 
-  request.HTTPMethod = [NSString stringWithUTF8String:m_httpMethod.c_str()];
-  if (!m_contentType.empty())
-    [request setValue:[NSString stringWithUTF8String:m_contentType.c_str()] forHTTPHeaderField:@"Content-Type"];
-
-  if (!m_contentEncoding.empty())
-    [request setValue:[NSString stringWithUTF8String:m_contentEncoding.c_str()] forHTTPHeaderField:@"Content-Encoding"];
-
-  if (!m_userAgent.empty())
-    [request setValue:[NSString stringWithUTF8String:m_userAgent.c_str()] forHTTPHeaderField:@"User-Agent"];
+  request.HTTPMethod = @(m_httpMethod.c_str());
+  NSString * userAgentStr = @"User-Agent";
+  BOOL hasUserAgentHeader = NO;
+  for (auto const & header : m_headers)
+  {
+    NSString * field = @(header.first.c_str());
+    if ([field compare:userAgentStr] == NSOrderedSame)
+      hasUserAgentHeader = YES;
+    [request setValue:@(header.second.c_str()) forHTTPHeaderField:field];
+  }
 
   if (!m_cookies.empty())
     [request setValue:[NSString stringWithUTF8String:m_cookies.c_str()] forHTTPHeaderField:@"Cookie"];
 #if (TARGET_OS_IPHONE > 0)
-  else if (gBrowserUserAgent)
-    [request setValue:gBrowserUserAgent forHTTPHeaderField:@"User-Agent"];
+  else if (!hasUserAgentHeader && gBrowserUserAgent)
+    [request setValue:gBrowserUserAgent forHTTPHeaderField:userAgentStr];
 #endif // TARGET_OS_IPHONE
-
-  if (!m_basicAuthUser.empty())
-  {
-    NSData * loginAndPassword = [[NSString stringWithUTF8String:(m_basicAuthUser + ":" + m_basicAuthPassword).c_str()] dataUsingEncoding:NSUTF8StringEncoding];
-    [request setValue:[NSString stringWithFormat:@"Basic %@", [loginAndPassword base64EncodedStringWithOptions:0]] forHTTPHeaderField:@"Authorization"];
-  }
 
   if (!m_bodyData.empty())
   {
     request.HTTPBody = [NSData dataWithBytes:m_bodyData.data() length:m_bodyData.size()];
-    if (m_debugMode)
-      LOG(LINFO, ("Uploading buffer of size", m_bodyData.size(), "bytes"));
+    LOG(LDEBUG, ("Uploading buffer of size", m_bodyData.size(), "bytes"));
   }
   else if (!m_inputFile.empty())
   {
@@ -97,47 +123,49 @@ bool HttpClient::RunHttpRequest()
     if (err)
     {
       m_errorCode = static_cast<int>(err.code);
-      if (m_debugMode)
-        LOG(LERROR, ("Error: ", m_errorCode, [err.localizedDescription UTF8String]));
+      LOG(LDEBUG, ("Error: ", m_errorCode, err.localizedDescription.UTF8String));
 
       return false;
     }
     request.HTTPBodyStream = [NSInputStream inputStreamWithFileAtPath:path];
     [request setValue:[NSString stringWithFormat:@"%llu", file_size] forHTTPHeaderField:@"Content-Length"];
-    if (m_debugMode)
-      LOG(LINFO, ("Uploading file", m_inputFile, file_size, "bytes"));
+    LOG(LDEBUG, ("Uploading file", m_inputFile, file_size, "bytes"));
   }
 
   NSHTTPURLResponse * response = nil;
   NSError * err = nil;
-  NSData * url_data = [NSURLConnection sendSynchronousRequest:request returningResponse:&response error:&err];
+  NSData * url_data = [Connection sendSynchronousRequest:request returningResponse:&response error:&err];
+
+  m_headers.clear();
 
   if (response)
   {
     m_errorCode = static_cast<int>(response.statusCode);
-    m_urlReceived = [response.URL.absoluteString UTF8String];
+    m_urlReceived = response.URL.absoluteString.UTF8String;
 
-    NSString * content = [response.allHeaderFields objectForKey:@"Content-Type"];
-    if (content)
-      m_contentTypeReceived = std::move([content UTF8String]);
-
-    NSString * encoding = [response.allHeaderFields objectForKey:@"Content-Encoding"];
-    if (encoding)
-      m_contentEncodingReceived = std::move([encoding UTF8String]);
-
-    // Apple merges all Set-Cookie fields into one NSDictionary key delimited by commas.
-    NSString * cookies = [response.allHeaderFields objectForKey:@"Set-Cookie"];
-    if (cookies)
-      m_serverCookies = NormalizeServerCookies(std::move([cookies UTF8String]));
+    if (m_loadHeaders)
+    {
+      [response.allHeaderFields enumerateKeysAndObjectsUsingBlock:^(NSString * key, NSString * obj, BOOL * stop)
+      {
+        m_headers.emplace(key.lowercaseString.UTF8String, obj.UTF8String);
+      }];
+    }
+    else
+    {
+      NSString * cookies = [response.allHeaderFields objectForKey:@"Set-Cookie"];
+      if (cookies)
+        m_headers.emplace("Set-Cookie", NormalizeServerCookies(std::move(cookies.UTF8String)));
+    }
 
     if (url_data)
     {
       if (m_outputFile.empty())
         m_serverResponse.assign(reinterpret_cast<char const *>(url_data.bytes), url_data.length);
       else
-        [url_data writeToFile:[NSString stringWithUTF8String:m_outputFile.c_str()] atomically:YES];
+        [url_data writeToFile:@(m_outputFile.c_str()) atomically:YES];
 
     }
+
     return true;
   }
   // Request has failed if we are here.
@@ -150,8 +178,8 @@ bool HttpClient::RunHttpRequest()
   }
 
   m_errorCode = static_cast<int>(err.code);
-  if (m_debugMode)
-    LOG(LERROR, ("Error: ", m_errorCode, ':', [err.localizedDescription UTF8String], "while connecting to", m_urlRequested));
+  LOG(LDEBUG, ("Error: ", m_errorCode, ':', err.localizedDescription.UTF8String,
+               "while connecting to", m_urlRequested));
 
   return false;
 }

@@ -1,30 +1,29 @@
 package com.mapswithme.maps.location;
 
-import android.annotation.SuppressLint;
 import android.app.AlarmManager;
 import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
 import android.location.Location;
-import android.os.Environment;
 import android.os.SystemClock;
-import android.support.annotation.Nullable;
-import android.text.TextUtils;
-import android.util.Log;
+import androidx.annotation.NonNull;
 
-import com.mapswithme.maps.BuildConfig;
+import androidx.annotation.Nullable;
 import com.mapswithme.maps.MwmApplication;
-import com.mapswithme.maps.background.AppBackgroundTracker;
-import com.mapswithme.util.Constants;
-import com.mapswithme.util.StorageUtils;
+import com.mapswithme.maps.base.Initializable;
 import com.mapswithme.util.concurrency.UiThread;
-import com.mapswithme.util.log.FileLogger;
 import com.mapswithme.util.log.Logger;
+import com.mapswithme.util.log.LoggerFactory;
 
-public final class TrackRecorder
+public enum TrackRecorder implements Initializable<Context>
 {
-  private static final AlarmManager sAlarmManager = (AlarmManager)MwmApplication.get().getSystemService(Context.ALARM_SERVICE);
-  private static final Intent sAlarmIntent = new Intent("com.mapswithme.maps.TRACK_RECORDER_ALARM");
+  INSTANCE;
+
+  @NonNull
+  private static final Logger LOGGER = LoggerFactory.INSTANCE.getLogger(LoggerFactory.Type.TRACK_RECORDER);
+
+  private static final String TAG = TrackRecorder.class.getSimpleName();
+
   private static final long WAKEUP_INTERVAL_MS = 20000;
   private static final long STARTUP_AWAIT_INTERVAL_MS = 5000;
 
@@ -32,25 +31,22 @@ public final class TrackRecorder
   private static final long LOCATION_TIMEOUT_MIN_MS = 5000;
   private static final long LOCATION_TIMEOUT_MAX_MS = 80000;
 
-  private static final Runnable sStartupAwaitProc = new Runnable()
-  {
-    @Override
-    public void run()
-    {
-      restartAlarmIfEnabled();
-    }
-  };
+  private boolean mInitialized = false;
 
-  private static Boolean sEnableLogging;
-  @Nullable
-  private static Logger sLogger;
-
-  private static final LocationListener sLocationListener = new LocationListener.Simple()
+  @SuppressWarnings("NotNullFieldNotInitialized")
+  @NonNull
+  private Context mContext;
+  @NonNull
+  private AlarmManager mAlarmManager;
+  @NonNull
+  private final Runnable mStartupAwaitProc = this::restartAlarmIfEnabled;
+  @NonNull
+  private final LocationListener mLocationListener = new LocationListener.Simple()
   {
     @Override
     public void onLocationUpdated(Location location)
     {
-      log("onLocationUpdated()");
+      LOGGER.d(TAG, "onLocationUpdated()");
       setAwaitTimeout(LOCATION_TIMEOUT_MIN_MS);
       LocationHelper.INSTANCE.onLocationUpdated(location);
       TrackRecorderWakeService.stop();
@@ -59,68 +55,80 @@ public final class TrackRecorder
     @Override
     public void onLocationError(int errorCode)
     {
-      log("onLocationError() errorCode: " + errorCode);
-
+      LOGGER.e(TAG, "onLocationError() errorCode: " + errorCode);
       // Unrecoverable error occured: GPS disabled or inaccessible
       setEnabled(false);
     }
   };
 
-  private TrackRecorder() {}
-
-  public static void init()
+  @Override
+  public void initialize(@Nullable Context context)
   {
-    log("--------------------------------");
-    log("init()");
+    LOGGER.d(TAG, "Initialization of track recorder and setting the listener for track changes");
+    mContext = context;
+    mAlarmManager = (AlarmManager) MwmApplication.from(context)
+                                                 .getSystemService(Context.ALARM_SERVICE);
 
-    MwmApplication.backgroundTracker().addListener(new AppBackgroundTracker.OnTransitionListener()
-    {
-      @Override
-      public void onTransit(boolean foreground)
-      {
-        TrackRecorder.log("Transit to foreground: " + foreground);
+    MwmApplication.backgroundTracker(context).addListener(foreground -> {
+      LOGGER.d(TAG, "Transit to foreground: " + foreground);
 
-        UiThread.cancelDelayedTasks(sStartupAwaitProc);
-        if (foreground)
-          TrackRecorderWakeService.stop();
-        else
-          restartAlarmIfEnabled();
-      }
+      UiThread.cancelDelayedTasks(mStartupAwaitProc);
+      if (foreground)
+        TrackRecorderWakeService.stop();
+      else
+        restartAlarmIfEnabled();
     });
 
     if (nativeIsEnabled())
-      UiThread.runLater(sStartupAwaitProc, STARTUP_AWAIT_INTERVAL_MS);
+      UiThread.runLater(mStartupAwaitProc, STARTUP_AWAIT_INTERVAL_MS);
     else
       stop();
+
+    mInitialized = true;
   }
 
-  private static PendingIntent getAlarmIntent()
+  @Override
+  public void destroy()
   {
-    return PendingIntent.getBroadcast(MwmApplication.get(), 0, sAlarmIntent, 0);
+    // No op.
   }
 
-  private static void restartAlarmIfEnabled()
+  private void checkInitialization()
   {
-    TrackRecorder.log("restartAlarmIfEnabled()");
+    if (!mInitialized)
+      throw new AssertionError("Track recorder is not initialized!");
+  }
+
+  private PendingIntent getAlarmIntent()
+  {
+    Intent intent = new Intent(MwmApplication.from(mContext), TrackRecorderWakeReceiver.class);
+    return PendingIntent.getBroadcast(MwmApplication.from(mContext), 0, intent, 0);
+  }
+
+  private void restartAlarmIfEnabled()
+  {
+    LOGGER.d(TAG, "restartAlarmIfEnabled()");
     if (nativeIsEnabled())
-      sAlarmManager.set(AlarmManager.ELAPSED_REALTIME_WAKEUP, SystemClock.elapsedRealtime() + WAKEUP_INTERVAL_MS, getAlarmIntent());
+      mAlarmManager.set(AlarmManager.ELAPSED_REALTIME_WAKEUP, SystemClock.elapsedRealtime() + WAKEUP_INTERVAL_MS, getAlarmIntent());
   }
 
-  private static void stop()
+  private void stop()
   {
-    TrackRecorder.log("stop(). Cancel awake timer");
-    sAlarmManager.cancel(getAlarmIntent());
+    LOGGER.d(TAG, "stop(). Cancel awake timer");
+    mAlarmManager.cancel(getAlarmIntent());
     TrackRecorderWakeService.stop();
   }
 
-  public static boolean isEnabled()
+  public boolean isEnabled()
   {
+    checkInitialization();
     return nativeIsEnabled();
   }
 
-  public static void setEnabled(boolean enabled)
+  public void setEnabled(boolean enabled)
   {
-    log("setEnabled(): " + enabled);
+    checkInitialization();
+    LOGGER.d(TAG, "setEnabled(): " + enabled);
 
     setAwaitTimeout(LOCATION_TIMEOUT_MIN_MS);
     nativeSetEnabled(enabled);
@@ -131,42 +139,44 @@ public final class TrackRecorder
       stop();
   }
 
-  public static int getDuration()
+  public int getDuration()
   {
+    checkInitialization();
     return nativeGetDuration();
   }
 
-  public static void setDuration(int hours)
+  public void setDuration(int hours)
   {
+    checkInitialization();
     nativeSetDuration(hours);
   }
 
-  static void onWakeAlarm()
+  void onWakeAlarm()
   {
-    log("onWakeAlarm(). Enabled: " + nativeIsEnabled());
+    LOGGER.d(TAG, "onWakeAlarm(). Enabled: " + nativeIsEnabled());
 
-    UiThread.cancelDelayedTasks(sStartupAwaitProc);
+    UiThread.cancelDelayedTasks(mStartupAwaitProc);
 
-    if (nativeIsEnabled() && !MwmApplication.backgroundTracker().isForeground())
-      TrackRecorderWakeService.start();
+    if (nativeIsEnabled() && !MwmApplication.backgroundTracker(mContext).isForeground())
+      TrackRecorderWakeService.start(mContext);
     else
       stop();
   }
 
-  static long getAwaitTimeout()
+  long getAwaitTimeout()
   {
-    return MwmApplication.prefs().getLong(LOCATION_TIMEOUT_STORED_KEY, LOCATION_TIMEOUT_MIN_MS);
+    return MwmApplication.prefs(mContext).getLong(LOCATION_TIMEOUT_STORED_KEY, LOCATION_TIMEOUT_MIN_MS);
   }
 
-  private static void setAwaitTimeout(long timeout)
+  private void setAwaitTimeout(long timeout)
   {
-    log("setAwaitTimeout(): " + timeout);
+    LOGGER.d(TAG, "setAwaitTimeout(): " + timeout);
 
     if (timeout != getAwaitTimeout())
-      MwmApplication.prefs().edit().putLong(LOCATION_TIMEOUT_STORED_KEY, timeout).apply();
+      MwmApplication.prefs(mContext).edit().putLong(LOCATION_TIMEOUT_STORED_KEY, timeout).apply();
   }
 
-  static void incrementAwaitTimeout()
+  void incrementAwaitTimeout()
   {
     long current = getAwaitTimeout();
     long next = current * 2;
@@ -177,63 +187,31 @@ public final class TrackRecorder
       setAwaitTimeout(next);
   }
 
-  static void onServiceStarted()
+  void onServiceStarted()
   {
-    TrackRecorder.log("onServiceStarted(). Scheduled to be run on UI thread...");
+    LOGGER.d(TAG, "onServiceStarted(). Scheduled to be run on UI thread...");
 
-    UiThread.run(new Runnable()
-    {
-      @Override
-      public void run()
-      {
-        TrackRecorder.log("onServiceStarted(): actually runs here");
-        LocationHelper.INSTANCE.addListener(sLocationListener, false);
-      }
+    UiThread.run(() -> {
+      LOGGER.d(TAG, "onServiceStarted(): actually runs here");
+      LocationHelper.INSTANCE.addListener(mLocationListener, false);
     });
   }
 
-  static void onServiceStopped()
+  void onServiceStopped()
   {
-    TrackRecorder.log("onServiceStopped(). Scheduled to be run on UI thread...");
+    LOGGER.d(TAG, "onServiceStopped(). Scheduled to be run on UI thread...");
 
-    UiThread.run(new Runnable()
-    {
-      @Override
-      public void run()
-      {
-        TrackRecorder.log("onServiceStopped(): actually runs here");
-        LocationHelper.INSTANCE.removeListener(sLocationListener);
+    UiThread.run(() -> {
+      LOGGER.d(TAG, "onServiceStopped(): actually runs here");
+      LocationHelper.INSTANCE.removeListener(mLocationListener);
 
-        if (!MwmApplication.backgroundTracker().isForeground())
-          restartAlarmIfEnabled();
-      }
+      if (!MwmApplication.backgroundTracker(mContext).isForeground())
+        restartAlarmIfEnabled();
     });
   }
 
-  static void log(String message)
-  {
-    if (sEnableLogging == null)
-      sEnableLogging = ("debug".equals(BuildConfig.BUILD_TYPE) || "beta".equals(BuildConfig.BUILD_TYPE));
-
-    if (!sEnableLogging)
-      return;
-
-    synchronized (TrackRecorder.class)
-    {
-      if (sLogger == null)
-      {
-        String externalDir = StorageUtils.getExternalFilesDir();
-        if (!TextUtils.isEmpty(externalDir))
-          sLogger = new FileLogger(externalDir + "/gps-tracker.log");
-      }
-    }
-
-    if (sLogger != null)
-      sLogger.d(message);
-  }
-
-  private static native void nativeSetEnabled(boolean enable);
-  private static native boolean nativeIsEnabled();
-  private static native void nativeSetDuration(int hours);
-  private static native int nativeGetDuration();
+  private native void nativeSetEnabled(boolean enable);
+  private native boolean nativeIsEnabled();
+  private native void nativeSetDuration(int hours);
+  private native int nativeGetDuration();
 }

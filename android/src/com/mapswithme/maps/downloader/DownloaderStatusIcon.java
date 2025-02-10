@@ -1,7 +1,7 @@
 package com.mapswithme.maps.downloader;
 
-import android.support.annotation.AttrRes;
-import android.support.annotation.DrawableRes;
+import androidx.annotation.AttrRes;
+import androidx.annotation.DrawableRes;
 import android.util.SparseIntArray;
 import android.view.View;
 import android.widget.ImageView;
@@ -83,7 +83,8 @@ public class DownloaderStatusIcon
   public void update(CountryItem country)
   {
     boolean pending = (country.status == CountryItem.STATUS_ENQUEUED);
-    boolean inProgress = (country.status == CountryItem.STATUS_PROGRESS || pending);
+    boolean inProgress = (country.status == CountryItem.STATUS_PROGRESS ||
+                          country.status == CountryItem.STATUS_APPLYING || pending);
 
     UiUtils.showIf(inProgress, mProgress);
     UiUtils.showIf(!inProgress, mIcon);

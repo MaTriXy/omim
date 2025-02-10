@@ -2,18 +2,20 @@
 
 #include "platform/http_client.hpp"
 
-#include "coding/url_encode.hpp"
+#include "coding/url.hpp"
 
 #include "base/assert.hpp"
 #include "base/logging.hpp"
 #include "base/string_utils.hpp"
 
-#include "std/iostream.hpp"
-#include "std/map.hpp"
+#include <iostream>
+#include <map>
 
 #include "private.h"
 
 #include "3party/liboauthcpp/include/liboauthcpp/liboauthcpp.h"
+
+using namespace std;
 
 using platform::HttpClient;
 
@@ -49,19 +51,19 @@ string BuildPostRequest(map<string, string> const & params)
   {
     if (it != params.begin())
       result += "&";
-    result += it->first + "=" + UrlEncode(it->second);
+    result += it->first + "=" + url::UrlEncode(it->second);
   }
   return result;
 }
 }  // namespace
 
 // static
-bool OsmOAuth::IsValid(TKeySecret const & ks) noexcept
+bool OsmOAuth::IsValid(KeySecret const & ks) noexcept
 {
   return !(ks.first.empty() || ks.second.empty());
 }
 // static
-bool OsmOAuth::IsValid(TUrlRequestToken const & urt) noexcept
+bool OsmOAuth::IsValid(UrlRequestToken const & urt) noexcept
 {
   return !(urt.first.empty() || urt.second.first.empty() || urt.second.second.empty());
 }
@@ -81,7 +83,7 @@ OsmOAuth OsmOAuth::ServerAuth() noexcept
 #endif
 }
 // static
-OsmOAuth OsmOAuth::ServerAuth(TKeySecret const & userKeySecret) noexcept
+OsmOAuth OsmOAuth::ServerAuth(KeySecret const & userKeySecret) noexcept
 {
   OsmOAuth auth = ServerAuth();
   auth.SetKeySecret(userKeySecret);
@@ -91,14 +93,14 @@ OsmOAuth OsmOAuth::ServerAuth(TKeySecret const & userKeySecret) noexcept
 OsmOAuth OsmOAuth::IZServerAuth() noexcept
 {
   constexpr char const * kIZTestServer = "http://test.osmz.ru";
-  constexpr char const * kIZConsumerKey = "QqwiALkYZ4Jd19lo1dtoPhcwGQUqMCMeVGIQ8Ahb";
-  constexpr char const * kIZConsumerSecret = "wi9HZKFoNYS06Yad5s4J0bfFo2hClMlH7pXaXWS3";
+  constexpr char const * kIZConsumerKey = "F0rURWssXDYxtm61279rHdyu3iSLYSP3LdF6DL3Y";
+  constexpr char const * kIZConsumerSecret = "IoR5TAedXxcybtd5tIBZqAK07rDRAuFMsQ4nhAP6";
   return OsmOAuth(kIZConsumerKey, kIZConsumerSecret, kIZTestServer, kIZTestServer);
 }
 // static
 OsmOAuth OsmOAuth::DevServerAuth() noexcept
 {
-  constexpr char const * kOsmDevServer = "http://master.apis.dev.openstreetmap.org";
+  constexpr char const * kOsmDevServer = "https://master.apis.dev.openstreetmap.org";
   constexpr char const * kOsmDevConsumerKey = "eRtN6yKZZf34oVyBnyaVbsWtHIIeptLArQKdTwN3";
   constexpr char const * kOsmDevConsumerSecret = "lC124mtm2VqvKJjSh35qBpKfrkeIjpKuGe38Hd1H";
   return OsmOAuth(kOsmDevConsumerKey, kOsmDevConsumerSecret, kOsmDevServer, kOsmDevServer);
@@ -111,17 +113,18 @@ OsmOAuth OsmOAuth::ProductionServerAuth() noexcept
   return OsmOAuth(OSM_CONSUMER_KEY, OSM_CONSUMER_SECRET, kOsmMainSiteURL, kOsmApiURL);
 }
 
-void OsmOAuth::SetKeySecret(TKeySecret const & keySecret) noexcept { m_tokenKeySecret = keySecret; }
+void OsmOAuth::SetKeySecret(KeySecret const & keySecret) noexcept { m_tokenKeySecret = keySecret; }
 
-TKeySecret const & OsmOAuth::GetKeySecret() const noexcept { return m_tokenKeySecret; }
+KeySecret const & OsmOAuth::GetKeySecret() const noexcept { return m_tokenKeySecret; }
 
 bool OsmOAuth::IsAuthorized() const noexcept{ return IsValid(m_tokenKeySecret); }
 
 // Opens a login page and extract a cookie and a secret token.
-OsmOAuth::SessionID OsmOAuth::FetchSessionId(string const & subUrl) const
+OsmOAuth::SessionID OsmOAuth::FetchSessionId(string const & subUrl, string const & cookies) const
 {
-  string const url = m_baseUrl + subUrl + "?cookie_test=true";
+  string const url = m_baseUrl + subUrl + (cookies.empty() ? "?cookie_test=true" : "");
   HttpClient request(url);
+  request.SetCookies(cookies);
   if (!request.RunHttpRequest())
     MYTHROW(NetworkError, ("FetchSessionId Network error while connecting to", url));
   if (request.WasRedirected())
@@ -203,8 +206,11 @@ bool OsmOAuth::LoginSocial(string const & callbackPart, string const & socialTok
 }
 
 // Fakes a buttons press to automatically accept requested permissions.
-string OsmOAuth::SendAuthRequest(string const & requestTokenKey, SessionID const & sid) const
+string OsmOAuth::SendAuthRequest(string const & requestTokenKey, SessionID const & lastSid) const
 {
+  // We have to get a new CSRF token, using existing cookies to open the correct page.
+  SessionID const & sid =
+      FetchSessionId("/oauth/authorize?oauth_token=" + requestTokenKey, lastSid.m_cookies);
   map<string, string> const params =
   {
     {"oauth_token", requestTokenKey},
@@ -233,7 +239,7 @@ string OsmOAuth::SendAuthRequest(string const & requestTokenKey, SessionID const
   return callbackURL.substr(pos + vKey.length(), end == string::npos ? end : end - pos - vKey.length());
 }
 
-TRequestToken OsmOAuth::FetchRequestToken() const
+RequestToken OsmOAuth::FetchRequestToken() const
 {
   OAuth::Consumer const consumer(m_consumerKeySecret.first, m_consumerKeySecret.second);
   OAuth::Client oauth(&consumer);
@@ -252,7 +258,8 @@ TRequestToken OsmOAuth::FetchRequestToken() const
   return { reqToken.key(), reqToken.secret() };
 }
 
-TKeySecret OsmOAuth::FinishAuthorization(TRequestToken const & requestToken, string const & verifier) const
+KeySecret OsmOAuth::FinishAuthorization(RequestToken const & requestToken,
+                                        string const & verifier) const
 {
   OAuth::Consumer const consumer(m_consumerKeySecret.first, m_consumerKeySecret.second);
   OAuth::Token const reqToken(requestToken.first, requestToken.second, verifier);
@@ -274,10 +281,10 @@ TKeySecret OsmOAuth::FinishAuthorization(TRequestToken const & requestToken, str
 }
 
 // Given a web session id, fetches an OAuth access token.
-TKeySecret OsmOAuth::FetchAccessToken(SessionID const & sid) const
+KeySecret OsmOAuth::FetchAccessToken(SessionID const & sid) const
 {
   // Aquire a request token.
-  TRequestToken const requestToken = FetchRequestToken();
+  RequestToken const requestToken = FetchRequestToken();
 
   // Faking a button press for access rights.
   string const pin = SendAuthRequest(requestToken.first, sid);
@@ -314,18 +321,18 @@ bool OsmOAuth::AuthorizeGoogle(string const & googleToken)
   return true;
 }
 
-OsmOAuth::TUrlRequestToken OsmOAuth::GetFacebookOAuthURL() const
+OsmOAuth::UrlRequestToken OsmOAuth::GetFacebookOAuthURL() const
 {
-  TRequestToken const requestToken = FetchRequestToken();
+  RequestToken const requestToken = FetchRequestToken();
   string const url = m_baseUrl + kFacebookOAuthPart + requestToken.first;
-  return TUrlRequestToken(url, requestToken);
+  return UrlRequestToken(url, requestToken);
 }
 
-OsmOAuth::TUrlRequestToken OsmOAuth::GetGoogleOAuthURL() const
+OsmOAuth::UrlRequestToken OsmOAuth::GetGoogleOAuthURL() const
 {
-  TRequestToken const requestToken = FetchRequestToken();
+  RequestToken const requestToken = FetchRequestToken();
   string const url = m_baseUrl + kGoogleOAuthPart + requestToken.first;
-  return TUrlRequestToken(url, requestToken);
+  return UrlRequestToken(url, requestToken);
 }
 
 bool OsmOAuth::ResetPassword(string const & email) const

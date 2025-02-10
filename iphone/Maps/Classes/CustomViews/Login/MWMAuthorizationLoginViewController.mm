@@ -1,21 +1,10 @@
-#import "Common.h"
-#import "MapsAppDelegate.h"
 #import "MWMAlertViewController.h"
 #import "MWMAuthorizationCommon.h"
 #import "MWMAuthorizationLoginViewController.h"
 #import "MWMAuthorizationWebViewLoginViewController.h"
 #import "Statistics.h"
-#import "UIColor+MapsMeColor.h"
 
-#include "Framework.h"
-
-#include "editor/server_api.hpp"
-
-#include "indexer/osm_editor.hpp"
-
-#include "platform/platform.hpp"
-
-#include "base/logging.hpp"
+#include <CoreApi/Framework.h>
 
 namespace
 {
@@ -74,15 +63,11 @@ using namespace osm_auth_ios;
   self.loginGoogleButton.enabled = isConnected;
   self.loginFacebookButton.enabled = isConnected;
   self.signupButton.enabled = isConnected;
-
-  AuthorizationConfigButton(self.loginGoogleButton, AuthorizationButtonType::AuthorizationButtonTypeGoogle);
-  AuthorizationConfigButton(self.loginFacebookButton, AuthorizationButtonType::AuthorizationButtonTypeFacebook);
-  AuthorizationConfigButton(self.loginOSMButton, AuthorizationButtonType::AuthorizationButtonTypeOSM);
-
+  
   if (!isConnected)
   {
-    self.loginGoogleButton.layer.borderColor = [UIColor clearColor].CGColor;
-    self.loginFacebookButton.layer.borderColor = [UIColor clearColor].CGColor;
+    self.loginGoogleButton.layer.borderColor = UIColor.clearColor.CGColor;
+    self.loginFacebookButton.layer.borderColor = UIColor.clearColor.CGColor;
   }
 }
 
@@ -106,7 +91,7 @@ using namespace osm_auth_ios;
 
 #pragma mark - Actions
 
-- (void)performOnlineAction:(TMWMVoidBlock)block
+- (void)performOnlineAction:(MWMVoidBlock)block
 {
   if (Platform::IsConnected())
     block();
@@ -190,7 +175,7 @@ using namespace osm_auth_ios;
   int32_t rank;
   if (stats.GetRank(rank))
     self.rankLabel.text = @(rank).stringValue;
-  string levelUpFeat;
+  std::string levelUpFeat;
   if (stats.GetLevelUpRequiredFeat(levelUpFeat))
   {
     self.yourPlaceLabelCenterYAlignment.priority = UILayoutPriorityDefaultLow;
@@ -221,6 +206,8 @@ using namespace osm_auth_ios;
       [UIAlertController alertControllerWithTitle:nil
                                           message:nil
                                    preferredStyle:UIAlertControllerStyleActionSheet];
+  alertController.popoverPresentationController.barButtonItem =
+      self.navigationItem.rightBarButtonItem;
   [alertController addAction:[UIAlertAction actionWithTitle:kRefresh
                                                       style:UIAlertActionStyleDefault
                                                     handler:^(UIAlertAction * action) {
@@ -234,12 +221,6 @@ using namespace osm_auth_ios;
   [alertController
       addAction:[UIAlertAction actionWithTitle:kCancel style:UIAlertActionStyleCancel handler:nil]];
 
-  if (IPAD)
-  {
-    UIPopoverPresentationController * popPresenter =
-        [alertController popoverPresentationController];
-    popPresenter.barButtonItem = self.navigationItem.rightBarButtonItem;
-  }
   [self presentViewController:alertController animated:YES completion:nil];
 }
 

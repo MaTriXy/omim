@@ -4,7 +4,9 @@
 #include "routing/road_graph.hpp"
 #include "routing/turn_candidate.hpp"
 
-#include "std/vector.hpp"
+#include "geometry/point_with_altitude.hpp"
+
+#include <cstddef>
 
 namespace routing
 {
@@ -19,14 +21,15 @@ class IRoutingResult
 public:
   /// \returns information about all route segments.
   virtual TUnpackedPathSegments const & GetSegments() const = 0;
-  /// \brief For a |node|, |junctionPoint| and |ingoingPoint| (point before the |node|)
+  /// \brief For a |segmentRange|, |junctionPoint| and |ingoingPoint| (point before the |junctionPoint|)
   /// this method computes number of ingoing ways to |junctionPoint| and fills |outgoingTurns|.
-  virtual void GetPossibleTurns(TNodeId node, m2::PointD const & ingoingPoint,
-                                m2::PointD const & junctionPoint, size_t & ingoingCount,
-                                TurnCandidates & outgoingTurns) const = 0;
+  /// \note This method should not be called for |segmentRange| of fake edges.
+  /// So method |segmentRange.IsClear()| should return false.
+  virtual void GetPossibleTurns(SegmentRange const & segmentRange, m2::PointD const & junctionPoint,
+                                size_t & ingoingCount, TurnCandidates & outgoingTurns) const = 0;
   virtual double GetPathLength() const = 0;
-  virtual Junction GetStartPoint() const = 0;
-  virtual Junction GetEndPoint() const = 0;
+  virtual geometry::PointWithAltitude GetStartPoint() const = 0;
+  virtual geometry::PointWithAltitude GetEndPoint() const = 0;
 
   virtual ~IRoutingResult() = default;
 };

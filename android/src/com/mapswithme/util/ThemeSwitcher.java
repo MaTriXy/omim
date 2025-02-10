@@ -1,99 +1,143 @@
 package com.mapswithme.util;
 
 import android.app.Activity;
+import android.content.Context;
 import android.location.Location;
+import androidx.annotation.NonNull;
 
+import androidx.annotation.Nullable;
 import com.mapswithme.maps.Framework;
 import com.mapswithme.maps.MwmApplication;
+import com.mapswithme.maps.R;
+import com.mapswithme.maps.base.Initializable;
 import com.mapswithme.maps.downloader.DownloaderStatusIcon;
 import com.mapswithme.maps.location.LocationHelper;
-import com.mapswithme.maps.location.LocationListener;
 import com.mapswithme.maps.routing.RoutingController;
 import com.mapswithme.util.concurrency.UiThread;
 
-public final class ThemeSwitcher
+public enum ThemeSwitcher implements Initializable<Context>
 {
+  INSTANCE;
+
   private static final long CHECK_INTERVAL_MS = 30 * 60 * 1000;
+  private static boolean mRendererActive = false;
 
-  private static final Runnable sCheckProc = new Runnable()
+  private final Runnable mAutoThemeChecker = new Runnable()
   {
-    private final LocationListener mLocationListener = new LocationListener.Simple()
-    {
-      @Override
-      public void onLocationUpdated(Location location)
-      {
-        LocationHelper.INSTANCE.removeListener(this);
-        run();
-      }
-
-      @Override
-      public void onLocationError(int errorCode)
-      {
-        LocationHelper.INSTANCE.removeListener(this);
-      }
-    };
-
     @Override
     public void run()
     {
-      String theme = ThemeUtils.THEME_DEFAULT;
+      String nightTheme = MwmApplication.from(mContext).getString(R.string.theme_night);
+      String defaultTheme = MwmApplication.from(mContext).getString(R.string.theme_default);
+      String theme = defaultTheme;
 
       if (RoutingController.get().isNavigating())
       {
         Location last = LocationHelper.INSTANCE.getSavedLocation();
         if (last == null)
         {
-          LocationHelper.INSTANCE.addListener(mLocationListener, true);
-          theme = Config.getCurrentUiTheme();
+          theme = Config.getCurrentUiTheme(mContext);
         }
         else
         {
-          LocationHelper.INSTANCE.removeListener(mLocationListener);
-
-          boolean day = Framework.nativeIsDayTime(System.currentTimeMillis() / 1000, last.getLatitude(), last.getLongitude());
-          theme = (day ? ThemeUtils.THEME_DEFAULT : ThemeUtils.THEME_NIGHT);
+          boolean day = Framework.nativeIsDayTime(System.currentTimeMillis() / 1000,
+                                                  last.getLatitude(), last.getLongitude());
+          theme = (day ? defaultTheme : nightTheme);
         }
       }
 
-      Config.setCurrentUiTheme(theme);
-      UiThread.cancelDelayedTasks(sCheckProc);
+      setThemeAndMapStyle(theme);
+      UiThread.cancelDelayedTasks(mAutoThemeChecker);
 
-      if (ThemeUtils.isAutoTheme())
-        UiThread.runLater(sCheckProc, CHECK_INTERVAL_MS);
+      if (ThemeUtils.isAutoTheme(mContext))
+        UiThread.runLater(mAutoThemeChecker, CHECK_INTERVAL_MS);
     }
   };
 
-  private ThemeSwitcher() {}
+  @SuppressWarnings("NotNullFieldNotInitialized")
+  @NonNull
+  private Context mContext;
 
-  @android.support.annotation.UiThread
-  public static void restart()
+  @Override
+  public void initialize(@Nullable Context context)
   {
-    String theme = Config.getUiThemeSettings();
-    if (ThemeUtils.isAutoTheme(theme))
+    mContext = context;
+  }
+
+  @Override
+  public void destroy()
+  {
+    // No op.
+  }
+
+  /**
+   * Changes the UI theme of application and the map style if necessary. If the contract regarding
+   * the input parameter is broken, the UI will be frozen during attempting to change the map style
+   * through the synchronous method {@link Framework#nativeSetMapStyle(int)}.
+   *
+   * @param isRendererActive Indicates whether OpenGL renderer is active or not. Must be
+   *                         <code>true</code> only if the map is rendered and visible on the screen
+   *                         at this moment, otherwise <code>false</code>.
+   */
+  @androidx.annotation.UiThread
+  public void restart(boolean isRendererActive)
+  {
+    mRendererActive = isRendererActive;
+    String theme = Config.getUiThemeSettings(mContext);
+    if (ThemeUtils.isAutoTheme(mContext, theme))
     {
-      sCheckProc.run();
+      mAutoThemeChecker.run();
       return;
     }
 
-    UiThread.cancelDelayedTasks(sCheckProc);
-    Config.setCurrentUiTheme(theme);
+    UiThread.cancelDelayedTasks(mAutoThemeChecker);
+    setThemeAndMapStyle(theme);
   }
 
-  @android.support.annotation.UiThread
-  static void changeMapStyle(String theme)
+  private void setThemeAndMapStyle(@NonNull String theme)
   {
-    int style = Framework.MAP_STYLE_CLEAR;
-    if (ThemeUtils.isNightTheme(theme))
-      style = Framework.MAP_STYLE_DARK;
+    String oldTheme = Config.getCurrentUiTheme(mContext);
+    Config.setCurrentUiTheme(mContext, theme);
+    changeMapStyle(theme, oldTheme);
+  }
 
-    // Activity and drape engine will be recreated so we have to mark new map style.
-    // Changes will be applied in process of recreation.
-    Framework.nativeMarkMapStyle(style);
+  @androidx.annotation.UiThread
+  private void changeMapStyle(@NonNull String newTheme, @NonNull String oldTheme)
+  {
+    @Framework.MapStyle
+    int style = RoutingController.get().isVehicleNavigation()
+                ? Framework.MAP_STYLE_VEHICLE_CLEAR : Framework.MAP_STYLE_CLEAR;
+    if (ThemeUtils.isNightTheme(mContext, newTheme))
+      style = RoutingController.get().isVehicleNavigation()
+              ? Framework.MAP_STYLE_VEHICLE_DARK : Framework.MAP_STYLE_DARK;
 
-    DownloaderStatusIcon.clearCache();
+    if (!newTheme.equals(oldTheme))
+    {
+      SetMapStyle(style);
 
-    Activity a = MwmApplication.backgroundTracker().getTopActivity();
-    if (a != null && !a.isFinishing())
-      a.recreate();
+      DownloaderStatusIcon.clearCache();
+
+      Activity a = MwmApplication.backgroundTracker(mContext).getTopActivity();
+      if (a != null && !a.isFinishing())
+        a.recreate();
+    }
+    else
+    {
+      // If the UI theme is not changed we just need to change the map style if needed.
+      int currentStyle = Framework.nativeGetMapStyle();
+      if (currentStyle == style)
+        return;
+      SetMapStyle(style);
+    }
+  }
+
+  private void SetMapStyle(@Framework.MapStyle int style)
+  {
+    // If rendering is not active we can mark map style, because all graphics
+    // will be recreated after rendering activation.
+    if (mRendererActive)
+      Framework.nativeSetMapStyle(style);
+    else
+      Framework.nativeMarkMapStyle(style);
   }
 }

@@ -1,8 +1,8 @@
 package com.mapswithme.maps.editor;
 
 import android.os.Bundle;
-import android.support.annotation.NonNull;
-import android.support.annotation.Nullable;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
@@ -23,10 +23,10 @@ public class AuthFragment extends BaseMwmToolbarFragment
   }
 
   @Override
-  public void onViewCreated(View view, @Nullable Bundle savedInstanceState)
+  public void onViewCreated(@NonNull View view, @Nullable Bundle savedInstanceState)
   {
     super.onViewCreated(view, savedInstanceState);
-    mToolbarController.setTitle(R.string.thank_you);
+    getToolbarController().setTitle(R.string.thank_you);
     OsmAuthFragmentDelegate osmAuthDelegate = new OsmAuthFragmentDelegate(this)
     {
       @Override
@@ -38,10 +38,11 @@ public class AuthFragment extends BaseMwmToolbarFragment
     osmAuthDelegate.onViewCreated(view, savedInstanceState);
   }
 
+  @NonNull
   @Override
   protected ToolbarController onCreateToolbarController(@NonNull View root)
   {
-    return new ToolbarController(root, getActivity())
+    return new ToolbarController(root, requireActivity())
     {
       @Override
       public void onUpClick()

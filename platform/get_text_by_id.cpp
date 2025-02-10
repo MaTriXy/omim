@@ -1,14 +1,17 @@
 #include "platform/get_text_by_id.hpp"
+
 #include "platform/platform.hpp"
 
-#include "coding/file_name_utils.hpp"
-
+#include "base/file_name_utils.hpp"
 #include "base/logging.hpp"
 
 #include "3party/jansson/myjansson.hpp"
 
-#include "std/algorithm.hpp"
 #include "std/target_os.hpp"
+
+#include <algorithm>
+
+using namespace std;
 
 namespace
 {
@@ -22,8 +25,6 @@ string GetTextSourceString(platform::TextSource textSource)
     return string("sound-strings");
   case platform::TextSource::Countries:
     return string("countries-strings");
-  case platform::TextSource::Cuisines:
-    return string("cuisine-strings");
   }
   ASSERT(false, ());
   return string();
@@ -34,8 +35,8 @@ namespace platform
 {
 bool GetJsonBuffer(platform::TextSource textSource, string const & localeName, string & jsonBuffer)
 {
-  string const pathToJson = my::JoinFoldersToPath(
-      {GetTextSourceString(textSource), localeName + ".json"}, "localize.json");
+  string const pathToJson =
+      base::JoinPath(GetTextSourceString(textSource), localeName + ".json", "localize.json");
 
   try
   {
@@ -94,7 +95,7 @@ void GetTextById::InitFromJson(string const & jsonBuffer)
     return;
   }
 
-  my::Json root(jsonBuffer.c_str());
+  base::Json root(jsonBuffer.c_str());
   if (root.get() == nullptr)
   {
     ASSERT(false, ("Cannot parse the json file."));

@@ -1,9 +1,21 @@
 package com.mapswithme.maps.base;
 
-import android.support.v4.app.Fragment;
+import android.content.Context;
+import androidx.annotation.NonNull;
+import androidx.fragment.app.Fragment;
+import android.view.View;
 
-public class BaseMwmFragment extends Fragment
+import com.mapswithme.util.Utils;
+
+public class BaseMwmFragment extends Fragment implements OnBackPressListener
 {
+  @Override
+  public void onAttach(Context context)
+  {
+    super.onAttach(context);
+    Utils.detachFragmentIfCoreNotInitialized(context, this);
+  }
+
   @Override
   public void onResume()
   {
@@ -21,6 +33,21 @@ public class BaseMwmFragment extends Fragment
 
   public BaseMwmFragmentActivity getMwmActivity()
   {
-    return (BaseMwmFragmentActivity) getActivity();
+    return Utils.castTo(getActivity());
+  }
+
+  @Override
+  public boolean onBackPressed()
+  {
+    return false;
+  }
+
+  @NonNull
+  public View getViewOrThrow()
+  {
+    View view = getView();
+    if (view == null)
+      throw new IllegalStateException("Before call this method make sure that fragment exists");
+    return view;
   }
 }

@@ -1,44 +1,40 @@
 #import "MWMButton.h"
+#import "MWMCircularProgressState.h"
 #import "UIImageView+Coloring.h"
 
-#include "std/vector.hpp"
-
-typedef NS_ENUM(NSInteger, MWMCircularProgressState) {
-  MWMCircularProgressStateNormal,
-  MWMCircularProgressStateSelected,
-  MWMCircularProgressStateProgress,
-  MWMCircularProgressStateSpinner,
-  MWMCircularProgressStateFailed,
-  MWMCircularProgressStateCompleted
-};
-
-using MWMCircularProgressStateVec = vector<MWMCircularProgressState>;
+NS_ASSUME_NONNULL_BEGIN
 
 @class MWMCircularProgress;
 
+typedef NSArray<NSNumber *> *MWMCircularProgressStateVec;
+
 @protocol MWMCircularProgressProtocol<NSObject>
 
-- (void)progressButtonPressed:(nonnull MWMCircularProgress *)progress;
+- (void)progressButtonPressed:(MWMCircularProgress *)progress;
 
 @end
 
-@interface MWMCircularProgress : NSObject <CAAnimationDelegate>
+@interface MWMCircularProgress: NSObject<CAAnimationDelegate>
 
-+ (nonnull instancetype)downloaderProgressForParentView:(nonnull UIView *)parentView;
++ (instancetype)downloaderProgressForParentView:(UIView *)parentView;
 
 @property(nonatomic) CGFloat progress;
 @property(nonatomic) MWMCircularProgressState state;
-@property(weak, nonatomic) id<MWMCircularProgressProtocol> _Nullable delegate;
+@property(weak, nonatomic, nullable) id<MWMCircularProgressProtocol> delegate;
 
 - (void)setSpinnerColoring:(MWMImageColoring)coloring;
-- (void)setSpinnerBackgroundColor:(nonnull UIColor *)backgroundColor;
-- (void)setImageName:(nonnull NSString *)imageName forStates:(MWMCircularProgressStateVec const &)states;
-- (void)setColor:(nonnull UIColor *)color forStates:(MWMCircularProgressStateVec const &)states;
-- (void)setColoring:(MWMButtonColoring)coloring
-          forStates:(MWMCircularProgressStateVec const &)states;
+- (void)setSpinnerBackgroundColor:(UIColor *)backgroundColor;
 - (void)setInvertColor:(BOOL)invertColor;
+- (void)setCancelButtonHidden;
 
 - (nonnull instancetype)init __attribute__((unavailable("init is not available")));
-- (nonnull instancetype)initWithParentView:(nonnull UIView *)parentView;
+- (nonnull instancetype)initWithParentView:(UIView *)parentView;
 
+- (void)setImageName:(nullable NSString *)imageName
+           forStates:(MWMCircularProgressStateVec)states;
+- (void)setColor:(UIColor *)color forStates:(MWMCircularProgressStateVec)states;
+- (void)setColoring:(MWMButtonColoring)coloring
+          forStates:(MWMCircularProgressStateVec)states;
 @end
+
+NS_ASSUME_NONNULL_END

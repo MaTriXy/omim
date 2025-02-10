@@ -1,109 +1,37 @@
 #include "drape_frontend/selection_shape.hpp"
-#include "drape_frontend/color_constants.hpp"
 #include "drape_frontend/map_shape.hpp"
+#include "drape_frontend/selection_shape_generator.hpp"
 #include "drape_frontend/shape_view_params.hpp"
 #include "drape_frontend/tile_utils.hpp"
 #include "drape_frontend/visual_params.hpp"
 
-#include "drape/attribute_provider.hpp"
-#include "drape/batcher.hpp"
-#include "drape/binding_info.hpp"
-#include "drape/glsl_func.hpp"
-#include "drape/glsl_types.hpp"
-#include "drape/gpu_program_manager.hpp"
-#include "drape/shader_def.hpp"
+#include "shaders/program_manager.hpp"
+
 #include "drape/texture_manager.hpp"
-#include "drape/uniform_values_storage.hpp"
 
 #include "indexer/map_style_reader.hpp"
 
 namespace df
 {
-
 namespace
 {
-
-struct Vertex
+std::vector<float> const kHalfLineWidthInPixel =
 {
-  Vertex() = default;
-  Vertex(glsl::vec2 const & normal, glsl::vec2 const & texCoord)
-    : m_normal(normal)
-    , m_texCoord(texCoord)
-  {
-  }
-
-  glsl::vec2 m_normal;
-  glsl::vec2 m_texCoord;
+  // 1   2     3     4     5     6     7     8     9     10
+  1.0f, 1.2f, 1.5f, 1.5f, 1.7f, 2.0f, 2.0f, 2.3f, 2.5f, 2.7f,
+  //11   12    13    14    15   16    17    18    19     20
+  3.0f, 3.5f, 4.5f, 5.5f, 7.0, 9.0f, 10.0f, 14.0f, 22.0f, 27.0f
 };
+}  // namespace
 
-dp::BindingInfo GetBindingInfo()
-{
-  dp::BindingInfo info(2);
-  dp::BindingDecl & normal = info.GetBindingDecl(0);
-  normal.m_attributeName = "a_normal";
-  normal.m_componentCount = 2;
-  normal.m_componentType = gl_const::GLFloatType;
-  normal.m_offset = 0;
-  normal.m_stride = sizeof(Vertex);
-
-  dp::BindingDecl & texCoord = info.GetBindingDecl(1);
-  texCoord.m_attributeName = "a_colorTexCoords";
-  texCoord.m_componentCount = 2;
-  texCoord.m_componentType = gl_const::GLFloatType;
-  texCoord.m_offset = sizeof(glsl::vec2);
-  texCoord.m_stride = sizeof(Vertex);
-
-  return info;
-}
-
-} // namespace
-
-SelectionShape::SelectionShape(ref_ptr<dp::TextureManager> mng)
+SelectionShape::SelectionShape(ref_ptr<dp::GraphicsContext> context, ref_ptr<dp::TextureManager> mng)
   : m_position(m2::PointD::Zero())
   , m_positionZ(0.0)
   , m_animation(false, 0.25)
   , m_selectedObject(OBJECT_EMPTY)
 {
-  int const TriangleCount = 40;
-  int const VertexCount = 3 * TriangleCount;
-  float const etalonSector = math::twicePi / static_cast<double>(TriangleCount);
-
-  dp::TextureManager::ColorRegion color;
-  mng->GetColorRegion(df::GetColorConstant(GetStyleReader().GetCurrentStyle(), df::Selection), color);
-  glsl::vec2 colorCoord = glsl::ToVec2(color.GetTexRect().Center());
-
-  buffer_vector<Vertex, TriangleCount> buffer;
-
-  glsl::vec2 startNormal(0.0f, 1.0f);
-
-  for (size_t i = 0; i < TriangleCount + 1; ++i)
-  {
-    glsl::vec2 normal = glsl::rotate(startNormal, i * etalonSector);
-    glsl::vec2 nextNormal = glsl::rotate(startNormal, (i + 1) * etalonSector);
-
-    buffer.emplace_back(startNormal, colorCoord);
-    buffer.emplace_back(normal, colorCoord);
-    buffer.emplace_back(nextNormal, colorCoord);
-  }
-
-  dp::GLState state(gpu::ACCURACY_PROGRAM, dp::GLState::OverlayLayer);
-  state.SetColorTexture(color.GetTexture());
-
-  {
-    dp::Batcher batcher(TriangleCount * dp::Batcher::IndexPerTriangle, VertexCount);
-    dp::SessionGuard guard(batcher, [this](dp::GLState const & state, drape_ptr<dp::RenderBucket> && b)
-    {
-      drape_ptr<dp::RenderBucket> bucket = move(b);
-      ASSERT(bucket->GetOverlayHandlesCount() == 0, ());
-      m_renderNode = make_unique_dp<RenderNode>(state, bucket->MoveBuffer());
-    });
-
-    dp::AttributeProvider provider(1 /*stream count*/, VertexCount);
-    provider.InitStream(0 /*stream index*/, GetBindingInfo(), make_ref(buffer.data()));
-
-    batcher.InsertTriangleList(state, make_ref(&provider), nullptr);
-  }
-
+  m_renderNode = SelectionShapeGenerator::GenerateSelectionMarker(context, mng);
+  m_trackRenderNode = SelectionShapeGenerator::GenerateTrackSelectionMarker(context, mng);
   m_radius = 15.0f * VisualParams::Instance().GetVisualScale();
   m_mapping.AddRangePoint(0.6, 1.3 * m_radius);
   m_mapping.AddRangePoint(0.85, 0.8 * m_radius);
@@ -120,54 +48,95 @@ void SelectionShape::Show(ESelectedObject obj, m2::PointD const & position, doub
     m_animation.ShowAnimated();
   else
     m_animation.Show();
+  m_recacheId++;
+  m_selectionGeometry.clear();
 }
 
 void SelectionShape::Hide()
 {
   m_animation.Hide();
   m_selectedObject = OBJECT_EMPTY;
+  m_recacheId++;
+  m_selectionGeometry.clear();
 }
 
 bool SelectionShape::IsVisible(ScreenBase const & screen, m2::PointD & pxPos) const
 {
-  m2::PointD const pt = screen.GtoP(m_position);
+  m2::PointD pos = m_position;
+  double posZ = m_positionZ;
+  if (!m_selectionGeometry.empty())
+  {
+    pos = GetSelectionGeometryBoundingBox().Center();
+    posZ = 0.0;
+  }
+
+  m2::PointD const pt = screen.GtoP(pos);
   ShowHideAnimation::EState state = m_animation.GetState();
 
   if ((state == ShowHideAnimation::STATE_VISIBLE || state == ShowHideAnimation::STATE_SHOW_DIRECTION) &&
       !screen.IsReverseProjection3d(pt))
   {
-    pxPos = screen.PtoP3d(pt, -m_positionZ);
+    pxPos = screen.PtoP3d(pt, -posZ);
     return true;
   }
   return false;
 }
 
-void SelectionShape::Render(ScreenBase const & screen, int zoomLevel, ref_ptr<dp::GpuProgramManager> mng,
-                            dp::UniformValuesStorage const & commonUniforms)
+void SelectionShape::Render(ref_ptr<dp::GraphicsContext> context, ref_ptr<gpu::ProgramManager> mng,
+                            ScreenBase const & screen, int zoomLevel, FrameValues const & frameValues)
 {
+  if (m_selectedObject == OBJECT_GUIDE)
+    return;
+
   ShowHideAnimation::EState state = m_animation.GetState();
-  if (state == ShowHideAnimation::STATE_VISIBLE ||
-      state == ShowHideAnimation::STATE_SHOW_DIRECTION)
+  if (state != ShowHideAnimation::STATE_VISIBLE && state != ShowHideAnimation::STATE_SHOW_DIRECTION)
+    return;
+
+  if (m_selectionGeometry.empty())
   {
-    dp::UniformValuesStorage uniforms = commonUniforms;
+    gpu::ShapesProgramParams params;
+    frameValues.SetTo(params);
     TileKey const key = GetTileKeyByPoint(m_position, ClipTileZoomByMaxDataZoom(zoomLevel));
     math::Matrix<float, 4, 4> mv = key.GetTileBasedModelView(screen);
-    uniforms.SetMatrix4x4Value("modelView", mv.m_data);
+    params.m_modelView = glsl::make_mat4(mv.m_data);
 
     m2::PointD const pos = MapShape::ConvertToLocal(m_position, key.GetGlobalRect().Center(), kShapeCoordScalar);
-    uniforms.SetFloatValue("u_position", pos.x, pos.y, -m_positionZ);
+    params.m_position = glsl::vec3(pos.x, pos.y, -m_positionZ);
 
-    float accuracy = m_mapping.GetValue(m_animation.GetT());
+    float accuracy = m_selectedObject == OBJECT_TRACK ? 1.0 : m_mapping.GetValue(m_animation.GetT());
     if (screen.isPerspective())
     {
       m2::PointD const pt1 = screen.GtoP(m_position);
       m2::PointD const pt2(pt1.x + 1, pt1.y);
-      float const scale = screen.PtoP3d(pt2).x - screen.PtoP3d(pt1).x;
+      auto const scale = static_cast<float>(screen.PtoP3d(pt2).x - screen.PtoP3d(pt1).x);
       accuracy /= scale;
     }
-    uniforms.SetFloatValue("u_accuracy", accuracy);
-    uniforms.SetFloatValue("u_opacity", 1.0f);
-    m_renderNode->Render(mng, uniforms);
+    params.m_accuracy = accuracy;
+    if (m_selectedObject == OBJECT_TRACK)
+      m_trackRenderNode->Render(context, mng, params);
+    else
+      m_renderNode->Render(context, mng, params);
+  }
+  else
+  {
+    // Render selection geometry.
+    double zoom = 0.0;
+    int index = 0;
+    float lerpCoef = 0.0f;
+    ExtractZoomFactors(screen, zoom, index, lerpCoef);
+    float const currentHalfWidth = InterpolateByZoomLevels(index, lerpCoef, kHalfLineWidthInPixel) *
+      VisualParams::Instance().GetVisualScale();
+    auto const screenHalfWidth = static_cast<float>(currentHalfWidth * screen.GetScale());
+
+    gpu::ShapesProgramParams geomParams;
+    frameValues.SetTo(geomParams);
+    geomParams.m_lineParams = glsl::vec2(currentHalfWidth, screenHalfWidth);
+    for (auto const & geometry : m_selectionGeometry)
+    {
+      math::Matrix<float, 4, 4> mv = screen.GetModelView(geometry->GetPivot(), kShapeCoordScalar);
+      geomParams.m_modelView = glsl::make_mat4(mv.m_data);
+      geometry->Render(context, mng, geomParams);
+    }
   }
 }
 
@@ -176,4 +145,19 @@ SelectionShape::ESelectedObject SelectionShape::GetSelectedObject() const
   return m_selectedObject;
 }
 
-} // namespace df
+void SelectionShape::AddSelectionGeometry(drape_ptr<RenderNode> && renderNode, int recacheId)
+{
+  if (m_recacheId != recacheId)
+    return;
+
+  m_selectionGeometry.push_back(std::move(renderNode));
+}
+
+m2::RectD SelectionShape::GetSelectionGeometryBoundingBox() const
+{
+  m2::RectD rect;
+  for (auto const & geometry : m_selectionGeometry)
+    rect.Add(geometry->GetBoundingBox());
+  return rect;
+}
+}  // namespace df

@@ -1,9 +1,10 @@
 package com.mapswithme.maps.editor;
 
-import android.support.annotation.IntDef;
-import android.support.annotation.NonNull;
-import android.support.annotation.Size;
-import android.support.annotation.WorkerThread;
+import android.content.Context;
+import androidx.annotation.IntDef;
+import androidx.annotation.NonNull;
+import androidx.annotation.Size;
+import androidx.annotation.WorkerThread;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
@@ -36,16 +37,6 @@ public final class Editor
   public static final int MODIFIED = 3;
   public static final int CREATED = 4;
 
-  private static final AppBackgroundTracker.OnTransitionListener sOsmUploader = new AppBackgroundTracker.OnTransitionListener()
-  {
-    @Override
-    public void onTransit(boolean foreground)
-    {
-      if (!foreground)
-        WorkerService.startActionUploadOsmChanges();
-    }
-  };
-
   private Editor() {}
 
   static
@@ -55,24 +46,24 @@ public final class Editor
 
   private static native void nativeInit();
 
-  public static void init()
+  public static void init(@NonNull Context context)
   {
-    MwmApplication.backgroundTracker().addListener(sOsmUploader);
+    MwmApplication.backgroundTracker(context).addListener(new OsmUploadListener(context));
   }
 
   @WorkerThread
-  public static void uploadChanges()
+  public static void uploadChanges(@NonNull Context context)
   {
-    if (nativeHasSomethingToUpload() && OsmOAuth.isAuthorized())
-      nativeUploadChanges(OsmOAuth.getAuthToken(), OsmOAuth.getAuthSecret(), BuildConfig.VERSION_NAME,
-                          BuildConfig.APPLICATION_ID);
+    if (nativeHasSomethingToUpload() && OsmOAuth.isAuthorized(context))
+      nativeUploadChanges(OsmOAuth.getAuthToken(context), OsmOAuth.getAuthSecret(context),
+                          BuildConfig.VERSION_NAME, BuildConfig.APPLICATION_ID);
   }
 
   public static native boolean nativeShouldShowEditPlace();
   public static native boolean nativeShouldShowAddPlace();
   public static native boolean nativeShouldShowAddBusiness();
   @NonNull
-  public static native int[] nativeGetEditableFields();
+  public static native int[] nativeGetEditableProperties();
 
   public static native String nativeGetCategory();
   public static native String nativeGetOpeningHours();
@@ -100,9 +91,10 @@ public final class Editor
 
   public static native boolean nativeIsAddressEditable();
   public static native boolean nativeIsNameEditable();
+  public static native boolean nativeIsPointType();
   public static native boolean nativeIsBuilding();
 
-  public static native NamesDataSource nativeGetNamesDataSource();
+  public static native NamesDataSource nativeGetNamesDataSource(boolean needFakes);
   public static native String nativeGetDefaultName();
   public static native void nativeEnableNamesAdvancedMode();
   public static native void nativeSetNames(@NonNull LocalizedName[] names);
@@ -123,6 +115,7 @@ public final class Editor
   public static native boolean nativeIsPhoneValid(String phone);
   public static native boolean nativeIsWebsiteValid(String site);
   public static native boolean nativeIsEmailValid(String email);
+  public static native boolean nativeIsNameValid(String name);
 
 
   public static native boolean nativeHasSomethingToUpload();
@@ -147,9 +140,10 @@ public final class Editor
   public static native boolean nativeSaveEditedFeature();
 
   @NonNull
-  public static native FeatureCategory[] nativeGetAllFeatureCategories(String lang);
+  public static native String[] nativeGetAllCreatableFeatureTypes(@NonNull String lang);
   @NonNull
-  public static native FeatureCategory[] nativeSearchFeatureCategories(String query, String lang);
+  public static native String[] nativeSearchCreatableFeatureTypes(@NonNull String query,
+                                                                  @NonNull String lang);
 
   /**
    * Creates new object on the map. Places it in the center of current viewport.
@@ -158,11 +152,11 @@ public final class Editor
    */
   public static void createMapObject(FeatureCategory category)
   {
-    nativeCreateMapObject(category.category);
+    nativeCreateMapObject(category.getType());
   }
-  public static native void nativeCreateMapObject(int categoryId);
+  public static native void nativeCreateMapObject(@NonNull String type);
   public static native void nativeCreateNote(String text);
-  public static native void nativePlaceDoesNotExist(String comment);
+  public static native void nativePlaceDoesNotExist(@NonNull String comment);
   public static native void nativeRollbackMapObject();
 
   /**
@@ -187,4 +181,24 @@ public final class Editor
   @FeatureStatus
   public static native int nativeGetMapObjectStatus();
   public static native boolean nativeIsMapObjectUploaded();
+
+  private static class OsmUploadListener implements AppBackgroundTracker.OnTransitionListener
+  {
+    @NonNull
+    private final Context mContext;
+
+    OsmUploadListener(@NonNull Context context)
+    {
+      mContext = context.getApplicationContext();
+    }
+
+    @Override
+    public void onTransit(boolean foreground)
+    {
+      if (foreground)
+        return;
+
+      WorkerService.startActionUploadOsmChanges(mContext);
+    }
+  }
 }

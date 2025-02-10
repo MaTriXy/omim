@@ -1,10 +1,13 @@
+#include "platform/platform_ios.h"
 #include "platform/constants.hpp"
+#include "platform/gui_thread.hpp"
 #include "platform/measurement_utils.hpp"
-#include "platform/platform.hpp"
 #include "platform/platform_unix_impl.hpp"
 #include "platform/settings.hpp"
 
 #include "coding/file_reader.hpp"
+
+#include <utility>
 
 #include <ifaddrs.h>
 
@@ -16,70 +19,95 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
-
-#if !defined(IFT_ETHER)
-#define IFT_ETHER 0x6 /* Ethernet CSMACD */
-#endif
-
-#import "../iphone/Maps/Classes/Common.h"
+#include <sys/utsname.h>
+#include <sys/xattr.h>
 
 #import "3party/Alohalytics/src/alohalytics_objc.h"
 
-#import <Foundation/NSAutoreleasePool.h>
-#import <Foundation/NSBundle.h>
-#import <Foundation/NSPathUtilities.h>
-#import <Foundation/NSProcessInfo.h>
-
-#import <UIKit/UIDevice.h>
-#import <UIKit/UIScreen.h>
-#import <UIKit/UIScreenMode.h>
-
+#import <AdSupport/AdSupport.h>
+#import <CoreFoundation/CFURL.h>
 #import <SystemConfiguration/SystemConfiguration.h>
+#import <UIKit/UIKit.h>
 #import <netinet/in.h>
+
+#include <memory>
+#include <sstream>
+#include <string>
+#include <utility>
 
 Platform::Platform()
 {
   m_isTablet = (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad);
 
-  NSBundle * bundle = [NSBundle mainBundle];
+  NSBundle * bundle = NSBundle.mainBundle;
   NSString * path = [bundle resourcePath];
-  m_resourcesDir = [path UTF8String];
+  m_resourcesDir = path.UTF8String;
   m_resourcesDir += "/";
 
   NSArray * dirPaths =
       NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
-  NSString * docsDir = [dirPaths firstObject];
-  m_writableDir = [docsDir UTF8String];
+  NSString * docsDir = dirPaths.firstObject;
+  m_writableDir = docsDir.UTF8String;
   m_writableDir += "/";
   m_settingsDir = m_writableDir;
 
+  auto privatePaths = NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory,
+                                                          NSUserDomainMask, YES);
+  m_privateDir = privatePaths.firstObject.UTF8String;
+  m_privateDir +=  "/";
+
   NSString * tmpDir = NSTemporaryDirectory();
   if (tmpDir)
-    m_tmpDir = [tmpDir UTF8String];
+    m_tmpDir = tmpDir.UTF8String;
   else
   {
-    m_tmpDir = [NSHomeDirectory() UTF8String];
+    m_tmpDir = NSHomeDirectory().UTF8String;
     m_tmpDir += "/tmp/";
   }
 
-  UIDevice * device = [UIDevice currentDevice];
+  m_guiThread = std::make_unique<platform::GuiThread>();
+
+  UIDevice * device = UIDevice.currentDevice;
+  device.batteryMonitoringEnabled = YES;
+
   NSLog(@"Device: %@, SystemName: %@, SystemVersion: %@", device.model, device.systemName,
         device.systemVersion);
 }
 
-Platform::EError Platform::MkDir(string const & dirName) const
+//static
+void Platform::DisableBackupForFile(std::string const & filePath)
+{
+  // We need to disable iCloud backup for downloaded files.
+  // This is the reason for rejecting from the AppStore
+  // https://developer.apple.com/library/iOS/qa/qa1719/_index.html
+  CFURLRef url = CFURLCreateFromFileSystemRepresentation(kCFAllocatorDefault,
+                                                         reinterpret_cast<unsigned char const *>(filePath.c_str()),
+                                                         filePath.size(),
+                                                         0);
+  CFErrorRef err;
+  BOOL valueRaw = YES;
+  CFNumberRef value = CFNumberCreate(kCFAllocatorDefault, kCFNumberCharType, &valueRaw);
+  if (!CFURLSetResourcePropertyForKey(url, kCFURLIsExcludedFromBackupKey, value, &err))
+    NSLog(@"Error while disabling iCloud backup for file: %s", filePath.c_str());
+
+  CFRelease(value);
+  CFRelease(url);
+}
+
+// static
+Platform::EError Platform::MkDir(std::string const & dirName)
 {
   if (::mkdir(dirName.c_str(), 0755))
     return ErrnoToError();
   return Platform::ERR_OK;
 }
 
-void Platform::GetFilesByRegExp(string const & directory, string const & regexp, FilesList & res)
+void Platform::GetFilesByRegExp(std::string const & directory, std::string const & regexp, FilesList & res)
 {
   pl::EnumerateFilesByRegExp(directory, regexp, res);
 }
 
-bool Platform::GetFileSizeByName(string const & fileName, uint64_t & size) const
+bool Platform::GetFileSizeByName(std::string const & fileName, uint64_t & size) const
 {
   try
   {
@@ -91,63 +119,37 @@ bool Platform::GetFileSizeByName(string const & fileName, uint64_t & size) const
   }
 }
 
-unique_ptr<ModelReader> Platform::GetReader(string const & file, string const & searchScope) const
+std::unique_ptr<ModelReader> Platform::GetReader(std::string const & file, std::string const & searchScope) const
 {
-  return make_unique<FileReader>(ReadPathForFile(file, searchScope), READER_CHUNK_LOG_SIZE,
-                                 READER_CHUNK_LOG_COUNT);
+  return std::make_unique<FileReader>(ReadPathForFile(file, searchScope), READER_CHUNK_LOG_SIZE,
+                                      READER_CHUNK_LOG_COUNT);
 }
 
 int Platform::VideoMemoryLimit() const { return 8 * 1024 * 1024; }
 int Platform::PreCachingDepth() const { return 2; }
-static string GetDeviceUid()
+
+std::string Platform::UniqueClientId() const { return [Alohalytics installationId].UTF8String; }
+
+std::string Platform::AdvertisingId() const
 {
-  NSString * uid = @"";
-  UIDevice * device = [UIDevice currentDevice];
-  if (device.systemVersion.floatValue >= 6.0 && device.identifierForVendor)
-    uid = [device.identifierForVendor UUIDString];
-  return [uid UTF8String];
+  NSUUID *adId = [ASIdentifierManager sharedManager].advertisingIdentifier;
+  return adId.UUIDString.UTF8String;
 }
 
-static string GetMacAddress()
+std::string Platform::MacAddress(bool md5Decoded) const
 {
-  string result;
-  // get wifi mac addr
-  ifaddrs * addresses = NULL;
-  if (getifaddrs(&addresses) == 0 && addresses != NULL)
-  {
-    ifaddrs * currentAddr = addresses;
-    do
-    {
-      if (currentAddr->ifa_addr->sa_family == AF_LINK &&
-          ((const struct sockaddr_dl *)currentAddr->ifa_addr)->sdl_type == IFT_ETHER)
-      {
-        const struct sockaddr_dl * dlAddr = (const struct sockaddr_dl *)currentAddr->ifa_addr;
-        const char * base = &dlAddr->sdl_data[dlAddr->sdl_nlen];
-        result.assign(base, dlAddr->sdl_alen);
-        break;
-      }
-      currentAddr = currentAddr->ifa_next;
-    } while (currentAddr->ifa_next);
-    freeifaddrs(addresses);
-  }
-  return result;
+  // Not implemented.
+  UNUSED_VALUE(md5Decoded);
+  return {};
 }
 
-string Platform::UniqueClientId() const { return [Alohalytics installationId].UTF8String; }
-static void PerformImpl(void * obj)
-{
-  Platform::TFunctor * f = reinterpret_cast<Platform::TFunctor *>(obj);
-  (*f)();
-  delete f;
-}
-
-string Platform::GetMemoryInfo() const
+std::string Platform::GetMemoryInfo() const
 {
   struct task_basic_info info;
   mach_msg_type_number_t size = sizeof(info);
   kern_return_t const kerr =
       task_info(mach_task_self(), TASK_BASIC_INFO, (task_info_t)&info, &size);
-  stringstream ss;
+  std::stringstream ss;
   if (kerr == KERN_SUCCESS)
   {
     ss << "Memory info: Resident_size = " << info.resident_size / 1024
@@ -161,22 +163,20 @@ string Platform::GetMemoryInfo() const
   return ss.str();
 }
 
-void Platform::RunOnGuiThread(TFunctor const & fn)
-{
-  dispatch_async_f(dispatch_get_main_queue(), new TFunctor(fn), &PerformImpl);
-}
+std::string Platform::DeviceName() const { return UIDevice.currentDevice.name.UTF8String; }
 
-void Platform::RunAsync(TFunctor const & fn, Priority p)
+std::string Platform::DeviceModel() const
 {
-  int priority = DISPATCH_QUEUE_PRIORITY_DEFAULT;
-  switch (p)
-  {
-  case EPriorityBackground: priority = DISPATCH_QUEUE_PRIORITY_BACKGROUND; break;
-  case EPriorityDefault: priority = DISPATCH_QUEUE_PRIORITY_DEFAULT; break;
-  case EPriorityHigh: priority = DISPATCH_QUEUE_PRIORITY_HIGH; break;
-  case EPriorityLow: priority = DISPATCH_QUEUE_PRIORITY_LOW; break;
-  }
-  dispatch_async_f(dispatch_get_global_queue(priority, 0), new TFunctor(fn), &PerformImpl);
+  utsname systemInfo;
+  uname(&systemInfo);
+  NSString * deviceModel = @(systemInfo.machine);
+  if (auto m = platform::kDeviceModelsBeforeMetalDriver[deviceModel])
+    deviceModel = m;
+  else if (auto m = platform::kDeviceModelsWithiOS10MetalDriver[deviceModel])
+    deviceModel = m;
+  else if (auto m = platform::kDeviceModelsWithMetalDriver[deviceModel])
+    deviceModel = m;
+  return deviceModel.UTF8String;
 }
 
 Platform::EConnectionType Platform::ConnectionStatus()
@@ -204,6 +204,34 @@ Platform::EConnectionType Platform::ConnectionStatus()
     return EConnectionType::CONNECTION_WIFI;
 }
 
+Platform::ChargingStatus Platform::GetChargingStatus()
+{
+  switch (UIDevice.currentDevice.batteryState)
+  {
+  case UIDeviceBatteryStateUnknown: return Platform::ChargingStatus::Unknown;
+  case UIDeviceBatteryStateUnplugged: return Platform::ChargingStatus::Unplugged;
+  case UIDeviceBatteryStateCharging:
+  case UIDeviceBatteryStateFull: return Platform::ChargingStatus::Plugged;
+  }
+}
+
+uint8_t Platform::GetBatteryLevel()
+{
+  auto const level = UIDevice.currentDevice.batteryLevel;
+
+  ASSERT_GREATER_OR_EQUAL(level, -1.0, ());
+  ASSERT_LESS_OR_EQUAL(level, 1.0, ());
+
+  if (level == -1.0)
+    return 100;
+
+  auto const result = static_cast<uint8_t>(level * 100);
+
+  CHECK_LESS_OR_EQUAL(result, 100, ());
+
+  return result;
+}
+
 void Platform::SetupMeasurementSystem() const
 {
   auto units = measurement_utils::Units::Metric;
@@ -213,24 +241,6 @@ void Platform::SetupMeasurementSystem() const
       [[[NSLocale autoupdatingCurrentLocale] objectForKey:NSLocaleUsesMetricSystem] boolValue];
   units = isMetric ? measurement_utils::Units::Metric : measurement_utils::Units::Imperial;
   settings::Set(settings::kMeasurementUnits, units);
-}
-
-void Platform::SendPushWooshTag(string const & tag) { SendPushWooshTag(tag, vector<string>{"1"}); }
-void Platform::SendPushWooshTag(string const & tag, string const & value)
-{
-  SendPushWooshTag(tag, vector<string>{value});
-}
-
-void Platform::SendPushWooshTag(string const & tag, vector<string> const & values)
-{
-  if (m_pushwooshSender)
-    m_pushwooshSender(tag, values);
-}
-
-void Platform::SendMarketingEvent(string const & tag, map<string, string> const & params)
-{
-  if (m_marketingSender)
-    m_marketingSender(tag, params);
 }
 
 ////////////////////////////////////////////////////////////////////////

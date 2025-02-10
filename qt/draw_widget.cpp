@@ -1,99 +1,123 @@
-#include "qt/create_feature_dialog.hpp"
 #include "qt/draw_widget.hpp"
+
+#include "qt/create_feature_dialog.hpp"
 #include "qt/editor_dialog.hpp"
 #include "qt/place_page_dialog.hpp"
-#include "qt/slider_ctrl.hpp"
-#include "qt/qtoglcontext.hpp"
+#include "qt/qt_common/helpers.hpp"
+#include "qt/qt_common/scale_slider.hpp"
+#include "qt/routing_settings_dialog.hpp"
+#include "qt/screenshoter.hpp"
 
-#include "drape_frontend/visual_params.hpp"
+#include "generator/borders.hpp"
+
+#include "map/framework.hpp"
 
 #include "search/result.hpp"
+#include "search/reverse_geocoder.hpp"
 
-#include "storage/index.hpp"
+#include "routing/following_info.hpp"
+#include "routing/routing_callbacks.hpp"
+
+#include "storage/country_decl.hpp"
+#include "storage/storage_defines.hpp"
 
 #include "indexer/editable_map_object.hpp"
 
-#include "platform/settings.hpp"
+#include "platform/downloader_defines.hpp"
 #include "platform/platform.hpp"
 #include "platform/settings.hpp"
 
-#include <QtGui/QMouseEvent>
-#include <QtGui/QGuiApplication>
-#include <QtGui/QOpenGLShaderProgram>
-#include <QtGui/QOpenGLContextGroup>
-#include <QtGui/QOpenGLFunctions>
-#include <QtGui/QVector2D>
+#include "coding/reader.hpp"
 
+#include "base/assert.hpp"
+#include "base/file_name_utils.hpp"
+
+#include "defines.hpp"
+
+#include <QtCore/QThread>
+#include <QtCore/QTimer>
+#include <QtGui/QGuiApplication>
+#include <QtGui/QMouseEvent>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QDesktopWidget>
 #include <QtWidgets/QDialogButtonBox>
 #include <QtWidgets/QMenu>
 
-#include <QtCore/QLocale>
-#include <QtCore/QDateTime>
-#include <QtCore/QThread>
-#include <QtCore/QTimer>
+#include <string>
+#include <vector>
 
-namespace qt
-{
+using namespace qt::common;
 
 namespace
 {
+std::vector<dp::Color> colorList = {
+    dp::Color(255, 0, 0, 255),   dp::Color(0, 255, 0, 255),   dp::Color(0, 0, 255, 255),
+    dp::Color(255, 255, 0, 255), dp::Color(0, 255, 255, 255), dp::Color(255, 0, 255, 255),
+    dp::Color(100, 0, 0, 255),   dp::Color(0, 100, 0, 255),   dp::Color(0, 0, 100, 255),
+    dp::Color(100, 100, 0, 255), dp::Color(0, 100, 100, 255), dp::Color(100, 0, 100, 255)};
 
-bool IsLeftButton(Qt::MouseButtons buttons)
+void DrawMwmBorder(df::DrapeApi & drapeApi, std::string const & mwmName,
+                   std::vector<m2::RegionD> const & regions, bool withVertices)
 {
-  return buttons & Qt::LeftButton;
-}
-bool IsLeftButton(QMouseEvent const * const e)
-{
-  return IsLeftButton(e->button()) || IsLeftButton(e->buttons());
-}
+  for (size_t i = 0; i < regions.size(); ++i)
+  {
+    auto const & region = regions[i];
+    auto const & points = region.Data();
+    if (points.empty())
+      return;
 
-bool IsRightButton(Qt::MouseButtons buttons)
-{
-  return buttons & Qt::RightButton;
-}
-bool IsRightButton(QMouseEvent const * const e)
-{
-  return IsRightButton(e->button()) || IsRightButton(e->buttons());
-}
+    static uint32_t kColorCounter = 0;
 
-bool IsCommandModifier(QMouseEvent const * const e) { return e->modifiers() & Qt::ControlModifier; }
-bool IsShiftModifier(QMouseEvent const * const e) { return e->modifiers() & Qt::ShiftModifier; }
-bool IsAltModifier(QMouseEvent const * const e) { return e->modifiers() & Qt::AltModifier; }
-} // namespace
+    auto lineData = df::DrapeApiLineData(points, colorList[kColorCounter]).Width(4.0f).ShowId();
+    if (withVertices)
+      lineData.ShowPoints(true /* markPoints */);
 
-DrawWidget::DrawWidget(QWidget * parent)
-  : TBase(parent)
-  , m_contextFactory(nullptr)
-  , m_framework(new Framework())
-  , m_ratio(1.0)
-  , m_pScale(nullptr)
+    auto const & name = i == 0 ? mwmName : mwmName + "_" + std::to_string(i);
+    drapeApi.AddLine(name, lineData);
+
+    kColorCounter = (kColorCounter + 1) % colorList.size();
+  }
+}
+}  // namespace
+
+namespace qt
+{
+DrawWidget::DrawWidget(Framework & framework, bool apiOpenGLES3, std::unique_ptr<ScreenshotParams> && screenshotParams,
+                       QWidget * parent)
+  : TBase(framework, apiOpenGLES3, screenshotParams != nullptr, parent)
   , m_rubberBand(nullptr)
-  , m_enableScaleUpdate(true)
   , m_emulatingLocation(false)
 {
-  m_framework->SetMapSelectionListeners([this](place_page::Info const & info)
-  {
-    ShowPlacePage(info);
-  }, [](bool /*switchFullScreenMode*/){}); // Empty deactivation listener.
+  qApp->installEventFilter(this);
+  setFocusPolicy(Qt::StrongFocus);
+  m_framework.SetPlacePageListeners([this]() { ShowPlacePage(); },
+                                    {} /* onClose */, {} /* onUpdate */);
 
-  m_framework->SetRouteBuildingListener([](routing::IRouter::ResultCode,
-                                           storage::TCountriesVec const &)
-  {
-  });
+  auto & routingManager = m_framework.GetRoutingManager();
 
-  m_framework->SetCurrentCountryChangedListener([this](storage::TCountryId const & countryId)
-  {
+  routingManager.SetRouteBuildingListener(
+      [&routingManager, this](routing::RouterResultCode, storage::CountriesSet const &) {
+        auto & drapeApi = m_framework.GetDrapeApi();
+
+        m_turnsVisualizer.ClearTurns(drapeApi);
+
+        if (RoutingSettings::TurnsEnabled())
+          m_turnsVisualizer.Visualize(routingManager, drapeApi);
+      });
+
+  routingManager.SetRouteRecommendationListener(
+      [this](RoutingManager::Recommendation r) { OnRouteRecommendation(r); });
+
+  m_framework.SetCurrentCountryChangedListener([this](storage::CountryId const & countryId) {
     m_countryId = countryId;
     UpdateCountryStatus(countryId);
   });
 
-  QTimer * timer = new QTimer(this);
-  VERIFY(connect(timer, SIGNAL(timeout()), this, SLOT(update())), ());
-  timer->setSingleShot(false);
-  timer->start(30);
-
+  if (screenshotParams != nullptr)
+  {
+    m_ratio = screenshotParams->m_dpiScale;
+    m_screenshoter = std::make_unique<Screenshoter>(*screenshotParams, m_framework, this);
+  }
   QTimer * countryStatusTimer = new QTimer(this);
   VERIFY(connect(countryStatusTimer, SIGNAL(timeout()), this, SLOT(OnUpdateCountryStatusByTimer())), ());
   countryStatusTimer->setSingleShot(false);
@@ -103,31 +127,27 @@ DrawWidget::DrawWidget(QWidget * parent)
 DrawWidget::~DrawWidget()
 {
   delete m_rubberBand;
-
-  m_framework->EnterBackground();
-  m_framework.reset();
 }
 
-void DrawWidget::UpdateCountryStatus(storage::TCountryId const & countryId)
+void DrawWidget::UpdateCountryStatus(storage::CountryId const & countryId)
 {
   if (m_currentCountryChanged != nullptr)
   {
-    string countryName = countryId;
-    auto status = m_framework->GetStorage().CountryStatusEx(countryId);
+    std::string countryName = countryId;
+    auto status = m_framework.GetStorage().CountryStatusEx(countryId);
 
-    uint8_t progressInPercentage = 0;
-    storage::MapFilesDownloader::TProgress progressInByte = make_pair(0, 0);
+    uint8_t percentage = 0;
+    downloader::Progress progress;
     if (!countryId.empty())
     {
       storage::NodeAttrs nodeAttrs;
-      m_framework->GetStorage().GetNodeAttrs(countryId, nodeAttrs);
-      progressInByte = nodeAttrs.m_downloadingProgress;
-      if (progressInByte.second != 0)
-        progressInPercentage = static_cast<int8_t>(100 * progressInByte.first / progressInByte.second);
+      m_framework.GetStorage().GetNodeAttrs(countryId, nodeAttrs);
+      progress = nodeAttrs.m_downloadingProgress;
+      if (!progress.IsUnknown() && progress.m_bytesTotal != 0)
+        percentage = static_cast<int8_t>(100 * progress.m_bytesDownloaded / progress.m_bytesTotal);
     }
 
-    m_currentCountryChanged(countryId, countryName, status,
-                            progressInByte.second, progressInPercentage);
+    m_currentCountryChanged(countryId, countryName, status, progress.m_bytesTotal, percentage);
   }
 }
 
@@ -142,235 +162,82 @@ void DrawWidget::SetCurrentCountryChangedListener(DrawWidget::TCurrentCountryCha
   m_currentCountryChanged = listener;
 }
 
-void DrawWidget::DownloadCountry(storage::TCountryId const & countryId)
+void DrawWidget::DownloadCountry(storage::CountryId const & countryId)
 {
-  m_framework->GetStorage().DownloadNode(countryId);
+  m_framework.GetStorage().DownloadNode(countryId);
   if (!m_countryId.empty())
     UpdateCountryStatus(m_countryId);
 }
 
-void DrawWidget::RetryToDownloadCountry(storage::TCountryId const & countryId)
+void DrawWidget::RetryToDownloadCountry(storage::CountryId const & countryId)
 {
   // TODO @bykoianko
 }
 
-void DrawWidget::SetScaleControl(QScaleSlider * pScale)
-{
-  m_pScale = pScale;
-
-  connect(m_pScale, SIGNAL(actionTriggered(int)), this, SLOT(ScaleChanged(int)));
-  connect(m_pScale, SIGNAL(sliderPressed()), this, SLOT(SliderPressed()));
-  connect(m_pScale, SIGNAL(sliderReleased()), this, SLOT(SliderReleased()));
-}
-
 void DrawWidget::PrepareShutdown()
 {
+  auto & routingManager = m_framework.GetRoutingManager();
+  if (routingManager.IsRoutingActive() && routingManager.IsRoutingFollowing())
+  {
+    routingManager.SaveRoutePoints();
+
+    auto style = m_framework.GetMapStyle();
+    if (style == MapStyle::MapStyleVehicleClear)
+      m_framework.MarkMapStyle(MapStyle::MapStyleClear);
+    else if (style == MapStyle::MapStyleVehicleDark)
+      m_framework.MarkMapStyle(MapStyle::MapStyleDark);
+  }
 }
 
 void DrawWidget::UpdateAfterSettingsChanged()
 {
-  m_framework->EnterForeground();
-}
-
-void DrawWidget::ScalePlus()
-{
-  m_framework->Scale(Framework::SCALE_MAG, true);
-}
-
-void DrawWidget::ScaleMinus()
-{
-  m_framework->Scale(Framework::SCALE_MIN, true);
-}
-
-void DrawWidget::ScalePlusLight()
-{
-  m_framework->Scale(Framework::SCALE_MAG_LIGHT, true);
-}
-
-void DrawWidget::ScaleMinusLight()
-{
-  m_framework->Scale(Framework::SCALE_MIN_LIGHT, true);
+  m_framework.EnterForeground();
 }
 
 void DrawWidget::ShowAll()
 {
-  m_framework->ShowAll();
-}
-
-void DrawWidget::ScaleChanged(int action)
-{
-  if (action != QAbstractSlider::SliderNoAction)
-  {
-    double const factor = m_pScale->GetScaleFactor();
-    if (factor != 1.0)
-      m_framework->Scale(factor, false);
-  }
-}
-
-void DrawWidget::SliderPressed()
-{
-  m_enableScaleUpdate = false;
-}
-
-void DrawWidget::SliderReleased()
-{
-  m_enableScaleUpdate = true;
+  m_framework.ShowAll();
 }
 
 void DrawWidget::ChoosePositionModeEnable()
 {
-  m_framework->BlockTapEvents(true);
-  m_framework->EnableChoosePositionMode(true, false, false, m2::PointD());
+  m_framework.BlockTapEvents(true /* block */);
+  m_framework.EnableChoosePositionMode(true /* enable */, false /* enableBounds */,
+                                       false /* applyPosition */, m2::PointD() /* position */);
 }
 
 void DrawWidget::ChoosePositionModeDisable()
 {
-  m_framework->EnableChoosePositionMode(false, false, false, m2::PointD());
-  m_framework->BlockTapEvents(false);
-}
-
-void DrawWidget::CreateEngine()
-{
-  Framework::DrapeCreationParams p;
-  p.m_surfaceWidth = m_ratio * width();
-  p.m_surfaceHeight = m_ratio * height();
-  p.m_visualScale = m_ratio;
-
-  m_skin.reset(new gui::Skin(gui::ResolveGuiSkinFile("default"), m_ratio));
-  m_skin->Resize(p.m_surfaceWidth, p.m_surfaceHeight);
-  m_skin->ForEach([&p](gui::EWidget widget, gui::Position const & pos)
-  {
-    p.m_widgetsInitInfo[widget] = pos;
-  });
-
-  p.m_widgetsInitInfo[gui::WIDGET_SCALE_LABEL] = gui::Position(dp::LeftBottom);
-
-  m_framework->CreateDrapeEngine(make_ref(m_contextFactory), std::move(p));
-  m_framework->SetViewportListener(bind(&DrawWidget::OnViewportChanged, this, _1));
+  m_framework.EnableChoosePositionMode(false /* enable */, false /* enableBounds */,
+                                       false /* applyPosition */, m2::PointD() /* position */);
+  m_framework.BlockTapEvents(false /* block */);
 }
 
 void DrawWidget::initializeGL()
 {
-  ASSERT(m_contextFactory == nullptr, ());
-  m_ratio = devicePixelRatio();
-  m_contextFactory.reset(new QtOGLContextFactory(context()));
+  if (m_screenshotMode)
+    m_framework.GetBookmarkManager().EnableTestMode(true);
+  else
+    m_framework.LoadBookmarks();
 
-  emit BeforeEngineCreation();
-  CreateEngine();
+  MapWidget::initializeGL();
 
-  m_framework->LoadBookmarks();
-  m_framework->EnterForeground();
-}
-
-void DrawWidget::paintGL()
-{
-  static QOpenGLShaderProgram * program = nullptr;
-  if (program == nullptr)
+  m_framework.GetRoutingManager().LoadRoutePoints([this](bool success)
   {
-    const char * vertexSrc = "\
-      attribute vec2 a_position; \
-      attribute vec2 a_texCoord; \
-      uniform mat4 u_projection; \
-      varying vec2 v_texCoord; \
-      \
-      void main(void) \
-      { \
-        gl_Position = u_projection * vec4(a_position, 0.0, 1.0);\
-        v_texCoord = a_texCoord; \
-      }";
+    if (success)
+      m_framework.GetRoutingManager().BuildRoute();
+  });
 
-    const char * fragmentSrc = "\
-      uniform sampler2D u_sampler; \
-      varying vec2 v_texCoord; \
-      \
-      void main(void) \
-      { \
-        gl_FragColor = vec4(texture2D(u_sampler, v_texCoord).rgb, 1.0); \
-      }";
-
-    program = new QOpenGLShaderProgram(this);
-    program->addShaderFromSourceCode(QOpenGLShader::Vertex, vertexSrc);
-    program->addShaderFromSourceCode(QOpenGLShader::Fragment, fragmentSrc);
-    program->link();
-  }
-
-  if (m_contextFactory->LockFrame())
-  {
-    QOpenGLFunctions * funcs = context()->functions();
-    funcs->glActiveTexture(GL_TEXTURE0);
-    GLuint image = m_contextFactory->GetTextureHandle();
-    funcs->glBindTexture(GL_TEXTURE_2D, image);
-
-    int projectionLocation = program->uniformLocation("u_projection");
-    int samplerLocation = program->uniformLocation("u_sampler");
-
-    QMatrix4x4 projection;
-    QRect r = rect();
-    r.setWidth(m_ratio * r.width());
-    r.setHeight(m_ratio * r.height());
-    projection.ortho(r);
-
-    program->bind();
-    program->setUniformValue(projectionLocation, projection);
-    program->setUniformValue(samplerLocation, 0);
-
-    float const w = m_ratio * width();
-    float h = m_ratio * height();
-
-    QVector2D positions[4] =
-    {
-      QVector2D(0.0, 0.0),
-      QVector2D(w, 0.0),
-      QVector2D(0.0, h),
-      QVector2D(w, h)
-    };
-
-    QRectF const & texRect = m_contextFactory->GetTexRect();
-    QVector2D texCoords[4] =
-    {
-      QVector2D(texRect.bottomLeft()),
-      QVector2D(texRect.bottomRight()),
-      QVector2D(texRect.topLeft()),
-      QVector2D(texRect.topRight())
-    };
-
-    program->enableAttributeArray("a_position");
-    program->enableAttributeArray("a_texCoord");
-    program->setAttributeArray("a_position", positions, 0);
-    program->setAttributeArray("a_texCoord", texCoords, 0);
-
-    funcs->glClearColor(0.0, 0.0, 0.0, 1.0);
-    funcs->glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-    funcs->glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-
-    m_contextFactory->UnlockFrame();
-  }
-
-}
-
-void DrawWidget::resizeGL(int width, int height)
-{
-  float w = m_ratio * width;
-  float h = m_ratio * height;
-  m_framework->OnSize(w, h);
-  m_framework->SetVisibleViewport(m2::RectD(0, 0, w, h));
-  if (m_skin)
-  {
-    m_skin->Resize(w, h);
-
-    gui::TWidgetsLayoutInfo layout;
-    m_skin->ForEach([&layout](gui::EWidget w, gui::Position const & pos)
-    {
-      layout[w] = pos.m_pixelPivot;
-    });
-
-    m_framework->SetWidgetLayout(std::move(layout));
-  }
+  if (m_screenshotMode)
+    m_screenshoter->Start();
 }
 
 void DrawWidget::mousePressEvent(QMouseEvent * e)
 {
-  TBase::mousePressEvent(e);
+  if (m_screenshotMode)
+    return;
+
+  QOpenGLWidget::mousePressEvent(e);
 
   m2::PointD const pt = GetDevicePoint(e);
 
@@ -378,14 +245,20 @@ void DrawWidget::mousePressEvent(QMouseEvent * e)
   {
     if (IsShiftModifier(e))
       SubmitRoutingPoint(pt);
+    else if (m_ruler.IsActive() && IsAltModifier(e))
+      SubmitRulerPoint(e);
     else if (IsAltModifier(e))
       SubmitFakeLocationPoint(pt);
     else
-      m_framework->TouchEvent(GetTouchEvent(e, df::TouchEvent::TOUCH_DOWN));
+      m_framework.TouchEvent(GetTouchEvent(e, df::TouchEvent::TOUCH_DOWN));
   }
   else if (IsRightButton(e))
   {
-    if (!m_selectionMode || IsCommandModifier(e))
+    if (IsAltModifier(e))
+    {
+      SubmitBookmark(pt);
+    }
+    else if (!m_currentSelectionMode || IsCommandModifier(e))
     {
       ShowInfoPopup(e, pt);
     }
@@ -400,48 +273,170 @@ void DrawWidget::mousePressEvent(QMouseEvent * e)
   }
 }
 
-void DrawWidget::mouseDoubleClickEvent(QMouseEvent * e)
-{
-  TBase::mouseDoubleClickEvent(e);
-  if (IsLeftButton(e))
-    m_framework->Scale(Framework::SCALE_MAG_LIGHT, GetDevicePoint(e), true);
-}
-
 void DrawWidget::mouseMoveEvent(QMouseEvent * e)
 {
-  TBase::mouseMoveEvent(e);
-  if (IsLeftButton(e) && !IsAltModifier(e))
-    m_framework->TouchEvent(GetTouchEvent(e, df::TouchEvent::TOUCH_MOVE));
+  if (m_screenshotMode)
+    return;
 
-  if (m_selectionMode && m_rubberBand != nullptr && m_rubberBand->isVisible())
+  QOpenGLWidget::mouseMoveEvent(e);
+  if (IsLeftButton(e) && !IsAltModifier(e))
+    m_framework.TouchEvent(GetTouchEvent(e, df::TouchEvent::TOUCH_MOVE));
+
+  if (m_currentSelectionMode && m_rubberBand != nullptr && m_rubberBand->isVisible())
   {
     m_rubberBand->setGeometry(QRect(m_rubberBandOrigin, e->pos()).normalized());
   }
 }
 
+void DrawWidget::VisualizeMwmsBordersInRect(m2::RectD const & rect, bool withVertices,
+                                            bool fromPackedPolygon, bool boundingBox)
+{
+  auto const getRegions = [&](std::string const & mwmName)
+  {
+    if (fromPackedPolygon)
+    {
+      std::vector<storage::CountryDef> countries;
+      FilesContainerR reader(base::JoinPath(GetPlatform().ResourcesDir(), PACKED_POLYGONS_FILE));
+      ReaderSource<ModelReaderPtr> src(reader.GetReader(PACKED_POLYGONS_INFO_TAG));
+      rw::Read(src, countries);
+
+      for (size_t id = 0; id < countries.size(); ++id)
+      {
+        if (countries[id].m_countryId != mwmName)
+          continue;
+
+        src = reader.GetReader(std::to_string(id));
+        return borders::ReadPolygonsOfOneBorder(src);
+      }
+
+      UNREACHABLE();
+    }
+    else
+    {
+      std::string const bordersDir =
+          base::JoinPath(GetPlatform().ResourcesDir(), BORDERS_DIR);
+
+      std::string const path = base::JoinPath(bordersDir, mwmName + BORDERS_EXTENSION);
+      std::vector<m2::RegionD> polygons;
+      borders::LoadBorders(path, polygons);
+
+      return polygons;
+    }
+  };
+
+  auto mwmNames = m_framework.GetRegionsCountryIdByRect(rect, false /* rough */);
+
+  for (auto & mwmName : mwmNames)
+  {
+    auto regions = getRegions(mwmName);
+    mwmName += fromPackedPolygon ? ".bin" : ".poly";
+    if (boundingBox)
+    {
+      std::vector<m2::RegionD> boxes;
+      for (auto const & region : regions)
+      {
+        auto const r = region.GetRect();
+        boxes.emplace_back(std::vector<m2::PointD>({r.LeftBottom(), r.LeftTop(), r.RightTop(),
+                                                    r.RightBottom(), r.LeftBottom()}));
+      }
+
+      regions = std::move(boxes);
+      mwmName += ".box";
+    }
+    DrawMwmBorder(m_framework.GetDrapeApi(), mwmName, regions, withVertices);
+  }
+}
+
 void DrawWidget::mouseReleaseEvent(QMouseEvent * e)
 {
-  TBase::mouseReleaseEvent(e);
+  if (m_screenshotMode)
+    return;
+
+  QOpenGLWidget::mouseReleaseEvent(e);
   if (IsLeftButton(e) && !IsAltModifier(e))
   {
-    m_framework->TouchEvent(GetTouchEvent(e, df::TouchEvent::TOUCH_UP));
+    m_framework.TouchEvent(GetTouchEvent(e, df::TouchEvent::TOUCH_UP));
   }
-  else if (m_selectionMode && IsRightButton(e) && m_rubberBand != nullptr &&
-           m_rubberBand->isVisible())
+  else if (m_currentSelectionMode && IsRightButton(e) &&
+           m_rubberBand != nullptr && m_rubberBand->isVisible())
   {
-    QPoint const lt = m_rubberBand->geometry().topLeft();
-    QPoint const rb = m_rubberBand->geometry().bottomRight();
-    m2::RectD rect;
-    rect.Add(m_framework->PtoG(m2::PointD(L2D(lt.x()), L2D(lt.y()))));
-    rect.Add(m_framework->PtoG(m2::PointD(L2D(rb.x()), L2D(rb.y()))));
-    m_framework->VizualizeRoadsInRect(rect);
-    m_rubberBand->hide();
+    ProcessSelectionMode();
   }
+}
+
+void DrawWidget::ProcessSelectionMode()
+{
+  QPoint const lt = m_rubberBand->geometry().topLeft();
+  QPoint const rb = m_rubberBand->geometry().bottomRight();
+  m2::RectD rect;
+  rect.Add(m_framework.PtoG(m2::PointD(L2D(lt.x()), L2D(lt.y()))));
+  rect.Add(m_framework.PtoG(m2::PointD(L2D(rb.x()), L2D(rb.y()))));
+
+  switch (*m_currentSelectionMode)
+  {
+  case SelectionMode::Features:
+  {
+    m_framework.VisualizeRoadsInRect(rect);
+    break;
+  }
+  case SelectionMode::CityBoundaries:
+  {
+    m_framework.VisualizeCityBoundariesInRect(rect);
+    break;
+  }
+  case SelectionMode::CityRoads:
+  {
+    m_framework.VisualizeCityRoadsInRect(rect);
+    break;
+  }
+  case SelectionMode::MwmsBordersByPolyFiles:
+  {
+    VisualizeMwmsBordersInRect(rect, false /* withVertices */, false /* fromPackedPolygon */,
+                               false /* boundingBox */);
+    break;
+  }
+  case SelectionMode::MwmsBordersWithVerticesByPolyFiles:
+  {
+    VisualizeMwmsBordersInRect(rect, true /* withVertices */, false /* fromPackedPolygon */,
+                               false /* boundingBox */);
+    break;
+  }
+  case SelectionMode::MwmsBordersByPackedPolygon:
+  {
+    VisualizeMwmsBordersInRect(rect, false /* withVertices */, true /* fromPackedPolygon */,
+                               false /* boundingBox */);
+    break;
+  }
+  case SelectionMode::MwmsBordersWithVerticesByPackedPolygon:
+  {
+    VisualizeMwmsBordersInRect(rect, true /* withVertices */, true /* fromPackedPolygon */,
+                               false /* boundingBox */);
+    break;
+  }
+  case SelectionMode::BoundingBoxByPolyFiles:
+  {
+    VisualizeMwmsBordersInRect(rect, true /* withVertices */, false /* fromPackedPolygon */,
+                               true /* boundingBox */);
+    break;
+  }
+  case SelectionMode::BoundingBoxByPackedPolygon:
+  {
+    VisualizeMwmsBordersInRect(rect, true /* withVertices */, true /* fromPackedPolygon */,
+                               true /* boundingBox */);
+    break;
+  }
+  default:
+    UNREACHABLE();
+  }
+
+  m_rubberBand->hide();
 }
 
 void DrawWidget::keyPressEvent(QKeyEvent * e)
 {
-  TBase::keyPressEvent(e);
+  if (m_screenshotMode)
+    return;
+
   if (IsLeftButton(QGuiApplication::mouseButtons()) &&
       e->key() == Qt::Key_Control)
   {
@@ -453,13 +448,14 @@ void DrawWidget::keyPressEvent(QKeyEvent * e)
     event.SetFirstTouch(touch);
     event.SetSecondTouch(GetSymmetrical(touch));
 
-    m_framework->TouchEvent(event);
+    m_framework.TouchEvent(event);
   }
 }
 
 void DrawWidget::keyReleaseEvent(QKeyEvent * e)
 {
-  TBase::keyReleaseEvent(e);
+  if (m_screenshotMode)
+    return;
 
   if (IsLeftButton(QGuiApplication::mouseButtons()) &&
       e->key() == Qt::Key_Control)
@@ -472,52 +468,38 @@ void DrawWidget::keyReleaseEvent(QKeyEvent * e)
     event.SetFirstTouch(touch);
     event.SetSecondTouch(GetSymmetrical(touch));
 
-    m_framework->TouchEvent(event);
+    m_framework.TouchEvent(event);
   }
   else if (e->key() == Qt::Key_Alt)
     m_emulatingLocation = false;
 }
 
-void DrawWidget::wheelEvent(QWheelEvent * e)
+std::string DrawWidget::GetDistance(search::Result const & res) const
 {
-  m_framework->Scale(exp(e->delta() / 360.0), m2::PointD(L2D(e->x()), L2D(e->y())), false);
-}
-
-bool DrawWidget::Search(search::EverywhereSearchParams const & params)
-{
-  return m_framework->SearchEverywhere(params);
-}
-
-string DrawWidget::GetDistance(search::Result const & res) const
-{
-  string dist;
-  double lat, lon;
-  if (m_framework->GetCurrentPosition(lat, lon))
+  std::string dist;
+  if (auto const position = m_framework.GetCurrentPosition())
   {
+    auto const ll = mercator::ToLatLon(*position);
     double dummy;
-    (void) m_framework->GetDistanceAndAzimut(res.GetFeatureCenter(), lat, lon, -1.0, dist, dummy);
+    (void)m_framework.GetDistanceAndAzimut(res.GetFeatureCenter(), ll.m_lat, ll.m_lon, -1.0, dist,
+                                           dummy);
   }
   return dist;
 }
 
-void DrawWidget::ShowSearchResult(search::Result const & res)
-{
-  m_framework->ShowSearchResult(res);
-}
-
 void DrawWidget::CreateFeature()
 {
-  auto cats = m_framework->GetEditorCategories();
+  auto cats = m_framework.GetEditorCategories();
   CreateFeatureDialog dlg(this, cats);
   if (dlg.exec() == QDialog::Accepted)
   {
     osm::EditableMapObject emo;
-    if (m_framework->CreateMapObject(m_framework->GetViewportCenter(), dlg.GetSelectedType(), emo))
+    if (m_framework.CreateMapObject(m_framework.GetViewportCenter(), dlg.GetSelectedType(), emo))
     {
       EditorDialog dlg(this, emo);
       int const result = dlg.exec();
       if (result == QDialog::Accepted)
-        m_framework->SaveEditedMapObject(emo);
+        m_framework.SaveEditedMapObject(emo);
     }
     else
     {
@@ -529,69 +511,175 @@ void DrawWidget::CreateFeature()
 void DrawWidget::OnLocationUpdate(location::GpsInfo const & info)
 {
   if (!m_emulatingLocation)
-    m_framework->OnLocationUpdate(info);
+    m_framework.OnLocationUpdate(info);
 }
 
 void DrawWidget::SetMapStyle(MapStyle mapStyle)
 {
-  m_framework->SetMapStyle(mapStyle);
+  m_framework.SetMapStyle(mapStyle);
 }
 
 void DrawWidget::SubmitFakeLocationPoint(m2::PointD const & pt)
 {
   m_emulatingLocation = true;
-  m2::PointD const point = m_framework->PtoG(pt);
 
-  location::GpsInfo info;
-  info.m_latitude = MercatorBounds::YToLat(point.y);
-  info.m_longitude = MercatorBounds::XToLon(point.x);
-  info.m_horizontalAccuracy = 10;
-  info.m_timestamp = QDateTime::currentMSecsSinceEpoch() / 1000.0;
+  m2::PointD const point = GetCoordsFromSettingsIfExists(true /* start */, pt);
 
-  m_framework->OnLocationUpdate(info);
+  m_framework.OnLocationUpdate(qt::common::MakeGpsInfo(point));
 
-  if (m_framework->IsRoutingActive())
+  if (m_framework.GetRoutingManager().IsRoutingActive())
   {
-    location::FollowingInfo loc;
-    m_framework->GetRouteFollowingInfo(loc);
-    LOG(LDEBUG, ("Distance:", loc.m_distToTarget, loc.m_targetUnitsSuffix, "Time:", loc.m_time,
-                 "Turn:", routing::turns::GetTurnString(loc.m_turn), "(", loc.m_distToTurn, loc.m_turnUnitsSuffix,
-                 ") Roundabout exit number:", loc.m_exitNum));
+    routing::FollowingInfo loc;
+    m_framework.GetRoutingManager().GetRouteFollowingInfo(loc);
+    if (m_framework.GetRoutingManager().GetCurrentRouterType() == routing::RouterType::Pedestrian)
+    {
+      LOG(LDEBUG, ("Distance:", loc.m_distToTarget, loc.m_targetUnitsSuffix, "Time:", loc.m_time,
+                   "Pedestrian turn:", DebugPrint(loc.m_pedestrianTurn),
+                   "Distance to turn:", loc.m_distToTurn, loc.m_turnUnitsSuffix));
+    }
+    else
+    {
+      LOG(LDEBUG, ("Distance:", loc.m_distToTarget, loc.m_targetUnitsSuffix, "Time:", loc.m_time,
+                   "Turn:", routing::turns::GetTurnString(loc.m_turn), "(", loc.m_distToTurn,
+                   loc.m_turnUnitsSuffix, ") Roundabout exit number:", loc.m_exitNum));
+    }
   }
+}
+
+void DrawWidget::SubmitRulerPoint(QMouseEvent * e)
+{
+  m2::PointD const pt = GetDevicePoint(e);
+  m2::PointD const point = GetCoordsFromSettingsIfExists(true /* start */, pt);
+  m_ruler.AddPoint(point);
+  m_ruler.DrawLine(m_framework.GetDrapeApi());
 }
 
 void DrawWidget::SubmitRoutingPoint(m2::PointD const & pt)
 {
-  if (m_framework->IsRoutingActive())
-    m_framework->CloseRouting();
-  else
-    m_framework->BuildRoute(m_framework->PtoG(pt), 0 /* timeoutSec */);
+  auto & routingManager = m_framework.GetRoutingManager();
+  auto const pointsCount = routingManager.GetRoutePoints().size();
+
+  // Check if limit of intermediate points is reached.
+  if (m_routePointAddMode == RouteMarkType::Intermediate && !routingManager.CouldAddIntermediatePoint())
+    routingManager.RemoveRoutePoint(RouteMarkType::Intermediate, 0);
+
+  // Insert implicit start point.
+  if (m_routePointAddMode == RouteMarkType::Finish && pointsCount == 0)
+  {
+    RouteMarkData startPoint;
+    startPoint.m_pointType = RouteMarkType::Start;
+    startPoint.m_isMyPosition = true;
+    routingManager.AddRoutePoint(std::move(startPoint));
+  }
+
+  RouteMarkData point;
+  point.m_pointType = m_routePointAddMode;
+  point.m_isMyPosition = false;
+  point.m_position = GetCoordsFromSettingsIfExists(false /* start */, pt);
+
+  routingManager.AddRoutePoint(std::move(point));
+
+  if (routingManager.GetRoutePoints().size() >= 2)
+  {
+    routingManager.BuildRoute();
+  }
 }
 
-void DrawWidget::ShowPlacePage(place_page::Info const & info)
+void DrawWidget::SubmitBookmark(m2::PointD const & pt)
 {
-  search::AddressInfo address;
+  if (!m_framework.GetBookmarkManager().HasBmCategory(m_bookmarksCategoryId))
+    m_bookmarksCategoryId = m_framework.GetBookmarkManager().CreateBookmarkCategory("Desktop_bookmarks");
+  kml::BookmarkData data;
+  data.m_color.m_predefinedColor = kml::PredefinedColor::Red;
+  data.m_point = m_framework.P3dtoG(pt);
+  m_framework.GetBookmarkManager().GetEditSession().CreateBookmark(std::move(data), m_bookmarksCategoryId);
+}
+
+void DrawWidget::FollowRoute()
+{
+  auto & routingManager = m_framework.GetRoutingManager();
+
+  auto const points = routingManager.GetRoutePoints();
+  if (points.size() < 2)
+    return;
+  if (!points.front().m_isMyPosition && !points.back().m_isMyPosition)
+    return;
+  if (routingManager.IsRoutingActive() && !routingManager.IsRoutingFollowing())
+  {
+    routingManager.FollowRoute();
+    auto style = m_framework.GetMapStyle();
+    if (style == MapStyle::MapStyleClear)
+      SetMapStyle(MapStyle::MapStyleVehicleClear);
+    else if (style == MapStyle::MapStyleDark)
+      SetMapStyle(MapStyle::MapStyleVehicleDark);
+  }
+}
+
+void DrawWidget::ClearRoute()
+{
+  auto & routingManager = m_framework.GetRoutingManager();
+
+  bool const wasActive = routingManager.IsRoutingActive() && routingManager.IsRoutingFollowing();
+  routingManager.CloseRouting(true /* remove route points */);
+
+  if (wasActive)
+  {
+    auto style = m_framework.GetMapStyle();
+    if (style == MapStyle::MapStyleVehicleClear)
+      SetMapStyle(MapStyle::MapStyleClear);
+    else if (style == MapStyle::MapStyleVehicleDark)
+      SetMapStyle(MapStyle::MapStyleDark);
+  }
+
+  m_turnsVisualizer.ClearTurns(m_framework.GetDrapeApi());
+}
+
+void DrawWidget::OnRouteRecommendation(RoutingManager::Recommendation recommendation)
+{
+  if (recommendation == RoutingManager::Recommendation::RebuildAfterPointsLoading)
+  {
+    auto & routingManager = m_framework.GetRoutingManager();
+
+    RouteMarkData startPoint;
+    startPoint.m_pointType = RouteMarkType::Start;
+    startPoint.m_isMyPosition = true;
+    routingManager.AddRoutePoint(std::move(startPoint));
+
+    if (routingManager.GetRoutePoints().size() >= 2)
+      routingManager.BuildRoute();
+  }
+}
+
+void DrawWidget::ShowPlacePage()
+{
+  place_page::Info const & info = m_framework.GetCurrentPlacePageInfo();
+  search::ReverseGeocoder::Address address;
   if (info.IsFeature())
-    address = m_framework->GetFeatureAddressInfo(info.GetID());
+  {
+    search::ReverseGeocoder const coder(m_framework.GetDataSource());
+    coder.GetExactAddress(info.GetID(), address);
+  }
   else
-    address = m_framework->GetAddressInfoAtPoint(info.GetMercator());
+  {
+    address = m_framework.GetAddressAtPoint(info.GetMercator());
+  }
 
   PlacePageDialog dlg(this, info, address);
   if (dlg.exec() == QDialog::Accepted)
   {
     osm::EditableMapObject emo;
-    if (m_framework->GetEditableMapObject(info.GetID(), emo))
+    if (m_framework.GetEditableMapObject(info.GetID(), emo))
     {
       EditorDialog dlg(this, emo);
       int const result = dlg.exec();
       if (result == QDialog::Accepted)
       {
-        m_framework->SaveEditedMapObject(emo);
-        m_framework->UpdatePlacePageInfoForCurrentSelection();
+        m_framework.SaveEditedMapObject(emo);
+        m_framework.UpdatePlacePageInfoForCurrentSelection();
       }
       else if (result == QDialogButtonBox::DestructiveRole)
       {
-        m_framework->DeleteFeature(info.GetID());
+        m_framework.DeleteFeature(info.GetID());
       }
     }
     else
@@ -599,93 +687,61 @@ void DrawWidget::ShowPlacePage(place_page::Info const & info)
       LOG(LERROR, ("Error while trying to edit feature."));
     }
   }
-  m_framework->DeactivateMapSelection(false);
-}
-
-void DrawWidget::ShowInfoPopup(QMouseEvent * e, m2::PointD const & pt)
-{
-  // show feature types
-  QMenu menu;
-  auto const addStringFn = [&menu](string const & s)
-  {
-    menu.addAction(QString::fromUtf8(s.c_str()));
-  };
-
-  m_framework->ForEachFeatureAtPoint([&](FeatureType & ft)
-  {
-    search::AddressInfo const info = m_framework->GetFeatureAddressInfo(ft);
-
-    string concat;
-    for (auto const & type : info.m_types)
-      concat += type + " ";
-    addStringFn(concat);
-
-    if (!info.m_name.empty())
-      addStringFn(info.m_name);
-
-    string const addr = info.FormatAddress();
-    if (!addr.empty())
-      addStringFn(addr);
-
-    menu.addSeparator();
-  }, m_framework->PtoG(pt));
-
-  menu.exec(e->pos());
-}
-
-void DrawWidget::OnViewportChanged(ScreenBase const & screen)
-{
-  UpdateScaleControl();
-}
-
-void DrawWidget::UpdateScaleControl()
-{
-  if (m_pScale && m_enableScaleUpdate)
-  {
-    // don't send ScaleChanged
-    m_pScale->SetPosWithBlockedSignals(m_framework->GetDrawScale());
-  }
-}
-
-df::Touch DrawWidget::GetTouch(QMouseEvent * e)
-{
-  df::Touch touch;
-  touch.m_id = 0;
-  touch.m_location = GetDevicePoint(e);
-  return touch;
-}
-
-df::Touch DrawWidget::GetSymmetrical(df::Touch const & touch)
-{
-  m2::PointD pixelCenter = m_framework->GetPixelCenter();
-  m2::PointD symmetricalLocation = pixelCenter + (pixelCenter - touch.m_location);
-
-  df::Touch result;
-  result.m_id = touch.m_id + 1;
-  result.m_location = symmetricalLocation;
-
-  return result;
-}
-
-df::TouchEvent DrawWidget::GetTouchEvent(QMouseEvent * e, df::TouchEvent::ETouchType type)
-{
-  df::TouchEvent event;
-  event.SetTouchType(type);
-  event.SetFirstTouch(GetTouch(e));
-  if (IsCommandModifier(e))
-    event.SetSecondTouch(GetSymmetrical(event.GetFirstTouch()));
-
-  return event;
-}
-
-m2::PointD DrawWidget::GetDevicePoint(QMouseEvent * e) const
-{
-  return m2::PointD(L2D(e->x()), L2D(e->y()));
+  m_framework.DeactivateMapSelection(false);
 }
 
 void DrawWidget::SetRouter(routing::RouterType routerType)
 {
-  m_framework->SetRouter(routerType);
+  m_framework.GetRoutingManager().SetRouter(routerType);
 }
-void DrawWidget::SetSelectionMode(bool mode) { m_selectionMode = mode; }
+
+void DrawWidget::SetRuler(bool enabled)
+{
+  if(!enabled)
+    m_ruler.EraseLine(m_framework.GetDrapeApi());
+  m_ruler.SetActive(enabled);
 }
+
+// static
+void DrawWidget::SetDefaultSurfaceFormat(bool apiOpenGLES3)
+{
+  QSurfaceFormat fmt;
+  fmt.setAlphaBufferSize(8);
+  fmt.setBlueBufferSize(8);
+  fmt.setGreenBufferSize(8);
+  fmt.setRedBufferSize(8);
+  fmt.setStencilBufferSize(0);
+  fmt.setSamples(0);
+  fmt.setSwapBehavior(QSurfaceFormat::DoubleBuffer);
+  fmt.setSwapInterval(1);
+  fmt.setDepthBufferSize(16);
+#ifdef ENABLE_OPENGL_DIAGNOSTICS
+  fmt.setOption(QSurfaceFormat::DebugContext);
+#endif
+  if (apiOpenGLES3)
+  {
+    fmt.setProfile(QSurfaceFormat::CoreProfile);
+    fmt.setVersion(3, 2);
+  }
+  else
+  {
+    fmt.setProfile(QSurfaceFormat::CompatibilityProfile);
+    fmt.setVersion(2, 1);
+  }
+  //fmt.setOption(QSurfaceFormat::DebugContext);
+  QSurfaceFormat::setDefaultFormat(fmt);
+}
+
+void DrawWidget::RefreshDrawingRules()
+{
+  SetMapStyle(MapStyleClear);
+}
+
+m2::PointD DrawWidget::GetCoordsFromSettingsIfExists(bool start, m2::PointD const & pt)
+{
+  if (auto optional = RoutingSettings::GetCoords(start))
+    return mercator::FromLatLon(*optional);
+
+  return m_framework.P3dtoG(pt);
+}
+}  // namespace qt

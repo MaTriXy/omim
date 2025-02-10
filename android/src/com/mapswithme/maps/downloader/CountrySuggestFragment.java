@@ -2,7 +2,7 @@ package com.mapswithme.maps.downloader;
 
 import android.location.Location;
 import android.os.Bundle;
-import android.support.annotation.Nullable;
+import androidx.annotation.Nullable;
 import android.text.TextUtils;
 import android.view.LayoutInflater;
 import android.view.View;
@@ -139,7 +139,7 @@ public class CountrySuggestFragment extends BaseMwmFragment implements View.OnCl
 
     mBtnDownloadMap.setText(String.format(Locale.US, "%1$s (%2$s)",
                                           getString(R.string.downloader_download_map),
-                                          StringUtils.getFileSizeString(mCurrentCountry.totalSize)));
+                                          StringUtils.getFileSizeString(requireContext(), mCurrentCountry.totalSize)));
   }
 
   private void initViews(View view)
@@ -157,9 +157,6 @@ public class CountrySuggestFragment extends BaseMwmFragment implements View.OnCl
     mTvCountry = (TextView) view.findViewById(R.id.tv__country_name);
     mTvActiveCountry = (TextView) view.findViewById(R.id.tv__active_country_name);
     mTvProgress = (TextView) view.findViewById(R.id.downloader_progress);
-
-    UiUtils.updateAccentButton(mBtnDownloadMap);
-    UiUtils.updateAccentButton(selectMap);
   }
 
   private void updateViews()
@@ -217,8 +214,7 @@ public class CountrySuggestFragment extends BaseMwmFragment implements View.OnCl
       break;
 
     case R.id.btn__select_map:
-      if (!RoutingController.get().checkMigration(getMwmActivity()))
-        getMwmActivity().replaceFragment(DownloaderFragment.class, null, null);
+      getMwmActivity().replaceFragment(DownloaderFragment.class, null, null);
       break;
 
     case R.id.wpv__download_progress:

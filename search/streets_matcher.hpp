@@ -2,36 +2,37 @@
 
 #include "search/cbv.hpp"
 #include "search/geocoder_context.hpp"
+#include "search/token_range.hpp"
 
-#include "std/vector.hpp"
+#include <cstddef>
+#include <cstdint>
+#include <vector>
 
 namespace search
 {
 class FeaturesFilter;
-struct QueryParams;
+class QueryParams;
 
 class StreetsMatcher
 {
 public:
   struct Prediction
   {
-    inline size_t GetNumTokens() const { return m_endToken - m_startToken; }
+    inline size_t GetNumTokens() const { return m_tokenRange.Size(); }
 
     CBV m_features;
-
-    size_t m_startToken = 0;
-    size_t m_endToken = 0;
-
+    TokenRange m_tokenRange;
+    bool m_withMisprints = false;
     double m_prob = 0.0;
-
     uint64_t m_hash = 0;
   };
 
-  static void Go(BaseContext const & ctx, FeaturesFilter const & filter, QueryParams const & params,
-                 vector<Prediction> & predictions);
+  static void Go(BaseContext const & ctx, CBV const & candidates, FeaturesFilter const & filter,
+                 QueryParams const & params, std::vector<Prediction> & predictions);
 
 private:
-  static void FindStreets(BaseContext const & ctx, FeaturesFilter const & filter,
-                          QueryParams const & params, vector<Prediction> & prediction);
+  static void FindStreets(BaseContext const & ctx, CBV const & candidates,
+                          FeaturesFilter const & filter, QueryParams const & params,
+                          std::vector<Prediction> & prediction);
 };
 }  // namespace search

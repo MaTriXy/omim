@@ -4,42 +4,63 @@
 #include "search/search_params.hpp"
 
 #include "base/logging.hpp"
+#include "base/timer.hpp"
+
+#include <string>
+#include <vector>
 
 namespace search
 {
+namespace bookmarks
+{
+struct Result;
+}
+
 class Emitter
 {
 public:
-  inline void Init(SearchParams::TOnResults onResults)
+  void Init(SearchParams::OnResults onResults)
   {
     m_onResults = onResults;
     m_results.Clear();
+    m_prevEmitSize = 0;
+    m_timer.Reset();
   }
 
-  inline bool AddResult(Result && res) { return m_results.AddResult(move(res)); }
-  inline void AddResultNoChecks(Result && res) { m_results.AddResultNoChecks(move(res)); }
+  bool AddResult(Result && res) { return m_results.AddResult(std::move(res)); }
+  void AddResultNoChecks(Result && res) { m_results.AddResultNoChecks(std::move(res)); }
 
-  inline void Emit()
+  void AddBookmarkResult(bookmarks::Result const & result) { m_results.AddBookmarkResult(result); }
+
+  void PrecheckHotelQuery(std::vector<uint32_t> const & types) { m_results.PrecheckHotelQuery(types); }
+
+  void Emit(bool force = false)
   {
+    if (m_prevEmitSize == m_results.GetCount() && !force)
+      return;
+    m_prevEmitSize = m_results.GetCount();
+
+    LOG(LINFO, ("Emitting a new batch of results. Time since search start:",
+                m_timer.ElapsedSeconds(), "seconds."));
+
     if (m_onResults)
       m_onResults(m_results);
     else
       LOG(LERROR, ("OnResults is not set."));
   }
 
-  inline Results const & GetResults() const { return m_results; }
+  Results const & GetResults() const { return m_results; }
 
-  inline void Finish(bool cancelled)
+  void Finish(bool cancelled)
   {
     m_results.SetEndMarker(cancelled);
-    if (m_onResults)
-      m_onResults(m_results);
-    else
-      LOG(LERROR, ("OnResults is not set."));
+    Emit(true /* force */);
   }
 
 private:
-  SearchParams::TOnResults m_onResults;
+  SearchParams::OnResults m_onResults;
   Results m_results;
+  size_t m_prevEmitSize = 0;
+  base::Timer m_timer;
 };
 }  // namespace search

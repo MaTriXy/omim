@@ -1,10 +1,11 @@
 package com.mapswithme.maps.editor;
 
-import android.support.annotation.IdRes;
-import android.support.annotation.IntRange;
-import android.support.v4.app.Fragment;
-import android.support.v7.widget.RecyclerView;
-import android.support.v7.widget.SwitchCompat;
+import androidx.annotation.IdRes;
+import androidx.annotation.IntRange;
+import androidx.annotation.Nullable;
+import androidx.fragment.app.Fragment;
+import androidx.recyclerview.widget.RecyclerView;
+import androidx.appcompat.widget.SwitchCompat;
 import android.util.SparseArray;
 import android.view.LayoutInflater;
 import android.view.View;
@@ -15,11 +16,6 @@ import android.widget.CompoundButton;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Calendar;
-import java.util.List;
-
 import com.mapswithme.maps.R;
 import com.mapswithme.maps.editor.data.HoursMinutes;
 import com.mapswithme.maps.editor.data.TimeFormatUtils;
@@ -27,9 +23,14 @@ import com.mapswithme.maps.editor.data.Timespan;
 import com.mapswithme.maps.editor.data.Timetable;
 import com.mapswithme.util.UiUtils;
 
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Calendar;
+import java.util.List;
+
 class SimpleTimetableAdapter extends RecyclerView.Adapter<SimpleTimetableAdapter.BaseTimetableViewHolder>
                           implements HoursMinutesPickerFragment.OnPickListener,
-                                     TimetableFragment.TimetableProvider
+                                     TimetableProvider
 {
   private static final int TYPE_TIMETABLE = 0;
   private static final int TYPE_ADD_TIMETABLE = 1;
@@ -52,13 +53,20 @@ class SimpleTimetableAdapter extends RecyclerView.Adapter<SimpleTimetableAdapter
     refreshComplement();
   }
 
-  void setTimetables(Timetable[] tts)
+  @Override
+  public void setTimetables(@Nullable String timetables)
   {
-    mItems = new ArrayList<>(Arrays.asList(tts));
+    if (timetables == null)
+      return;
+    Timetable[] items = OpeningHours.nativeTimetablesFromString(timetables);
+    if (items == null)
+      return;
+    mItems = new ArrayList<>(Arrays.asList(items));
     refreshComplement();
     notifyDataSetChanged();
   }
 
+  @Nullable
   @Override
   public String getTimetables()
   {
@@ -213,18 +221,16 @@ class SimpleTimetableAdapter extends RecyclerView.Adapter<SimpleTimetableAdapter
       final ViewGroup closedHost = (ViewGroup) itemView.findViewById(R.id.closed_host);
       for (int i = 0; i < MAX_CLOSED_SPANS; i++)
       {
-        final View span = LayoutInflater.from(itemView.getContext()).inflate(R.layout.item_timetable_closed_hours, closedHost, false);
-        closedHost.addView(span, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, UiUtils.dimen(R.dimen.editor_height_closed)));
+        final View span = LayoutInflater
+            .from(itemView.getContext())
+            .inflate(R.layout.item_timetable_closed_hours, closedHost, false);
+        closedHost.addView(span, new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            UiUtils.dimen(closedHost.getContext(), R.dimen.editor_height_closed)));
         closedHours[i] = span;
         final int finalI = i;
-        span.findViewById(R.id.iv__remove_closed).setOnClickListener(new View.OnClickListener()
-        {
-          @Override
-          public void onClick(View v)
-          {
-            removeClosedHours(getAdapterPosition(), finalI);
-          }
-        });
+        span.findViewById(R.id.iv__remove_closed)
+            .setOnClickListener(v -> removeClosedHours(getAdapterPosition(), finalI));
       }
     }
 
@@ -394,7 +400,6 @@ class SimpleTimetableAdapter extends RecyclerView.Adapter<SimpleTimetableAdapter
       mAdd.setEnabled(enable);
       mAdd.setText(enable ? text + " (" + TimeFormatUtils.formatWeekdays(mComplementItem) + ")"
                           : text);
-      UiUtils.updateAccentButton(mAdd);
     }
   }
 }

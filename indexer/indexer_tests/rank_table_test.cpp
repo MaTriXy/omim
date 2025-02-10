@@ -1,7 +1,7 @@
 #include "testing/testing.hpp"
 
 #include "indexer/classificator_loader.hpp"
-#include "indexer/index.hpp"
+#include "indexer/data_source.hpp"
 #include "indexer/mwm_set.hpp"
 #include "indexer/rank_table.hpp"
 
@@ -9,18 +9,22 @@
 #include "platform/local_country_file.hpp"
 #include "platform/platform.hpp"
 
-#include "coding/file_container.hpp"
-#include "coding/file_name_utils.hpp"
+#include "coding/files_container.hpp"
 #include "coding/file_writer.hpp"
 #include "coding/internal/file_data.hpp"
 #include "coding/writer.hpp"
 
+#include "base/file_name_utils.hpp"
 #include "base/scope_guard.hpp"
 
 #include "defines.hpp"
 
-#include "std/string.hpp"
-#include "std/vector.hpp"
+#include <cstdint>
+#include <memory>
+#include <string>
+#include <vector>
+
+using namespace std;
 
 namespace
 {
@@ -37,7 +41,7 @@ void TestTable(vector<uint8_t> const & ranks, string const & path)
   // Tries to load table via file read.
   {
     FilesContainerR rcont(path);
-    auto table = search::RankTable::Load(rcont);
+    auto table = search::RankTable::Load(rcont, SEARCH_RANKS_FILE_TAG);
     TEST(table, ());
     TestTable(ranks, *table);
   }
@@ -45,7 +49,7 @@ void TestTable(vector<uint8_t> const & ranks, string const & path)
   // Tries to load table via file mapping.
   {
     FilesMappingContainer mcont(path);
-    auto table = search::RankTable::Load(mcont);
+    auto table = search::RankTable::Load(mcont, SEARCH_RANKS_FILE_TAG);
     TEST(table, ());
     TestTable(ranks, *table);
   }
@@ -58,7 +62,7 @@ UNIT_TEST(RankTableBuilder_Smoke)
   size_t const kNumRanks = 256;
 
   FileWriter::DeleteFileX(kTestCont);
-  MY_SCOPE_GUARD(cleanup, bind(&FileWriter::DeleteFileX, kTestCont));
+  SCOPE_GUARD(cleanup, bind(&FileWriter::DeleteFileX, kTestCont));
 
   vector<uint8_t> ranks;
   for (size_t i = 0; i < kNumRanks; ++i)
@@ -66,7 +70,7 @@ UNIT_TEST(RankTableBuilder_Smoke)
 
   {
     FilesContainerW wcont(kTestCont);
-    search::RankTableBuilder::Create(ranks, wcont);
+    search::RankTableBuilder::Create(ranks, wcont, SEARCH_RANKS_FILE_TAG);
   }
 
   TestTable(ranks, kTestCont);
@@ -76,29 +80,28 @@ UNIT_TEST(RankTableBuilder_EndToEnd)
 {
   classificator::Load();
 
-  string const originalMapPath =
-      my::JoinFoldersToPath(GetPlatform().WritableDir(), "minsk-pass.mwm");
-  string const mapPath = my::JoinFoldersToPath(GetPlatform().WritableDir(), "minsk-pass-copy.mwm");
-  my::CopyFileX(originalMapPath, mapPath);
-  MY_SCOPE_GUARD(cleanup, bind(&FileWriter::DeleteFileX, mapPath));
+  string const originalMapPath = base::JoinPath(GetPlatform().WritableDir(), "minsk-pass.mwm");
+  string const mapPath = base::JoinPath(GetPlatform().WritableDir(), "minsk-pass-copy.mwm");
+  base::CopyFileX(originalMapPath, mapPath);
+  SCOPE_GUARD(cleanup, bind(&FileWriter::DeleteFileX, mapPath));
 
   platform::LocalCountryFile localFile =
       platform::LocalCountryFile::MakeForTesting("minsk-pass-copy");
-  TEST(localFile.OnDisk(MapOptions::Map), ());
+  TEST(localFile.OnDisk(MapFileType::Map), ());
 
   vector<uint8_t> ranks;
   {
     FilesContainerR rcont(mapPath);
-    search::RankTableBuilder::CalcSearchRanks(rcont, ranks);
+    search::SearchRankTableBuilder::CalcSearchRanks(rcont, ranks);
   }
 
   {
     FilesContainerW wcont(mapPath, FileWriter::OP_WRITE_EXISTING);
-    search::RankTableBuilder::Create(ranks, wcont);
+    search::RankTableBuilder::Create(ranks, wcont, SEARCH_RANKS_FILE_TAG);
   }
 
-  Index index;
-  auto regResult = index.RegisterMap(localFile);
+  FrozenDataSource dataSource;
+  auto regResult = dataSource.RegisterMap(localFile);
   TEST_EQUAL(regResult.second, MwmSet::RegResult::Success, ());
 
   TestTable(ranks, mapPath);
@@ -107,19 +110,19 @@ UNIT_TEST(RankTableBuilder_EndToEnd)
 UNIT_TEST(RankTableBuilder_WrongEndianness)
 {
   char const kTestFile[] = "test.mwm";
-  MY_SCOPE_GUARD(cleanup, bind(&FileWriter::DeleteFileX, kTestFile));
+  SCOPE_GUARD(cleanup, bind(&FileWriter::DeleteFileX, kTestFile));
 
   vector<uint8_t> ranks = {0, 1, 2, 3, 4};
   {
     FilesContainerW wcont(kTestFile);
-    search::RankTableBuilder::Create(ranks, wcont);
+    search::RankTableBuilder::Create(ranks, wcont, SEARCH_RANKS_FILE_TAG);
   }
 
   // Load rank table in host endianness.
   unique_ptr<search::RankTable> table;
   {
     FilesContainerR rcont(kTestFile);
-    table = search::RankTable::Load(rcont);
+    table = search::RankTable::Load(rcont, SEARCH_RANKS_FILE_TAG);
     TEST(table.get(), ());
     TestTable(ranks, *table);
   }
@@ -133,13 +136,13 @@ UNIT_TEST(RankTableBuilder_WrongEndianness)
     }
 
     FilesContainerW wcont(kTestFile);
-    wcont.Write(data, RANKS_FILE_TAG);
+    wcont.Write(data, SEARCH_RANKS_FILE_TAG);
   }
 
   // Try to load rank table from opposite endianness.
   {
     FilesContainerR rcont(kTestFile);
-    auto table = search::RankTable::Load(rcont);
+    auto table = search::RankTable::Load(rcont, SEARCH_RANKS_FILE_TAG);
     TEST(table.get(), ());
     TestTable(ranks, *table);
   }
@@ -147,12 +150,12 @@ UNIT_TEST(RankTableBuilder_WrongEndianness)
   // It's impossible to map rank table from opposite endianness.
   {
     FilesMappingContainer mcont(kTestFile);
-    auto table = search::RankTable::Load(mcont);
+    auto table = search::RankTable::Load(mcont, SEARCH_RANKS_FILE_TAG);
     TEST(!table.get(), ());
   }
 
   // Try to re-create rank table in test file.
-  TEST(search::RankTableBuilder::CreateIfNotExists(kTestFile), ());
+  TEST(search::SearchRankTableBuilder::CreateIfNotExists(kTestFile), ());
 
   // Try to load and map rank table - both methods should work now.
   TestTable(ranks, kTestFile);

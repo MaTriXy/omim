@@ -9,25 +9,28 @@
 #include "indexer/search_delimiters.hpp"
 #include "indexer/search_string_utils.hpp"
 
-#include "coding/multilang_utf8_string.hpp"
+#include "coding/string_utf8_multilang.hpp"
 
 #include "base/logging.hpp"
 
-#include "std/algorithm.hpp"
-#include "std/bind.hpp"
-#include "std/functional.hpp"
-#include "std/iostream.hpp"
-#include "std/map.hpp"
-#include "std/vector.hpp"
+#include <algorithm>
+#include <functional>
+#include <iostream>
+#include <map>
+#include <vector>
+
+#include "defines.hpp"
+
+using namespace std;
 
 namespace
 {
-template <typename TValue>
+template <typename Value>
 struct SearchTokensCollector
 {
   SearchTokensCollector() : m_currentS(), m_currentCount(0) {}
 
-  void operator()(strings::UniString const & s, TValue const & /* value */)
+  void operator()(strings::UniString const & s, Value const & /* value */)
   {
     if (m_currentS != s)
     {
@@ -96,7 +99,7 @@ namespace feature
   void DumpTypes(string const & fPath)
   {
     TypesCollector doClass;
-    feature::ForEachFromDat(fPath, doClass);
+    feature::ForEachFeature(fPath, doClass);
 
     typedef pair<vector<uint32_t>, size_t> stats_elem_type;
     typedef vector<stats_elem_type> vec_to_sort;
@@ -122,16 +125,16 @@ namespace feature
   public:
     TokensContainerT m_stats;
 
-    bool operator()(int8_t langCode, string const & name)
+    void operator()(int8_t langCode, string const & name)
     {
       CHECK(!name.empty(), ("Feature name is empty"));
 
       vector<strings::UniString> tokens;
       search::SplitUniString(search::NormalizeAndSimplifyString(name),
-                             MakeBackInsertFunctor(tokens), search::Delimiters());
+                             base::MakeBackInsertFunctor(tokens), search::Delimiters());
 
       if (tokens.empty())
-        return true;
+        return;
 
       for (size_t i = 1; i < tokens.size(); ++i)
       {
@@ -146,7 +149,6 @@ namespace feature
         if (!found.second)
           found.first->second.first++;
       }
-      return true;
     }
 
     void operator()(FeatureType & f, uint32_t)
@@ -183,7 +185,7 @@ namespace feature
   void DumpPrefixes(string const & fPath)
   {
     PrefixesCollector doClass;
-    feature::ForEachFromDat(fPath, doClass);
+    feature::ForEachFeature(fPath, doClass);
     for (TokensContainerT::iterator it = doClass.m_stats.begin();
          it != doClass.m_stats.end(); ++it)
     {
@@ -193,16 +195,15 @@ namespace feature
 
   void DumpSearchTokens(string const & fPath, size_t maxTokensToShow)
   {
-    using TValue = FeatureIndexValue;
+    using Value = Uint64IndexValue;
 
     FilesContainerR container(make_unique<FileReader>(fPath));
     feature::DataHeader header(container);
-    serial::CodingParams codingParams(trie::GetCodingParams(header.GetDefCodingParams()));
 
-    auto const trieRoot = trie::ReadTrie<ModelReaderPtr, ValueList<TValue>>(
-        container.GetReader(SEARCH_INDEX_FILE_TAG), SingleValueSerializer<TValue>(codingParams));
+    auto const trieRoot = trie::ReadTrie<ModelReaderPtr, ValueList<Value>>(
+        container.GetReader(SEARCH_INDEX_FILE_TAG), SingleValueSerializer<Value>());
 
-    SearchTokensCollector<TValue> f;
+    SearchTokensCollector<Value> f;
     trie::ForEachRef(*trieRoot, f, strings::UniString());
     f.Finish();
 
@@ -216,20 +217,17 @@ namespace feature
   void DumpFeatureNames(string const & fPath, string const & lang)
   {
     int8_t const langIndex = StringUtf8Multilang::GetLangIndex(lang);
-    auto printName = [&](int8_t langCode, string const & name) -> bool
-    {
+    auto printName = [&](int8_t langCode, string const & name) {
       CHECK(!name.empty(), ("Feature name is empty"));
       if (langIndex == StringUtf8Multilang::kUnsupportedLanguageCode)
         cout << StringUtf8Multilang::GetLangByCode(langCode) << ' ' << name << endl;
       else if (langCode == langIndex)
         cout << name << endl;
-      return true;
     };
 
-    feature::ForEachFromDat(fPath, [&](FeatureType & f, uint32_t)
+    feature::ForEachFeature(fPath, [&](FeatureType & f, uint32_t)
                             {
                               f.ForEachName(printName);
                             });
   }
-
 }  // namespace feature

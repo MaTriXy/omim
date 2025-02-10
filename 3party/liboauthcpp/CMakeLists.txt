@@ -1,13 +1,8 @@
-cmake_minimum_required(VERSION 3.2)
-
-project(oauthcpp C CXX)
-
-add_compile_options(
-  "-Wall"
-  "-std=c++11"
-)
+project(oauthcpp)
 
 include_directories(include src)
+
+add_clang_compile_options("-Wno-shorten-64-to-32")
 
 set(
   SRC
@@ -19,4 +14,4 @@ set(
   src/liboauthcpp.cpp
 )
 
-add_library(oauthcpp ${SRC})
+add_library(${PROJECT_NAME} ${SRC})

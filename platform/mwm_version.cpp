@@ -1,6 +1,6 @@
 #include "mwm_version.hpp"
 
-#include "coding/file_container.hpp"
+#include "coding/files_container.hpp"
 #include "coding/reader_wrapper.hpp"
 #include "coding/varint.hpp"
 #include "coding/writer.hpp"
@@ -13,35 +13,17 @@
 
 #include "defines.hpp"
 
-#include "std/array.hpp"
+#include <sstream>
 
 namespace version
 {
 namespace
 {
-uint64_t VersionToSecondsSinceEpoch(uint64_t version)
-{
-  auto constexpr partsCount = 3;
-  // From left to right YY MM DD.
-  array<int, partsCount> parts{};  // Initialize with zeros.
-  for (auto i = partsCount - 1; i >= 0; --i)
-  {
-    parts[i] = version % 100;
-    version /= 100;
-  }
-  ASSERT_EQUAL(version, 0, ("Version is too big."));
-
-  ASSERT_LESS_OR_EQUAL(parts[1], 12, ("Month should be in range [1, 12]"));
-  ASSERT_LESS_OR_EQUAL(parts[2], 31, ("Day should be in range [1, 31]"));
-
-  std::tm tm{};
-  tm.tm_year = parts[0] + 100;
-  tm.tm_mon = parts[1] - 1;
-  tm.tm_mday = parts[2];
-
-  return my::TimeTToSecondsSinceEpoch(base::TimeGM(tm));
-}
-
+// Editing maps older than approximately two months old is disabled, since the data
+// is most likely already fixed on OSM. Not limited to the latest one or two versions,
+// because a user can forget to update maps after a new app version has been installed
+// automatically in the background.
+uint64_t constexpr kMaxSecondsTillNoEdits = 3600 * 24 * 31 * 2;
 char const MWM_PROLOG[] = "MWM";
 
 template <class TSource>
@@ -54,7 +36,7 @@ void ReadVersionT(TSource & src, MwmVersion & version)
   if (strcmp(prolog, MWM_PROLOG) != 0)
   {
     version.SetFormat(Format::v2);
-    version.SetSecondsSinceEpoch(VersionToSecondsSinceEpoch(111101));
+    version.SetSecondsSinceEpoch(base::YYMMDDToSecondsSinceEpoch(111101));
     return;
   }
 
@@ -62,21 +44,40 @@ void ReadVersionT(TSource & src, MwmVersion & version)
   // with the correspondent return value.
   version.SetFormat(static_cast<Format>(ReadVarUint<uint32_t>(src)));
   if (version.GetFormat() < Format::v8)
-    version.SetSecondsSinceEpoch(VersionToSecondsSinceEpoch(ReadVarUint<uint64_t>(src)));
+  {
+    version.SetSecondsSinceEpoch(
+        base::YYMMDDToSecondsSinceEpoch(static_cast<uint32_t>(ReadVarUint<uint64_t>(src))));
+  }
   else
+  {
     version.SetSecondsSinceEpoch(ReadVarUint<uint32_t>(src));
+  }
 }
 }  // namespace
 
 uint32_t MwmVersion::GetVersion() const
 {
-  auto const tm = my::GmTime(my::SecondsSinceEpochToTimeT(m_secondsSinceEpoch));
-  return my::GenerateYYMMDD(tm.tm_year, tm.tm_mon, tm.tm_mday);
+  auto const tm = base::GmTime(base::SecondsSinceEpochToTimeT(m_secondsSinceEpoch));
+  return base::GenerateYYMMDD(tm.tm_year, tm.tm_mon, tm.tm_mday);
 }
 
-string DebugPrint(Format f)
+bool MwmVersion::IsEditableMap() const
+{
+  return m_secondsSinceEpoch + kMaxSecondsTillNoEdits > base::SecondsSinceEpoch();
+}
+
+std::string DebugPrint(Format f)
 {
   return "v" + strings::to_string(static_cast<uint32_t>(f) + 1);
+}
+
+std::string DebugPrint(MwmVersion const & mwmVersion)
+{
+  std::stringstream s;
+  s << "MwmVersion [format:" << DebugPrint(mwmVersion.GetFormat())
+    << ", seconds:" << mwmVersion.GetSecondsSinceEpoch()  << "]";
+
+  return s.str();
 }
 
 void WriteVersion(Writer & w, uint64_t secondsSinceEpoch)
@@ -114,5 +115,16 @@ bool IsSingleMwm(int64_t version)
 {
   int64_t constexpr kMinSingleMwmVersion = 160302;
   return version >= kMinSingleMwmVersion || version == 0 /* Version of mwm in the root directory. */;
+}
+
+MwmType GetMwmType(MwmVersion const & version)
+{
+  if (!IsSingleMwm(version.GetVersion()))
+    return MwmType::SeparateMwms;
+  if (version.GetFormat() < Format::v8)
+    return MwmType::SeparateMwms;
+  if (version.GetFormat() > Format::v8)
+    return MwmType::SingleMwm;
+  return MwmType::Unknown;
 }
 }  // namespace version

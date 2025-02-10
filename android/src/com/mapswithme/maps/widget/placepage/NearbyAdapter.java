@@ -1,8 +1,8 @@
 package com.mapswithme.maps.widget.placepage;
 
 import android.content.res.Resources;
-import android.support.annotation.NonNull;
-import android.support.annotation.Nullable;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
@@ -113,7 +113,7 @@ class NearbyAdapter extends BaseAdapter
     {
       mItem = item;
       String packageName = mType.getContext().getPackageName();
-      final boolean isNightTheme = ThemeUtils.isNightTheme();
+      final boolean isNightTheme = ThemeUtils.isNightTheme(mType.getContext());
       Resources resources = mType.getResources();
       int categoryRes = resources.getIdentifier(item.getCategory(), "string", packageName);
       if (categoryRes == 0)

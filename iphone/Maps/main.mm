@@ -1,10 +1,9 @@
-#import <MyTrackerSDK/MRMyTracker.h>
 #import <Pushwoosh/PushNotificationManager.h>
-#import "Common.h"
 #import "MapsAppDelegate.h"
 
 #ifdef OMIM_PRODUCTION
-# include "fabric_logging.hpp"
+#import <AppsFlyerLib/AppsFlyerTracker.h>
+#include "fabric_logging.hpp"
 #endif
 
 #include "platform/file_logging.hpp"
@@ -13,7 +12,8 @@
 
 void setPushWooshSender()
 {
-  GetPlatform().SetPushWooshSender([](string const & tag, vector<string> const & values) {
+  GetPlatform().GetMarketingService().SetPushWooshSender([](std::string const & tag, std::vector<std::string> const & values)
+  {
     if (values.empty() || tag.empty())
       return;
     PushNotificationManager * pushManager = [PushNotificationManager pushManager];
@@ -33,28 +33,31 @@ void setPushWooshSender()
 
 void setMarketingSender()
 {
-  GetPlatform().SetMarketingSender([](string const & tag, map<string, string> const & params) {
+  GetPlatform().GetMarketingService().SetMarketingSender([](std::string const & tag, std::map<std::string, std::string> const & params)
+  {
     if (tag.empty())
       return;
     NSMutableDictionary<NSString *, NSString *> * eventParams = [@{} mutableCopy];
-    NSMutableString * myTrackerEvent = [@(tag.c_str()) mutableCopy];
     for (auto const & param : params)
     {
       NSString * key = @(param.first.c_str());
       NSString * value = @(param.second.c_str());
       eventParams[key] = value;
-      [myTrackerEvent appendString:[NSString stringWithFormat:@"_%@_%@", key, value]];
     }
-    [MRMyTracker trackEventWithName:myTrackerEvent];
+
+  #ifdef OMIM_PRODUCTION
+    [[AppsFlyerTracker sharedTracker] trackEvent:@(tag.c_str()) withValues:eventParams];
+  #endif
   });
 }
 
 int main(int argc, char * argv[])
 {
 #ifdef MWM_LOG_TO_FILE
-  my::SetLogMessageFn(LogMessageFile);
+  base::SetLogMessageFn(LogMessageFile);
 #elif OMIM_PRODUCTION
-  my::SetLogMessageFn(platform::LogMessageFabric);
+  base::SetLogMessageFn(platform::IosLogMessage);
+  base::SetAssertFunction(platform::IosAssertMessage);
 #endif
   auto & p = GetPlatform();
   LOG(LINFO, ("maps.me started, detected CPU cores:", p.CpuCores()));

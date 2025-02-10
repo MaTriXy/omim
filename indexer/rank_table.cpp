@@ -1,5 +1,6 @@
 #include "indexer/rank_table.hpp"
 
+#include "indexer/classificator.hpp"
 #include "indexer/data_header.hpp"
 #include "indexer/feature_algo.hpp"
 #include "indexer/feature_impl.hpp"
@@ -11,7 +12,7 @@
 #include "platform/local_country_file_utils.hpp"
 
 #include "coding/endianness.hpp"
-#include "coding/file_container.hpp"
+#include "coding/files_container.hpp"
 #include "coding/file_writer.hpp"
 #include "coding/memory_region.hpp"
 #include "coding/reader.hpp"
@@ -22,10 +23,16 @@
 #include "base/assert.hpp"
 #include "base/logging.hpp"
 #include "base/macros.hpp"
+#include "base/math.hpp"
 
-#include "std/utility.hpp"
+#include <algorithm>
+#include <exception>
+#include <limits>
+#include <utility>
 
 #include "defines.hpp"
+
+using namespace std;
 
 namespace search
 {
@@ -49,7 +56,7 @@ CheckResult CheckEndianness(TReader && reader)
     return CheckResult::CorruptedHeader;
   uint8_t flags;
   reader.Read(kFlagsOffset, &flags, sizeof(flags));
-  bool const isHostBigEndian = IsBigEndian();
+  bool const isHostBigEndian = IsBigEndianMacroBased();
   bool const isDataBigEndian = flags & 1;
   if (isHostBigEndian != isDataBigEndian)
     return CheckResult::EndiannessMismatch;
@@ -62,7 +69,7 @@ unique_ptr<CopiedMemoryRegion> GetMemoryRegionForTag(FilesContainerR const & rco
   if (!rcont.IsExist(tag))
     return unique_ptr<CopiedMemoryRegion>();
   FilesContainerR::TReader reader = rcont.GetReader(tag);
-  vector<uint8_t> buffer(reader.Size());
+  vector<uint8_t> buffer(static_cast<size_t>(reader.Size()));
   reader.Read(0, buffer.data(), buffer.size());
   return make_unique<CopiedMemoryRegion>(move(buffer));
 }
@@ -83,7 +90,7 @@ class RankTableV0 : public RankTable
 public:
   RankTableV0() = default;
 
-  RankTableV0(vector<uint8_t> const & ranks) : m_coding(ranks) {}
+  explicit RankTableV0(vector<uint8_t> const & ranks) : m_coding(ranks) {}
 
   // RankTable overrides:
   uint8_t Get(uint64_t i) const override
@@ -103,7 +110,7 @@ public:
     static uint64_t const padding = 0;
 
     uint8_t const version = GetVersion();
-    uint8_t const flags = preserveHostEndianness ? IsBigEndian() : !IsBigEndian();
+    uint8_t const flags = preserveHostEndianness ? IsBigEndianMacroBased() : !IsBigEndianMacroBased();
     writer.Write(&version, sizeof(version));
     writer.Write(&flags, sizeof(flags));
     writer.Write(&padding, 6);
@@ -119,11 +126,12 @@ public:
     if (!region.get())
       return unique_ptr<RankTableV0>();
 
-    auto const result = CheckEndianness(MemReader(region->ImmutableData(), region->Size()));
+    auto const result =
+        CheckEndianness(MemReader(region->ImmutableData(), static_cast<size_t>(region->Size())));
     if (result != CheckResult::EndiannessMatch)
       return unique_ptr<RankTableV0>();
 
-    unique_ptr<RankTableV0> table(new RankTableV0());
+    auto table = make_unique<RankTableV0>();
     coding::Map(table->m_coding, region->ImmutableData() + kHeaderSize, "SimpleDenseCoding");
     table->m_region = move(region);
     return table;
@@ -137,7 +145,8 @@ public:
       return unique_ptr<RankTableV0>();
 
     unique_ptr<RankTableV0> table;
-    switch (CheckEndianness(MemReader(region->ImmutableData(), region->Size())))
+    switch (
+        CheckEndianness(MemReader(region->ImmutableData(), static_cast<size_t>(region->Size()))))
     {
     case CheckResult::CorruptedHeader:
       break;
@@ -163,11 +172,11 @@ private:
 // Following two functions create a rank section and serialize |table|
 // to it. If there was an old section with ranks, these functions
 // overwrite it.
-void SerializeRankTable(RankTable & table, FilesContainerW & wcont)
+void SerializeRankTable(RankTable & table, FilesContainerW & wcont, string const & sectionName)
 {
-  if (wcont.IsExist(RANKS_FILE_TAG))
-    wcont.DeleteSection(RANKS_FILE_TAG);
-  ASSERT(!wcont.IsExist(RANKS_FILE_TAG), ());
+  if (wcont.IsExist(sectionName))
+    wcont.DeleteSection(sectionName);
+  ASSERT(!wcont.IsExist(sectionName), ());
 
   vector<char> buffer;
   {
@@ -175,14 +184,14 @@ void SerializeRankTable(RankTable & table, FilesContainerW & wcont)
     table.Serialize(writer, true /* preserveHostEndianness */);
   }
 
-  wcont.Write(buffer, RANKS_FILE_TAG);
+  wcont.Write(buffer, sectionName);
   wcont.Finish();
 }
 
-void SerializeRankTable(RankTable & table, string const & mapPath)
+void SerializeRankTable(RankTable & table, string const & mapPath, string const & sectionName)
 {
   FilesContainerW wcont(mapPath, FileWriter::OP_WRITE_EXISTING);
-  SerializeRankTable(table, wcont);
+  SerializeRankTable(table, wcont, sectionName);
 }
 
 // Deserializes rank table from a rank section. Returns null when it's
@@ -213,22 +222,45 @@ unique_ptr<RankTable> LoadRankTable(unique_ptr<TRegion> && region)
   return unique_ptr<RankTable>();
 }
 
-// Calculates search rank for a feature.
-uint8_t CalcSearchRank(FeatureType const & ft)
+uint8_t CalcEventRank(FeatureType & ft)
 {
-  return feature::PopulationToRank(ftypes::GetPopulation(ft));
+  //TODO: add custom event processing, i.e. fc2018.
+  return 0;
+}
+
+uint8_t CalcTransportRank(FeatureType & ft)
+{
+  uint8_t const kTransportRank = 2;
+  if (ftypes::IsRailwayStationChecker::Instance()(ft) ||
+      ftypes::IsSubwayStationChecker::Instance()(ft) || ftypes::IsAirportChecker::Instance()(ft))
+  {
+    return kTransportRank;
+  }
+
+  return 0;
+}
+
+// Calculates search rank for a feature.
+uint8_t CalcSearchRank(FeatureType & ft)
+{
+  auto const eventRank = CalcEventRank(ft);
+  auto const transportRank = CalcTransportRank(ft);
+  auto const populationRank = feature::PopulationToRank(ftypes::GetPopulation(ft));
+
+  return base::Clamp(eventRank + transportRank + populationRank, 0,
+                     static_cast<int>(numeric_limits<uint8_t>::max()));
 }
 
 // Creates rank table if it does not exists in |rcont| or has wrong
 // endianness. Otherwise (table exists and has correct format) returns
 // null.
-unique_ptr<RankTable> CreateRankTableIfNotExists(FilesContainerR & rcont)
+unique_ptr<RankTable> CreateSearchRankTableIfNotExists(FilesContainerR & rcont)
 {
   unique_ptr<RankTable> table;
 
-  if (rcont.IsExist(RANKS_FILE_TAG))
+  if (rcont.IsExist(SEARCH_RANKS_FILE_TAG))
   {
-    switch (CheckEndianness(rcont.GetReader(RANKS_FILE_TAG)))
+    switch (CheckEndianness(rcont.GetReader(SEARCH_RANKS_FILE_TAG)))
     {
     case CheckResult::CorruptedHeader:
     {
@@ -239,7 +271,7 @@ unique_ptr<RankTable> CreateRankTableIfNotExists(FilesContainerR & rcont)
     {
       // Try to copy whole serialized data and instantiate table via
       // reverse mapping.
-      auto region = GetMemoryRegionForTag(rcont, RANKS_FILE_TAG);
+      auto region = GetMemoryRegionForTag(rcont, SEARCH_RANKS_FILE_TAG);
       table = LoadRankTable(move(region));
       break;
     }
@@ -256,7 +288,7 @@ unique_ptr<RankTable> CreateRankTableIfNotExists(FilesContainerR & rcont)
   if (!table)
   {
     vector<uint8_t> ranks;
-    RankTableBuilder::CalcSearchRanks(rcont, ranks);
+    SearchRankTableBuilder::CalcSearchRanks(rcont, ranks);
     table = make_unique<RankTableV0>(ranks);
   }
 
@@ -265,31 +297,29 @@ unique_ptr<RankTable> CreateRankTableIfNotExists(FilesContainerR & rcont)
 }  // namespace
 
 // static
-unique_ptr<RankTable> RankTable::Load(FilesContainerR const & rcont)
+unique_ptr<RankTable> RankTable::Load(FilesContainerR const & rcont, string const & sectionName)
 {
-  return LoadRankTable(GetMemoryRegionForTag(rcont, RANKS_FILE_TAG));
+  return LoadRankTable(GetMemoryRegionForTag(rcont, sectionName));
 }
 
 // static
-unique_ptr<RankTable> RankTable::Load(FilesMappingContainer const & mcont)
+unique_ptr<RankTable> RankTable::Load(FilesMappingContainer const & mcont, string const & sectionName)
 {
-  return LoadRankTable(GetMemoryRegionForTag(mcont, RANKS_FILE_TAG));
+  return LoadRankTable(GetMemoryRegionForTag(mcont, sectionName));
 }
 
 // static
-void RankTableBuilder::CalcSearchRanks(FilesContainerR & rcont, vector<uint8_t> & ranks)
+void SearchRankTableBuilder::CalcSearchRanks(FilesContainerR & rcont, vector<uint8_t> & ranks)
 {
   feature::DataHeader header(rcont);
   FeaturesVector featuresVector(rcont, header, nullptr /* features offsets table */);
 
-  featuresVector.ForEach([&ranks](FeatureType const & ft, uint32_t /* index */)
-                         {
-                           ranks.push_back(CalcSearchRank(ft));
-                         });
+  featuresVector.ForEach(
+      [&ranks](FeatureType & ft, uint32_t /* index */) { ranks.push_back(CalcSearchRank(ft)); });
 }
 
 // static
-bool RankTableBuilder::CreateIfNotExists(platform::LocalCountryFile const & localFile) noexcept
+bool SearchRankTableBuilder::CreateIfNotExists(platform::LocalCountryFile const & localFile) noexcept
 {
   try
   {
@@ -297,18 +327,18 @@ bool RankTableBuilder::CreateIfNotExists(platform::LocalCountryFile const & loca
 
     unique_ptr<RankTable> table;
     {
-      ModelReaderPtr reader = platform::GetCountryReader(localFile, MapOptions::Map);
+      ModelReaderPtr reader = platform::GetCountryReader(localFile, MapFileType::Map);
       if (!reader.GetPtr())
         return false;
 
       mapPath = reader.GetName();
 
       FilesContainerR rcont(reader);
-      table = CreateRankTableIfNotExists(rcont);
+      table = CreateSearchRankTableIfNotExists(rcont);
     }
 
     if (table)
-      SerializeRankTable(*table, mapPath);
+      SerializeRankTable(*table, mapPath, SEARCH_RANKS_FILE_TAG);
 
     return true;
   }
@@ -320,18 +350,18 @@ bool RankTableBuilder::CreateIfNotExists(platform::LocalCountryFile const & loca
 }
 
 // static
-bool RankTableBuilder::CreateIfNotExists(string const & mapPath) noexcept
+bool SearchRankTableBuilder::CreateIfNotExists(string const & mapPath) noexcept
 {
   try
   {
     unique_ptr<RankTable> table;
     {
       FilesContainerR rcont(mapPath);
-      table = CreateRankTableIfNotExists(rcont);
+      table = CreateSearchRankTableIfNotExists(rcont);
     }
 
     if (table)
-      SerializeRankTable(*table, mapPath);
+      SerializeRankTable(*table, mapPath, SEARCH_RANKS_FILE_TAG);
 
     return true;
   }
@@ -343,9 +373,10 @@ bool RankTableBuilder::CreateIfNotExists(string const & mapPath) noexcept
 }
 
 // static
-void RankTableBuilder::Create(vector<uint8_t> const & ranks, FilesContainerW & wcont)
+void RankTableBuilder::Create(vector<uint8_t> const & ranks, FilesContainerW & wcont,
+                              string const & sectionName)
 {
   RankTableV0 table(ranks);
-  SerializeRankTable(table, wcont);
+  SerializeRankTable(table, wcont, sectionName);
 }
 }  // namespace search

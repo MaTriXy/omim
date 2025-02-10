@@ -1,24 +1,21 @@
 package com.mapswithme.maps.widget.menu;
 
 import android.view.View;
-import android.view.ViewGroup;
-import android.widget.Button;
-import android.widget.TextView;
 
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import com.mapswithme.maps.ClickMenuDelegate;
 import com.mapswithme.maps.MwmActivity;
-import com.mapswithme.maps.MwmApplication;
 import com.mapswithme.maps.R;
 import com.mapswithme.maps.downloader.MapManager;
 import com.mapswithme.maps.downloader.UpdateInfo;
+import com.mapswithme.maps.maplayer.Mode;
 import com.mapswithme.maps.routing.RoutingController;
-import com.mapswithme.util.Graphics;
+import com.mapswithme.util.SharedPropertiesUtils;
 import com.mapswithme.util.UiUtils;
-import ru.mail.android.mytarget.core.models.Stat;
+import com.mapswithme.util.statistics.StatisticValueConverter;
 
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.Locale;
 
 public class MainMenu extends BaseMenu
 {
@@ -29,7 +26,7 @@ public class MainMenu extends BaseMenu
           @Override
           boolean showToggle()
           {
-            return false;
+            return true;
           }
         },
     NAVIGATION,
@@ -48,87 +45,114 @@ public class MainMenu extends BaseMenu
     }
   }
 
-  private static final String TAG_COLLAPSE = MwmApplication.get().getString(R.string.tag_menu_collapse);
-
-  private final int mButtonsWidth = UiUtils.dimen(R.dimen.menu_line_button_width);
-  private final int mPanelWidth = UiUtils.dimen(R.dimen.panel_width);
-
   private final View mButtonsFrame;
   private final View mRoutePlanFrame;
-  private final View mAnimationSpacer;
-  private final View mAnimationSymmetricalGap;
   private final View mNewsMarker;
-
-  private final TextView mNewsCounter;
-
-  private boolean mCollapsed;
-  private final List<View> mCollapseViews = new ArrayList<>();
 
   private final MenuToggle mToggle;
 
-  // Maps Item into button view placed on mContentFrame
-  private final Map<Item, View> mItemViews = new HashMap<>();
-
-  private final MwmActivity.LeftAnimationTrackListener mAnimationTrackListener = new MwmActivity.LeftAnimationTrackListener()
+  public enum Item implements BaseMenu.Item, StatisticValueConverter<String>
   {
-    private float mSymmetricalGapScale;
-
-    @Override
-    public void onTrackStarted(boolean collapsed)
-    {
-      for (View v : mCollapseViews)
-      {
-        if (collapsed)
-          UiUtils.show(v);
-
-        v.setAlpha(collapsed ? 0.0f : 1.0f);
-        v.animate()
-         .alpha(collapsed ? 1.0f : 0.0f)
-         .start();
-      }
-
-      mToggle.setCollapsed(!collapsed, true);
-
-      mSymmetricalGapScale = (float) mButtonsWidth / mPanelWidth;
-    }
-
-    @Override
-    public void onTrackFinished(boolean collapsed)
-    {
-      mCollapsed = collapsed;
-      updateMarker();
-
-      if (collapsed)
-        for (View v : mCollapseViews)
-          UiUtils.hide(v);
-    }
-
-    @Override
-    public void onTrackLeftAnimation(float offset)
-    {
-      ViewGroup.MarginLayoutParams lp = (ViewGroup.MarginLayoutParams) mAnimationSpacer.getLayoutParams();
-      lp.rightMargin = (int) offset;
-      mAnimationSpacer.setLayoutParams(lp);
-
-      if (mAnimationSymmetricalGap == null)
-        return;
-
-      lp = (ViewGroup.MarginLayoutParams) mAnimationSymmetricalGap.getLayoutParams();
-      lp.width = mButtonsWidth - (int) (mSymmetricalGapScale * offset);
-      mAnimationSymmetricalGap.setLayoutParams(lp);
-    }
-  };
-
-  public enum Item implements BaseMenu.Item
-  {
-    TOGGLE(R.id.toggle),
-    ADD_PLACE(R.id.add_place),
-    SEARCH(R.id.search),
-    P2P(R.id.p2p),
-    BOOKMARKS(R.id.bookmarks),
-    SHARE(R.id.share),
-    DOWNLOADER(R.id.download_maps),
-    SETTINGS(R.id.settings);
+    MENU(R.id.toggle)
+        {
+          @NonNull
+          @Override
+          public ClickMenuDelegate createClickDelegate(@NonNull MwmActivity activity,
+                                                       @NonNull Item item)
+          {
+            return new MwmActivity.MenuClickDelegate(activity, item);
+          }
+        },
+    ADD_PLACE(R.id.add_place)
+        {
+          @NonNull
+          @Override
+          public ClickMenuDelegate createClickDelegate(@NonNull MwmActivity activity,
+                                                       @NonNull Item item)
+          {
+            throw new UnsupportedOperationException("Main menu option doesn't support it!");
+          }
+        },
+    DOWNLOAD_GUIDES(R.id.download_guides)
+        {
+          @NonNull
+          @Override
+          public ClickMenuDelegate createClickDelegate(@NonNull MwmActivity activity,
+                                                       @NonNull Item item)
+          {
+            throw new UnsupportedOperationException("Main menu option doesn't support it!");
+          }
+        },
+    SEARCH(R.id.search)
+        {
+          @NonNull
+          @Override
+          public ClickMenuDelegate createClickDelegate(@NonNull MwmActivity activity,
+                                                       @NonNull Item item)
+          {
+            return new MwmActivity.SearchClickDelegate(activity, item);
+          }
+        },
+    POINT_TO_POINT(R.id.p2p)
+        {
+          @NonNull
+          @Override
+          public ClickMenuDelegate createClickDelegate(@NonNull MwmActivity activity,
+                                                       @NonNull Item item)
+          {
+            return new MwmActivity.PointToPointDelegate(activity, item);
+          }
+        },
+    DISCOVERY(R.id.discovery)
+        {
+          @NonNull
+          @Override
+          public ClickMenuDelegate createClickDelegate(@NonNull MwmActivity activity,
+                                                       @NonNull Item item)
+          {
+            return new MwmActivity.DiscoveryDelegate(activity, item);
+          }
+        },
+    BOOKMARKS(R.id.bookmarks)
+        {
+          @NonNull
+          @Override
+          public ClickMenuDelegate createClickDelegate(@NonNull MwmActivity activity,
+                                                       @NonNull Item item)
+          {
+            return new MwmActivity.BookmarksDelegate(activity, item);
+          }
+        },
+    SHARE_MY_LOCATION(R.id.share)
+        {
+          @NonNull
+          @Override
+          public ClickMenuDelegate createClickDelegate(@NonNull MwmActivity activity,
+                                                       @NonNull Item item)
+          {
+            throw new UnsupportedOperationException("Main menu option doesn't support it!");
+          }
+        },
+    DOWNLOAD_MAPS(R.id.download_maps)
+        {
+          @NonNull
+          @Override
+          public ClickMenuDelegate createClickDelegate(@NonNull MwmActivity activity,
+                                                       @NonNull Item item)
+          {
+            throw new UnsupportedOperationException("Main menu option doesn't support it!");
+          }
+        },
+    SETTINGS(R.id.settings)
+        {
+          @NonNull
+          @Override
+          public ClickMenuDelegate createClickDelegate(@NonNull MwmActivity activity,
+                                                       @NonNull Item item)
+          {
+            throw new UnsupportedOperationException("Main menu option doesn't support it!");
+          }
+        };
 
     private final int mViewId;
 
@@ -142,43 +166,28 @@ public class MainMenu extends BaseMenu
     {
       return mViewId;
     }
-  }
 
-  @Override
-  View mapItem(BaseMenu.Item item, View frame)
-  {
-    View res = super.mapItem(item, frame);
-    if (res != null && TAG_COLLAPSE.equals(res.getTag()))
-      mCollapseViews.add(res);
+    public void onClicked(@NonNull MwmActivity activity, @NonNull Item item)
+    {
+      ClickMenuDelegate delegate = createClickDelegate(activity, item);
+      delegate.onMenuItemClick();
+    }
 
-    return res;
+    @NonNull
+    public abstract ClickMenuDelegate createClickDelegate(@NonNull MwmActivity activity,
+                                                          @NonNull Item item);
+
+    @NonNull
+    @Override
+    public String toStatisticValue()
+    {
+      return name().toLowerCase(Locale.ENGLISH);
+    }
   }
 
   private void mapItem(MainMenu.Item item)
   {
     mapItem(item, mButtonsFrame);
-    View view = mapItem(item, mContentFrame);
-    mItemViews.put(item, view);
-
-    if (view != null)
-      Graphics.tint((TextView)view);
-  }
-
-  @Override
-  protected void adjustCollapsedItems()
-  {
-    for (View v : mCollapseViews)
-    {
-      UiUtils.showIf(!mCollapsed, v);
-      v.setAlpha(mCollapsed ? 0.0f : 1.0f);
-    }
-
-    if (mAnimationSymmetricalGap == null)
-      return;
-
-    ViewGroup.LayoutParams lp = mAnimationSymmetricalGap.getLayoutParams();
-    lp.width = (mCollapsed ? 0 : mButtonsWidth);
-    mAnimationSymmetricalGap.setLayoutParams(lp);
   }
 
   @Override
@@ -189,40 +198,85 @@ public class MainMenu extends BaseMenu
   }
 
   @Override
-  protected void updateMarker()
+  public void onResume(@Nullable Runnable procAfterMeasurement)
+  {
+    updateMarker();
+  }
+
+  @Override
+  public boolean isOpen()
+  {
+    return false;
+  }
+
+  @Override
+  public boolean isAnimating()
+  {
+    return false;
+  }
+
+  @Override
+  public boolean open(boolean animate)
+  {
+    return false;
+  }
+
+  @Override
+  public boolean close(boolean animate, @Nullable Runnable onCloseListener)
+  {
+    if (onCloseListener != null)
+      onCloseListener.run();
+    return false;
+  }
+
+  @Override
+  public void toggle(boolean animate)
+  {
+    // Do nothing.
+  }
+
+  @Override
+  public void updateMarker()
   {
     UpdateInfo info = MapManager.nativeGetUpdateInfo(null);
     int count = (info == null ? 0 : info.filesCount);
 
-    boolean show = (MapManager.nativeIsLegacyMode() || count > 0) &&
-                   (!mCollapsed || mCollapseViews.isEmpty()) &&
-                   !isOpen();
+    boolean show = (count > 0 && !isOpen());
 
     UiUtils.showIf(show, mNewsMarker);
-    UiUtils.showIf(count > 0, mNewsCounter);
 
-    if (count > 0)
-      mNewsCounter.setText(String.valueOf(count));
+    if (show)
+      return;
+
+    for (Mode mode : Mode.values())
+    {
+      show = SharedPropertiesUtils.shouldShowNewMarkerForLayerMode(mFrame.getContext(), mode);
+      if (show)
+        break;
+    }
+
+    UiUtils.showIf(show, mNewsMarker);
   }
 
   @Override
   protected void setToggleState(boolean open, boolean animate)
   {
-    mToggle.setOpen(open, animate);
+    // Do nothing.
   }
 
   private void init()
   {
     mapItem(Item.ADD_PLACE);
+    mapItem(Item.DOWNLOAD_GUIDES);
     mapItem(Item.SEARCH);
-    mapItem(Item.P2P);
+    mapItem(Item.POINT_TO_POINT);
+    mapItem(Item.DISCOVERY);
     mapItem(Item.BOOKMARKS);
-    mapItem(Item.SHARE);
-    mapItem(Item.DOWNLOADER);
+    mapItem(Item.SHARE_MY_LOCATION);
+    mapItem(Item.DOWNLOAD_MAPS);
     mapItem(Item.SETTINGS);
 
-    adjustCollapsedItems();
-    setState(State.MENU, false);
+    setState(State.MENU, false, false);
   }
 
   public MainMenu(View frame, ItemClickListener<Item> itemClickListener)
@@ -232,14 +286,10 @@ public class MainMenu extends BaseMenu
     mButtonsFrame = mLineFrame.findViewById(R.id.buttons_frame);
     mRoutePlanFrame = mLineFrame.findViewById(R.id.routing_plan_frame);
 
-    mAnimationSpacer = mFrame.findViewById(R.id.animation_spacer);
-    mAnimationSymmetricalGap = mButtonsFrame.findViewById(R.id.symmetrical_gap);
-
     mToggle = new MenuToggle(mLineFrame, getHeightResId());
-    mapItem(Item.TOGGLE, mLineFrame);
+    mapItem(Item.MENU, mLineFrame);
 
     mNewsMarker = mButtonsFrame.findViewById(R.id.marker);
-    mNewsCounter = (TextView) mContentFrame.findViewById(R.id.counter);
 
     init();
   }
@@ -250,42 +300,32 @@ public class MainMenu extends BaseMenu
     return R.dimen.menu_line_height;
   }
 
-  public void setState(State state, boolean animateToggle)
+  public void setState(State state, boolean animateToggle, boolean isFullScreen)
   {
     if (state != State.NAVIGATION)
     {
       mToggle.show(state.showToggle());
-      mToggle.setCollapsed(mCollapsed, animateToggle);
+      mToggle.setOpen(false, false);
 
-      boolean expandContent;
       boolean isRouting = state == State.ROUTE_PREPARE;
       if (mRoutePlanFrame == null)
       {
         UiUtils.show(mButtonsFrame);
-        expandContent = false;
-      } else
+      }
+      else
       {
-
         UiUtils.showIf(state == State.MENU, mButtonsFrame);
         UiUtils.showIf(isRouting, mRoutePlanFrame);
         if (isRouting)
           mToggle.hide();
-        expandContent = isRouting;
       }
 
-      UiUtils.showIf(expandContent,
-                     mItemViews.get(Item.SEARCH),
-                     mItemViews.get(Item.BOOKMARKS));
-      setVisible(Item.ADD_PLACE, !isRouting && !MapManager.nativeIsLegacyMode());
+      setVisible(Item.ADD_PLACE, !isRouting);
     }
 
-    if (mLayoutMeasured)
-    {
-      show(state != State.NAVIGATION);
-      mContentFrame.measure(ViewGroup.LayoutParams.MATCH_PARENT,
-                            ViewGroup.LayoutParams.WRAP_CONTENT);
-      mContentHeight = mContentFrame.getMeasuredHeight();
-    }
+    show(state != State.NAVIGATION && !isFullScreen);
+    UiUtils.showIf(state == State.MENU, mButtonsFrame);
+    UiUtils.showIf(state == State.ROUTE_PREPARE, mRoutePlanFrame);
   }
 
   public void setEnabled(Item item, boolean enable)
@@ -298,23 +338,10 @@ public class MainMenu extends BaseMenu
     button.setEnabled(enable);
   }
 
-  public void setVisible(Item item, boolean show)
+  private void setVisible(@NonNull Item item, boolean show)
   {
     final View itemInButtonsFrame = mButtonsFrame.findViewById(item.mViewId);
     if (itemInButtonsFrame != null)
       UiUtils.showIf(show, itemInButtonsFrame);
-    if (mItemViews.get(item) != null)
-      UiUtils.showIf(show, mItemViews.get(item));
-  }
-
-
-  public MwmActivity.LeftAnimationTrackListener getLeftAnimationTrackListener()
-  {
-    return mAnimationTrackListener;
-  }
-
-  public void showLineFrame(boolean show)
-  {
-    UiUtils.showIf(show, mLineFrame);
   }
 }

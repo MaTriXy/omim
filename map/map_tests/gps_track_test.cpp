@@ -4,16 +4,21 @@
 
 #include "platform/platform.hpp"
 
-#include "coding/file_name_utils.hpp"
 #include "coding/file_writer.hpp"
 
 #include "geometry/latlon.hpp"
 
+#include "base/file_name_utils.hpp"
 #include "base/logging.hpp"
 #include "base/scope_guard.hpp"
 
-#include "std/bind.hpp"
-#include "std/chrono.hpp"
+#include <chrono>
+#include <functional>
+#include <utility>
+#include <vector>
+
+using namespace std;
+using namespace std::chrono;
 
 namespace
 {
@@ -22,9 +27,9 @@ inline location::GpsInfo Make(double timestamp, ms::LatLon const & ll, double sp
 {
   location::GpsInfo info;
   info.m_timestamp = timestamp;
-  info.m_speed = speed;
-  info.m_latitude = ll.lat;
-  info.m_longitude = ll.lon;
+  info.m_speedMpS = speed;
+  info.m_latitude = ll.m_lat;
+  info.m_longitude = ll.m_lon;
   info.m_horizontalAccuracy = 15;
   info.m_source = location::EAndroidNative;
   return info;
@@ -32,7 +37,7 @@ inline location::GpsInfo Make(double timestamp, ms::LatLon const & ll, double sp
 
 inline string GetGpsTrackFilePath()
 {
-  return my::JoinFoldersToPath(GetPlatform().WritableDir(), "gpstrack_test.bin");
+  return base::JoinPath(GetPlatform().WritableDir(), "gpstrack_test.bin");
 }
 
 class GpsTrackCallback
@@ -83,7 +88,7 @@ seconds const kWaitForCallbackTimeout = seconds(5);
 UNIT_TEST(GpsTrack_Simple)
 {
   string const filePath = GetGpsTrackFilePath();
-  MY_SCOPE_GUARD(gpsTestFileDeleter, bind(FileWriter::DeleteFileX, filePath));
+  SCOPE_GUARD(gpsTestFileDeleter, bind(FileWriter::DeleteFileX, filePath));
   FileWriter::DeleteFileX(filePath);
 
   time_t const t = system_clock::to_time_t(system_clock::now());
@@ -106,7 +111,8 @@ UNIT_TEST(GpsTrack_Simple)
 
     GpsTrackCallback callback;
 
-    track.SetCallback(bind(&GpsTrackCallback::OnUpdate, &callback, _1, _2));
+    track.SetCallback(
+        bind(&GpsTrackCallback::OnUpdate, &callback, placeholders::_1, placeholders::_2));
 
     TEST(callback.WaitForCallback(kWaitForCallbackTimeout), ());
 
@@ -117,7 +123,7 @@ UNIT_TEST(GpsTrack_Simple)
     {
       TEST_EQUAL(i, callback.m_toAdd[i].first, ());
       TEST_EQUAL(points[i].m_timestamp, callback.m_toAdd[i].second.m_timestamp, ());
-      TEST_EQUAL(points[i].m_speed, callback.m_toAdd[i].second.m_speed, ());
+      TEST_EQUAL(points[i].m_speedMpS, callback.m_toAdd[i].second.m_speed, ());
       TEST_EQUAL(points[i].m_latitude, callback.m_toAdd[i].second.m_latitude, ());
       TEST_EQUAL(points[i].m_longitude, callback.m_toAdd[i].second.m_longitude, ());
     }
@@ -129,7 +135,8 @@ UNIT_TEST(GpsTrack_Simple)
 
     GpsTrackCallback callback;
 
-    track.SetCallback(bind(&GpsTrackCallback::OnUpdate, &callback, _1, _2));
+    track.SetCallback(
+        bind(&GpsTrackCallback::OnUpdate, &callback, placeholders::_1, placeholders::_2));
 
     TEST(callback.WaitForCallback(kWaitForCallbackTimeout), ());
 
@@ -140,7 +147,7 @@ UNIT_TEST(GpsTrack_Simple)
     {
       TEST_EQUAL(i, callback.m_toAdd[i].first, ());
       TEST_EQUAL(points[i].m_timestamp, callback.m_toAdd[i].second.m_timestamp, ());
-      TEST_EQUAL(points[i].m_speed, callback.m_toAdd[i].second.m_speed, ());
+      TEST_EQUAL(points[i].m_speedMpS, callback.m_toAdd[i].second.m_speed, ());
       TEST_EQUAL(points[i].m_latitude, callback.m_toAdd[i].second.m_latitude, ());
       TEST_EQUAL(points[i].m_longitude, callback.m_toAdd[i].second.m_longitude, ());
     }
@@ -150,7 +157,7 @@ UNIT_TEST(GpsTrack_Simple)
 UNIT_TEST(GpsTrack_EvictedByAdd)
 {
   string const filePath = GetGpsTrackFilePath();
-  MY_SCOPE_GUARD(gpsTestFileDeleter, bind(FileWriter::DeleteFileX, filePath));
+  SCOPE_GUARD(gpsTestFileDeleter, bind(FileWriter::DeleteFileX, filePath));
   FileWriter::DeleteFileX(filePath);
 
   time_t const t = system_clock::to_time_t(system_clock::now());
@@ -163,7 +170,8 @@ UNIT_TEST(GpsTrack_EvictedByAdd)
   GpsTrack track(filePath, 1000, hours(24));
 
   GpsTrackCallback callback;
-  track.SetCallback(bind(&GpsTrackCallback::OnUpdate, &callback, _1, _2));
+  track.SetCallback(
+      bind(&GpsTrackCallback::OnUpdate, &callback, placeholders::_1, placeholders::_2));
 
   track.AddPoint(pt1);
 
@@ -173,7 +181,7 @@ UNIT_TEST(GpsTrack_EvictedByAdd)
   TEST_EQUAL(1, callback.m_toAdd.size(), ());
   TEST_EQUAL(0, callback.m_toAdd[0].first, ());
   TEST_EQUAL(pt1.m_timestamp, callback.m_toAdd[0].second.m_timestamp, ());
-  TEST_EQUAL(pt1.m_speed, callback.m_toAdd[0].second.m_speed, ());
+  TEST_EQUAL(pt1.m_speedMpS, callback.m_toAdd[0].second.m_speed, ());
   TEST_EQUAL(pt1.m_latitude, callback.m_toAdd[0].second.m_latitude, ());
   TEST_EQUAL(pt1.m_longitude, callback.m_toAdd[0].second.m_longitude, ());
   // and nothing was evicted
@@ -190,7 +198,7 @@ UNIT_TEST(GpsTrack_EvictedByAdd)
   TEST_EQUAL(1, callback.m_toAdd.size(), ());
   TEST_EQUAL(1, callback.m_toAdd[0].first, ());
   TEST_EQUAL(pt2.m_timestamp, callback.m_toAdd[0].second.m_timestamp, ());
-  TEST_EQUAL(pt2.m_speed, callback.m_toAdd[0].second.m_speed, ());
+  TEST_EQUAL(pt2.m_speedMpS, callback.m_toAdd[0].second.m_speed, ());
   TEST_EQUAL(pt2.m_latitude, callback.m_toAdd[0].second.m_latitude, ());
   TEST_EQUAL(pt2.m_longitude, callback.m_toAdd[0].second.m_longitude, ());
   // and pt1 was evicted as old

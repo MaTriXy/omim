@@ -1,51 +1,39 @@
 #include "drape/texture.hpp"
 
-#include "drape/glfunctions.hpp"
-#include "drape/glextensions_list.hpp"
+#include "drape/gl_functions.hpp"
+#include "drape/glsl_func.hpp"
 #include "drape/utils/gpu_mem_tracker.hpp"
 
 #include "base/math.hpp"
 
-#define ASSERT_ID ASSERT(GetID() != -1, ())
+#include "3party/glm/glm/gtx/bit.hpp"
 
 namespace dp
 {
+Texture::ResourceInfo::ResourceInfo(m2::RectF const & texRect) : m_texRect(texRect) {}
 
-Texture::ResourceInfo::ResourceInfo(m2::RectF const & texRect)
-  : m_texRect(texRect) {}
+m2::RectF const & Texture::ResourceInfo::GetTexRect() const { return m_texRect; }
 
-m2::RectF const & Texture::ResourceInfo::GetTexRect() const
+Texture::~Texture() { Destroy(); }
+
+void Texture::Create(ref_ptr<dp::GraphicsContext> context, Params const & params)
 {
-  return m_texRect;
+  if (AllocateTexture(context, params.m_allocator))
+    m_hwTexture->Create(context, params);
 }
 
-//////////////////////////////////////////////////////////////////
-
-Texture::Texture()
+void Texture::Create(ref_ptr<dp::GraphicsContext> context, Params const & params,
+                     ref_ptr<void> data)
 {
+  if (AllocateTexture(context, params.m_allocator))
+    m_hwTexture->Create(context, params, data);
 }
 
-Texture::~Texture()
-{
-  Destroy();
-}
-
-void Texture::Create(Params const & params)
-{
-  if (AllocateTexture(params.m_allocator))
-    m_hwTexture->Create(params);
-}
-
-void Texture::Create(Params const & params, ref_ptr<void> data)
-{
-  if (AllocateTexture(params.m_allocator))
-    m_hwTexture->Create(params, data);
-}
-
-void Texture::UploadData(uint32_t x, uint32_t y, uint32_t width, uint32_t height, ref_ptr<void> data)
+void Texture::UploadData(ref_ptr<dp::GraphicsContext> context, uint32_t x, uint32_t y,
+                         uint32_t width, uint32_t height, ref_ptr<void> data)
 {
   ASSERT(m_hwTexture != nullptr, ());
-  m_hwTexture->UploadData(x, y, width, height, data);
+  m_hwTexture->UploadData(context, x, y, width, height, data);
 }
 
 TextureFormat Texture::GetFormat() const
@@ -78,37 +66,45 @@ float Texture::GetT(uint32_t y) const
   return m_hwTexture->GetT(y);
 }
 
-void Texture::Bind() const
+uint32_t Texture::GetID() const
 {
   ASSERT(m_hwTexture != nullptr, ());
-  m_hwTexture->Bind();
+  return m_hwTexture->GetID();
 }
 
-void Texture::SetFilter(glConst filter)
+void Texture::Bind(ref_ptr<dp::GraphicsContext> context) const
+{
+  ASSERT(m_hwTexture != nullptr, ());
+  m_hwTexture->Bind(context);
+}
+
+void Texture::SetFilter(TextureFilter filter)
 {
   ASSERT(m_hwTexture != nullptr, ());
   m_hwTexture->SetFilter(filter);
 }
 
-uint32_t Texture::GetMaxTextureSize()
+// static
+bool Texture::IsPowerOfTwo(uint32_t width, uint32_t height)
 {
-  return GLFunctions::glGetInteger(gl_const::GLMaxTextureSize);
+  return glm::isPowerOfTwo(static_cast<int>(width)) && glm::isPowerOfTwo(static_cast<int>(height));
 }
 
-void Texture::Destroy()
-{
-  m_hwTexture.reset();
-}
+void Texture::Destroy() { m_hwTexture.reset(); }
 
-bool Texture::AllocateTexture(ref_ptr<HWTextureAllocator> allocator)
+bool Texture::AllocateTexture(ref_ptr<dp::GraphicsContext> context,
+                              ref_ptr<HWTextureAllocator> allocator)
 {
   if (allocator != nullptr)
   {
-    m_hwTexture = allocator->CreateTexture();
+    m_hwTexture = allocator->CreateTexture(context);
     return true;
   }
-
   return false;
 }
-
-} // namespace dp
+  
+ref_ptr<HWTexture> Texture::GetHardwareTexture() const
+{
+  return make_ref(m_hwTexture);
+}
+}  // namespace dp

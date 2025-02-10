@@ -1,28 +1,16 @@
-#include "Language.hpp"
+#include "android/jni/com/mapswithme/core/jni_helper.hpp"
+#include "android/jni/com/mapswithme/core/ScopedLocalRef.hpp"
 
-#include "../core/jni_helper.hpp"
+#include "platform/locale.hpp"
 
 #include "base/assert.hpp"
 #include "base/logging.hpp"
 #include "base/string_utils.hpp"
 
-#include "std/string.hpp"
-
-string ReplaceDeprecatedLanguageCode(string const & lang)
-{
-  // in* -> id
-  // iw* -> he
-
-  if (strings::StartsWith(lang, "in"))
-    return "id";
-  else if (strings::StartsWith(lang, "iw"))
-    return "he";
-
-  return lang;
-}
+#include <string>
 
 /// This function is called from native c++ code
-string GetAndroidSystemLanguage()
+std::string GetAndroidSystemLanguage()
 {
   static char const * DEFAULT_LANG = "en";
 
@@ -33,16 +21,37 @@ string GetAndroidSystemLanguage()
     return DEFAULT_LANG;
   }
 
-  static jclass const localeClass = jni::GetGlobalClassRef(env, "java/util/Locale");
-  static jmethodID const localeGetDefaultId = jni::GetStaticMethodID(env, localeClass, "getDefault", "()Ljava/util/Locale;");
-  static jmethodID const localeToStringId = env->GetMethodID(localeClass, "toString", "()Ljava/lang/String;");
+  static jclass const languageClass = jni::GetGlobalClassRef(env, "com/mapswithme/util/Language");
+  static jmethodID const getDefaultLocaleId = jni::GetStaticMethodID(env, languageClass, "getDefaultLocale", "()Ljava/lang/String;");
 
-  jni::TScopedLocalRef localeInstance(env, env->CallStaticObjectMethod(localeClass, localeGetDefaultId));
-  jni::TScopedLocalRef langString(env, env->CallObjectMethod(localeInstance.get(), localeToStringId));
+  jni::TScopedLocalRef localeRef(env, env->CallStaticObjectMethod(languageClass, getDefaultLocaleId));
 
-  string res = jni::ToNativeString(env, (jstring) langString.get());
+  std::string res = jni::ToNativeString(env, (jstring) localeRef.get());
   if (res.empty())
     res = DEFAULT_LANG;
 
-  return ReplaceDeprecatedLanguageCode(res);
+  return res;
 }
+
+namespace platform
+{
+Locale GetCurrentLocale()
+{
+  JNIEnv * env = jni::GetEnv();
+  static jmethodID const getLanguageCodeId = jni::GetStaticMethodID(env, g_utilsClazz, "getLanguageCode",
+                                                                    "()Ljava/lang/String;");
+  jni::ScopedLocalRef languageCode(env, env->CallStaticObjectMethod(g_utilsClazz, getLanguageCodeId));
+
+  static jmethodID const getCountryCodeId = jni::GetStaticMethodID(env, g_utilsClazz, "getCountryCode",
+                                                                   "()Ljava/lang/String;");
+  jni::ScopedLocalRef countryCode(env, env->CallStaticObjectMethod(g_utilsClazz, getCountryCodeId));
+
+  static jmethodID const getCurrencyCodeId = jni::GetStaticMethodID(env, g_utilsClazz, "getCurrencyCode",
+                                                                    "()Ljava/lang/String;");
+  jni::ScopedLocalRef currencyCode(env, env->CallStaticObjectMethod(g_utilsClazz, getCurrencyCodeId));
+
+  return {jni::ToNativeString(env, static_cast<jstring>(languageCode.get())),
+          jni::ToNativeString(env, static_cast<jstring>(countryCode.get())),
+          currencyCode.get() ? jni::ToNativeString(env, static_cast<jstring>(currencyCode.get())) : ""};
+}
+}  // namespace platform

@@ -1,38 +1,42 @@
 package com.mapswithme.util;
 
-import android.support.v4.app.DialogFragment;
-import android.text.TextUtils;
-import android.text.format.DateUtils;
+import android.content.Context;
+
+import androidx.annotation.NonNull;
 
 import com.mapswithme.maps.BuildConfig;
+import com.mapswithme.maps.MwmApplication;
+import com.mapswithme.maps.R;
+
+import static com.mapswithme.util.Counters.KEY_APP_FIRST_INSTALL_FLAVOR;
+import static com.mapswithme.util.Counters.KEY_APP_FIRST_INSTALL_VERSION;
+import static com.mapswithme.util.Counters.KEY_APP_LAST_SESSION_TIMESTAMP;
+import static com.mapswithme.util.Counters.KEY_APP_LAUNCH_NUMBER;
+import static com.mapswithme.util.Counters.KEY_APP_SESSION_NUMBER;
+import static com.mapswithme.util.Counters.KEY_LIKES_LAST_RATED_SESSION;
+import static com.mapswithme.util.Counters.KEY_MISC_FIRST_START_DIALOG_SEEN;
+import static com.mapswithme.util.Counters.KEY_MISC_NEWS_LAST_VERSION;
 
 public final class Config
 {
-  private static final String KEY_APP_FIRST_INSTALL_VERSION = "FirstInstallVersion";
-  private static final String KEY_APP_LAUNCH_NUMBER = "LaunchNumber";
-  private static final String KEY_APP_SESSION_NUMBER = "SessionNumber";
-  private static final String KEY_APP_LAST_SESSION_TIMESTAMP = "LastSessionTimestamp";
-  private static final String KEY_APP_FIRST_INSTALL_FLAVOR = "FirstInstallFlavor";
   private static final String KEY_APP_STORAGE = "StoragePath";
 
   private static final String KEY_TTS_ENABLED = "TtsEnabled";
   private static final String KEY_TTS_LANGUAGE = "TtsLanguage";
 
   private static final String KEY_DOWNLOADER_AUTO = "AutoDownloadEnabled";
-
   private static final String KEY_PREF_ZOOM_BUTTONS = "ZoomButtonsEnabled";
-  private static final String KEY_PREF_STATISTICS = "StatisticsEnabled";
+  static final String KEY_PREF_STATISTICS = "StatisticsEnabled";
   private static final String KEY_PREF_USE_GS = "UseGoogleServices";
-
-  private static final String KEY_LIKES_RATED_DIALOG = "RatedDialog";
-  private static final String KEY_LIKES_LAST_RATED_SESSION = "LastRatedSession";
 
   private static final String KEY_MISC_DISCLAIMER_ACCEPTED = "IsDisclaimerApproved";
   private static final String KEY_MISC_KITKAT_MIGRATED = "KitKatMigrationCompleted";
-  private static final String KEY_MISC_NEWS_LAST_VERSION = "WhatsNewShownVersion";
-  private static final String KEY_MISC_FIRST_START_DIALOG_SEEN = "FirstStartDialogSeen";
   private static final String KEY_MISC_UI_THEME = "UiTheme";
   private static final String KEY_MISC_UI_THEME_SETTINGS = "UiThemeSettings";
+  private static final String KEY_MISC_USE_MOBILE_DATA = "UseMobileData";
+  private static final String KEY_MISC_USE_MOBILE_DATA_TIMESTAMP = "UseMobileDataTimestamp";
+  private static final String KEY_MISC_USE_MOBILE_DATA_ROAMING = "UseMobileDataRoaming";
+  private static final String KEY_MISC_AD_FORBIDDEN = "AdForbidden";
 
   private Config() {}
 
@@ -101,81 +105,21 @@ public final class Config
     nativeSetBoolean(key, value);
   }
 
-  /**
-   * Increments integer value.
-   * @return Previous value before increment.
-   */
-  private static int increment(String key)
+  public static void migrateCountersToSharedPrefs(@NonNull Context context)
   {
-    int res = getInt(key);
-    setInt(key, res + 1);
-    return res;
-  }
-
-  public static int getFirstInstallVersion()
-  {
-    return getInt(KEY_APP_FIRST_INSTALL_VERSION);
-  }
-
-  /**
-   * Increments counter of app starts.
-   * @return Previous value before increment.
-   */
-  private static int incrementLaunchNumber()
-  {
-    return increment(KEY_APP_LAUNCH_NUMBER);
-  }
-
-  /**
-   * Session = single day, when app was started any number of times.
-   */
-  public static int getSessionCount()
-  {
-    return getInt(KEY_APP_SESSION_NUMBER);
-  }
-
-  private static void incrementSessionNumber()
-  {
-    long lastSessionTimestamp = getLong(KEY_APP_LAST_SESSION_TIMESTAMP);
-    if (DateUtils.isToday(lastSessionTimestamp))
-      return;
-
-    setLong(KEY_APP_LAST_SESSION_TIMESTAMP, System.currentTimeMillis());
-    increment(KEY_APP_SESSION_NUMBER);
-  }
-
-  public static void resetAppSessionCounters()
-  {
-    setInt(KEY_APP_LAUNCH_NUMBER, 0);
-    setInt(KEY_APP_SESSION_NUMBER, 0);
-    setLong(KEY_APP_LAST_SESSION_TIMESTAMP, 0L);
-    setInt(KEY_LIKES_LAST_RATED_SESSION, 0);
-    incrementSessionNumber();
-  }
-
-  public static String getInstallFlavor()
-  {
-    return getString(KEY_APP_FIRST_INSTALL_FLAVOR);
-  }
-
-  private static void updateInstallFlavor()
-  {
-    String installedFlavor = getInstallFlavor();
-    if (TextUtils.isEmpty(installedFlavor))
-      setString(KEY_APP_FIRST_INSTALL_FLAVOR, BuildConfig.FLAVOR);
-  }
-
-  public static void updateLaunchCounter()
-  {
-    if (incrementLaunchNumber() == 0)
-    {
-      if (getFirstInstallVersion() == 0)
-        setInt(KEY_APP_FIRST_INSTALL_VERSION, BuildConfig.VERSION_CODE);
-
-      updateInstallFlavor();
-    }
-
-    incrementSessionNumber();
+    int version = getInt(KEY_APP_FIRST_INSTALL_VERSION, BuildConfig.VERSION_CODE);
+    MwmApplication.prefs(context)
+                  .edit()
+                  .putInt(KEY_APP_LAUNCH_NUMBER, getInt(KEY_APP_LAUNCH_NUMBER))
+                  .putInt(KEY_APP_FIRST_INSTALL_VERSION, version)
+                  .putString(KEY_APP_FIRST_INSTALL_FLAVOR, getString(KEY_APP_FIRST_INSTALL_FLAVOR))
+                  .putLong(KEY_APP_LAST_SESSION_TIMESTAMP, getLong(KEY_APP_LAST_SESSION_TIMESTAMP))
+                  .putInt(KEY_APP_SESSION_NUMBER, getInt(KEY_APP_SESSION_NUMBER))
+                  .putBoolean(KEY_MISC_FIRST_START_DIALOG_SEEN,
+                              getBool(KEY_MISC_FIRST_START_DIALOG_SEEN))
+                  .putInt(KEY_MISC_NEWS_LAST_VERSION, getInt(KEY_MISC_NEWS_LAST_VERSION))
+                  .putInt(KEY_LIKES_LAST_RATED_SESSION, getInt(KEY_LIKES_LAST_RATED_SESSION))
+                  .apply();
   }
 
   public static String getStoragePath()
@@ -228,11 +172,6 @@ public final class Config
     setBool(KEY_PREF_ZOOM_BUTTONS, show);
   }
 
-  public static boolean isStatisticsEnabled()
-  {
-    return getBool(KEY_PREF_STATISTICS, true);
-  }
-
   public static void setStatisticsEnabled(boolean enabled)
   {
     setBool(KEY_PREF_STATISTICS, enabled);
@@ -246,26 +185,6 @@ public final class Config
   public static void setUseGoogleService(boolean use)
   {
     setBool(KEY_PREF_USE_GS, use);
-  }
-
-  public static boolean isRatingApplied(Class<? extends DialogFragment> dialogFragmentClass)
-  {
-    return getBool(KEY_LIKES_RATED_DIALOG + dialogFragmentClass.getSimpleName());
-  }
-
-  public static void setRatingApplied(Class<? extends DialogFragment> dialogFragmentClass)
-  {
-    setBool(KEY_LIKES_RATED_DIALOG + dialogFragmentClass.getSimpleName());
-  }
-
-  public static boolean isSessionRated(int session)
-  {
-    return (getInt(KEY_LIKES_LAST_RATED_SESSION) >= session);
-  }
-
-  public static void setRatedSession(int session)
-  {
-    setInt(KEY_LIKES_LAST_RATED_SESSION, session);
   }
 
   public static boolean isRoutingDisclaimerAccepted()
@@ -288,61 +207,101 @@ public final class Config
     setBool(KEY_MISC_KITKAT_MIGRATED);
   }
 
-  public static int getLastWhatsNewVersion()
+  @NonNull
+  public static String getCurrentUiTheme(@NonNull Context context)
   {
-    return getInt(KEY_MISC_NEWS_LAST_VERSION);
-  }
+    String defaultTheme = MwmApplication.from(context).getString(R.string.theme_default);
+    String res = getString(KEY_MISC_UI_THEME, defaultTheme);
 
-  public static void setWhatsNewShown()
-  {
-    setInt(KEY_MISC_NEWS_LAST_VERSION, BuildConfig.VERSION_CODE);
-  }
-
-  public static boolean isFirstStartDialogSeen()
-  {
-    return getBool(KEY_MISC_FIRST_START_DIALOG_SEEN);
-  }
-
-  public static void setFirstStartDialogSeen()
-  {
-    setBool(KEY_MISC_FIRST_START_DIALOG_SEEN);
-  }
-
-  public static String getCurrentUiTheme()
-  {
-    String res = getString(KEY_MISC_UI_THEME, ThemeUtils.THEME_DEFAULT);
-    if (ThemeUtils.isValidTheme(res))
+    if (ThemeUtils.isValidTheme(context, res))
       return res;
 
-    return ThemeUtils.THEME_DEFAULT;
+    return defaultTheme;
   }
 
-  public static void setCurrentUiTheme(String theme)
+  static void setCurrentUiTheme(@NonNull Context context, @NonNull String theme)
   {
-    if (getCurrentUiTheme().equals(theme))
+    if (getCurrentUiTheme(context).equals(theme))
       return;
 
     setString(KEY_MISC_UI_THEME, theme);
-    ThemeSwitcher.changeMapStyle(theme);
   }
 
-  public static String getUiThemeSettings()
+  @NonNull
+  public static String getUiThemeSettings(@NonNull Context context)
   {
-    String res = getString(KEY_MISC_UI_THEME_SETTINGS, ThemeUtils.THEME_AUTO);
-    if (ThemeUtils.isValidTheme(res) || ThemeUtils.isAutoTheme(res))
+    String autoTheme = MwmApplication.from(context).getString(R.string.theme_auto);
+    String res = getString(KEY_MISC_UI_THEME_SETTINGS, autoTheme);
+    if (ThemeUtils.isValidTheme(context, res) || ThemeUtils.isAutoTheme(context, res))
       return res;
 
-    return ThemeUtils.THEME_AUTO;
+    return autoTheme;
   }
 
-  public static boolean setUiThemeSettings(String theme)
+  public static boolean setUiThemeSettings(@NonNull Context context, String theme)
   {
-    if (getUiThemeSettings().equals(theme))
+    if (getUiThemeSettings(context).equals(theme))
       return false;
 
     setString(KEY_MISC_UI_THEME_SETTINGS, theme);
     return true;
   }
+
+  public static boolean isLargeFontsSize()
+  {
+    return nativeGetLargeFontsSize();
+  }
+
+  public static void setLargeFontsSize(boolean value)
+  {
+    nativeSetLargeFontsSize(value);
+  }
+
+  @NonNull
+  public static NetworkPolicy.Type getUseMobileDataSettings()
+  {
+    int value = getInt(KEY_MISC_USE_MOBILE_DATA, NetworkPolicy.NONE);
+
+    if ((value != NetworkPolicy.NONE && value < 0) || value >= NetworkPolicy.Type.values().length)
+      throw new AssertionError("Wrong NetworkPolicy type : " + value);
+
+    if (value == NetworkPolicy.NONE)
+      return NetworkPolicy.Type.NONE;
+
+    return NetworkPolicy.Type.values()[value];
+  }
+
+  public static void setUseMobileDataSettings(@NonNull NetworkPolicy.Type value)
+  {
+    setInt(KEY_MISC_USE_MOBILE_DATA, value.ordinal());
+    setBool(KEY_MISC_USE_MOBILE_DATA_ROAMING, ConnectionState.INSTANCE.isInRoaming());
+  }
+
+  public static void setMobileDataTimeStamp(long timestamp)
+  {
+    setLong(KEY_MISC_USE_MOBILE_DATA_TIMESTAMP, timestamp);
+  }
+
+  static long getMobileDataTimeStamp()
+  {
+    return getLong(KEY_MISC_USE_MOBILE_DATA_TIMESTAMP, 0L);
+  }
+
+  static boolean getMobileDataRoaming()
+  {
+    return getBool(KEY_MISC_USE_MOBILE_DATA_ROAMING, false);
+  }
+
+  public static boolean isTransliteration()
+  {
+    return nativeGetTransliteration();
+  }
+
+  public static void setTransliteration(boolean value)
+  {
+    nativeSetTransliteration(value);
+  }
+
 
   private static native boolean nativeGetBoolean(String name, boolean defaultValue);
   private static native void nativeSetBoolean(String name, boolean value);
@@ -354,4 +313,8 @@ public final class Config
   private static native void nativeSetDouble(String name, double value);
   private static native String nativeGetString(String name, String defaultValue);
   private static native void nativeSetString(String name, String value);
+  private static native boolean nativeGetLargeFontsSize();
+  private static native void nativeSetLargeFontsSize(boolean value);
+  private static native boolean nativeGetTransliteration();
+  private static native void nativeSetTransliteration(boolean value);
 }

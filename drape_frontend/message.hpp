@@ -1,12 +1,13 @@
 #pragma once
 
+#include <string>
+
 namespace df
 {
-
 class Message
 {
 public:
-  enum Type
+  enum class Type
   {
     Unknown,
     TileReadStarted,
@@ -20,70 +21,113 @@ public:
     UpdateReadManager,
     InvalidateRect,
     InvalidateReadManagerRect,
-    ClearUserMarkLayer,
-    ChangeUserMarkLayerVisibility,
-    UpdateUserMarkLayer,
+    UpdateUserMarkGroup,
+    ClearUserMarkGroup,
+    ChangeUserMarkGroupVisibility,
+    UpdateUserMarks,
+    InvalidateUserMarks,
     FlushUserMarks,
     GuiLayerRecached,
     GuiRecache,
     GuiLayerLayout,
+    UpdateMyPositionRoutingOffset,
     MapShapesRecache,
     MapShapes,
-    ChangeMyPostitionMode,
+    ChangeMyPositionMode,
     CompassInfo,
     GpsInfo,
-    FindVisiblePOI,
     SelectObject,
-    GetSelectedObject,
-    GetMyPosition,
-    AddRoute,
-    CacheRouteSign,
-    CacheRouteArrows,
-    RemoveRoute,
-    FlushRoute,
-    FlushRouteSign,
-    FlushRouteArrows,
+    CheckSelectionGeometry,
+    FlushSelectionGeometry,
+    AddSubroute,
+    RemoveSubroute,
+    PrepareSubrouteArrows,
+    CacheSubrouteArrows,
+    FlushSubroute,
+    FlushSubrouteArrows,
+    FlushSubrouteMarkers,
     FollowRoute,
     DeactivateRouteFollowing,
+    SetSubrouteVisibility,
+    AddRoutePreviewSegment,
+    RemoveRoutePreviewSegment,
     UpdateMapStyle,
-    InvalidateTextures,
+    SwitchMapStyle,
     Invalidate,
     Allow3dMode,
     Allow3dBuildings,
     EnablePerspective,
-    CacheGpsTrackPoints,
-    FlushGpsTrackPoints,
+    FlushCirclesPack,
+    CacheCirclesPack,
     UpdateGpsTrackPoints,
     ClearGpsTrackPoints,
     ShowChoosePositionMark,
     SetKineticScrollEnabled,
     BlockTapEvents,
-    SetTimeInBackground,
+    OnEnterForeground,
     SetAddNewPlaceMode,
     SetDisplacementMode,
     AllowAutoZoom,
     RequestSymbolsSize,
-    RecoverGLResources,
+    RecoverContextDependentResources,
     SetVisibleViewport,
-    AddTrafficSegments,
-    SetTrafficTexCoords,
+    EnableTraffic,
+    FlushTrafficGeometry,
+    RegenerateTraffic,
     UpdateTraffic,
     FlushTrafficData,
+    ClearTrafficData,
+    SetSimplifiedTrafficColors,
     DrapeApiAddLines,
     DrapeApiRemove,
     DrapeApiFlush,
+    SetCustomFeatures,
+    RemoveCustomFeatures,
+    SetTrackedFeatures,
+    SetPostprocessStaticTextures,
+    SetPosteffectEnabled,
+    RunFirstLaunchAnimation,
+    UpdateMetalines,
+    PostUserEvent,
+    FinishTexturesInitialization,
+    CleanupTextures,
+    EnableUGCRendering,
+    EnableDebugRectRendering,
+    EnableTransitScheme,
+    UpdateTransitScheme,
+    ClearTransitSchemeData,
+    ClearAllTransitSchemeData,
+    RegenerateTransitScheme,
+    FlushTransitScheme,
+    ShowDebugInfo,
+    NotifyRenderThread,
+    NotifyGraphicsReady,
+    EnableIsolines,
+    EnableGuides,
+    OnEnterBackground,
   };
 
-  virtual ~Message() {}
-  virtual Type GetType() const { return Unknown; }
-  virtual bool IsGLContextDependent() const { return false; }
+  virtual ~Message() = default;
+  virtual Type GetType() const { return Type::Unknown; }
+  virtual bool IsGraphicsContextDependent() const { return false; }
+  virtual bool ContainsRenderState() const { return false; }
 };
 
 enum class MessagePriority
 {
+  // This is standard priority. It must be used for majority of messages.
+  // This priority guarantees order of messages processing.
   Normal,
+  // This priority is used for system messages where order of processing
+  // could be neglected, so it does not guarantee order of messages processing.
+  // Also it must be used for messages which stop threads.
   High,
-  UberHighSingleton
+  // It can be used for the only system message (UpdateReadManagerMessage) and
+  // must not be used anywhere else.
+  UberHighSingleton,
+  // This priority allows to process messages after any other messages in queue.
+  Low
 };
 
-} // namespace df
+std::string DebugPrint(Message::Type msgType);
+}  // namespace df

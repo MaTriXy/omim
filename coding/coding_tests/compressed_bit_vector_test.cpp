@@ -3,9 +3,14 @@
 #include "coding/compressed_bit_vector.hpp"
 #include "coding/writer.hpp"
 
-#include "std/algorithm.hpp"
-#include "std/iterator.hpp"
-#include "std/set.hpp"
+#include <algorithm>
+#include <cstdint>
+#include <iterator>
+#include <memory>
+#include <set>
+#include <vector>
+
+using namespace std;
 
 namespace
 {
@@ -285,7 +290,7 @@ UNIT_TEST(CompressedBitVector_Union3)
 UNIT_TEST(CompressedBitVector_Union4)
 {
   vector<uint64_t> setBits1;
-  for (int i = 0; i < coding::DenseCBV::kBlockSize; ++i)
+  for (uint64_t i = 0; i < coding::DenseCBV::kBlockSize; ++i)
     setBits1.push_back(i);
 
   vector<uint64_t> setBits2 = {1000000000};

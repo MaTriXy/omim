@@ -3,23 +3,28 @@ package com.mapswithme.maps.location;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
-import android.location.LocationManager;
-import android.util.Log;
 
 import com.mapswithme.maps.MwmApplication;
+import com.mapswithme.util.log.Logger;
+import com.mapswithme.util.log.LoggerFactory;
+
+import static com.mapswithme.maps.MwmApplication.backgroundTracker;
 
 public class GPSCheck extends BroadcastReceiver
 {
+  private static final Logger LOGGER = LoggerFactory.INSTANCE.getLogger(LoggerFactory.Type.LOCATION);
+  private static final String TAG = GPSCheck.class.getSimpleName();
+
   @Override
-  public void onReceive(Context context, Intent intent) {
-
-    LocationManager locationManager = (LocationManager) context.getSystemService(context.LOCATION_SERVICE);
-
-    if ((locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)
-        || locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER))
-        && MwmApplication.get().isFrameworkInitialized() && MwmApplication.backgroundTracker().isForeground())
+  public void onReceive(Context context, Intent intent)
+  {
+    String msg = "onReceive: " + intent + " app in background = "
+                 + !backgroundTracker(context).isForeground();
+    LOGGER.i(TAG, msg);
+    if (MwmApplication.from(context).arePlatformAndCoreInitialized() &&
+        MwmApplication.backgroundTracker(context).isForeground())
     {
-      LocationHelper.INSTANCE.addLocationListener();
+      LocationHelper.INSTANCE.restart();
     }
   }
 }

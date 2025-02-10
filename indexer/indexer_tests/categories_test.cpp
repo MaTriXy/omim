@@ -4,23 +4,18 @@
 #include "indexer/categories_index.hpp"
 #include "indexer/classificator.hpp"
 #include "indexer/classificator_loader.hpp"
-#include "indexer/new_feature_categories.hpp"
 
-#include "editor/editor_config.hpp"
-
-#include "coding/multilang_utf8_string.hpp"
 #include "coding/reader.hpp"
-
-#include "std/algorithm.hpp"
-#include "std/bind.hpp"
-#include "std/map.hpp"
-#include "std/sstream.hpp"
-#include "std/vector.hpp"
-#include "std/transform_iterator.hpp"
+#include "coding/string_utf8_multilang.hpp"
 
 #include "base/stl_helpers.hpp"
+#include "base/string_utils.hpp"
+
+#include <memory>
+#include <vector>
 
 using namespace indexer;
+using namespace std;
 
 char const g_testCategoriesTxt[] =
     "amenity-bench\n"
@@ -36,8 +31,8 @@ char const g_testCategoriesTxt[] =
 
 struct Checker
 {
-  size_t & m_count;
-  Checker(size_t & count) : m_count(count) {}
+  explicit Checker(size_t & count) : m_count(count) {}
+
   void operator()(CategoriesHolder::Category const & cat)
   {
     switch (m_count)
@@ -94,6 +89,8 @@ struct Checker
       TEST(false, ("Too many categories"));
     }
   }
+
+  size_t & m_count;
 };
 
 UNIT_TEST(LoadCategories)
@@ -113,112 +110,70 @@ UNIT_TEST(CategoriesHolder_Smoke)
   for (size_t i = 0; i < mappings.size(); ++i)
   {
     auto const & mapping  = mappings[i];
-    TEST_EQUAL(i + 1, mapping.m_code, ());
-    TEST_EQUAL(i + 1, CategoriesHolder::MapLocaleToInteger(mapping.m_name), ());
+    TEST_EQUAL(static_cast<int8_t>(i + 1), mapping.m_code, ());
+    TEST_EQUAL(static_cast<int8_t>(i + 1),
+               CategoriesHolder::MapLocaleToInteger(mapping.m_name), ());
     TEST_EQUAL(CategoriesHolder::MapIntegerToLocale(i + 1), mapping.m_name, ());
   }
 }
 
-UNIT_TEST(CategoriesHolder_DisplayedNameSmoke)
+UNIT_TEST(CategoriesHolder_LoadDefault)
 {
   classificator::Load();
 
+  uint32_t counter = 0;
+  auto const count = [&counter](CategoriesHolder::Category const &) { ++counter; };
+
   auto const & categoriesHolder = GetDefaultCategories();
-  auto const & groupTranslations = categoriesHolder.GetGroupTranslations();
+  categoriesHolder.ForEachCategory(count);
+  TEST_GREATER(counter, 0, ());
 
-  categoriesHolder.ForEachCategory([](CategoriesHolder::Category const & cat) {
-    for (auto const & synonym : cat.m_synonyms)
-    {
-      TEST_NOT_EQUAL(synonym.m_name[0], '^', ("symbol ^ is used incorrectly in categories.txt "
-                                              "and loaded to synonyms."));
-    }
-  });
-
-  for (auto const & group : groupTranslations)
-  {
-    for (auto const & translation : group.second)
-    {
-      TEST_NOT_EQUAL(translation.m_name[0], '^', ("symbol ^ is used incorrectly in categories.txt "
-                                                  "and loaded to group translations"));
-    }
-  }
+  counter = 0;
+  auto const & cuisineCategoriesHolder = GetDefaultCuisineCategories();
+  cuisineCategoriesHolder.ForEachCategory(count);
+  TEST_GREATER(counter, 0, ());
 }
 
-UNIT_TEST(CategoriesHolder_DisplayedName)
+UNIT_TEST(CategoriesHolder_ForEach)
 {
   char const kCategories[] =
-      "@shop\n"
-      "en:^Shop\n"
-      "ru:^Mагазин\n"
+      "amenity-bar\n"
+      "en:abc|ddd-eee\n"
       "\n"
-      "@meat\n"
-      "en:Beef|^Meat\n"
-      "ru:мясо\n"
-      "de:Schlachter\n"
+      "amenity-pub\n"
+      "en:ddd\n"
       "\n"
-      "@butcher\n"
-      "de:^Metzgerei\n"
+      "amenity-cafe\n"
+      "en:abc eee\n"
       "\n"
-      "shop|@shop\n"
-      "en:market\n"
+      "amenity-restaurant\n"
+      "en:ddd|eee\n"
       "\n"
-      "shop-alcohol|@shop\n"
-      "en:Liquor Store|2^Alcostore\n"
-      "\n"
-      "shop-bakery|@shop\n"
-      "en:^buns\n"
-      "\n"
-      "shop-butcher|@meat|@butcher\n"
-      "en:2butcher\n"
-      "ru:3^Мясная лавка\n"
-      "de:Geschäft|2Laden\n"
       "";
 
   classificator::Load();
   CategoriesHolder holder(make_unique<MemReader>(kCategories, ARRAY_SIZE(kCategories) - 1));
 
-  holder.ForEachTypeAndCategory([](uint32_t const type, CategoriesHolder::Category const & cat) {
-    auto const readableTypeName = classif().GetReadableObjectName(type);
-    if (readableTypeName == "shop")
-    {
-      TEST_EQUAL(cat.m_synonyms.size(), 3, ());
-      TEST_EQUAL(cat.m_synonyms[0].m_name, "Mагазин", ());
-      TEST_EQUAL(cat.m_synonyms[1].m_name, "Shop", ());
-      TEST_EQUAL(cat.m_synonyms[2].m_name, "market", ());
-    }
-    else if (readableTypeName == "shop-alcohol")
-    {
-      TEST_EQUAL(cat.m_synonyms.size(), 4, ());
-      TEST_EQUAL(cat.m_synonyms[0].m_name, "Alcostore", ());
-      TEST_EQUAL(cat.m_synonyms[1].m_name, "Mагазин", ());
-      TEST_EQUAL(cat.m_synonyms[2].m_name, "Shop", ());
-      TEST_EQUAL(cat.m_synonyms[3].m_name, "Liquor Store", ());
-    }
-    else if (readableTypeName == "shop-bakery")
-    {
-      TEST_EQUAL(cat.m_synonyms.size(), 3, ());
-      TEST_EQUAL(cat.m_synonyms[0].m_name, "buns", ());
-      TEST_EQUAL(cat.m_synonyms[1].m_name, "Mагазин", ());
-      TEST_EQUAL(cat.m_synonyms[2].m_name, "Shop", ());
-    }
-    else if (readableTypeName == "shop-butcher")
-    {
-      TEST_EQUAL(cat.m_synonyms.size(), 9, ());
-      TEST_EQUAL(cat.m_synonyms[0].m_name, "Мясная лавка", ());
-      TEST_EQUAL(cat.m_synonyms[1].m_name, "Metzgerei", ());
-      TEST_EQUAL(cat.m_synonyms[2].m_name, "Meat", ());
-      TEST_EQUAL(cat.m_synonyms[3].m_name, "Beef", ());
-      TEST_EQUAL(cat.m_synonyms[4].m_name, "мясо", ());
-      TEST_EQUAL(cat.m_synonyms[5].m_name, "Schlachter", ());
-      TEST_EQUAL(cat.m_synonyms[6].m_name, "butcher", ());
-      TEST_EQUAL(cat.m_synonyms[7].m_name, "Geschäft", ());
-      TEST_EQUAL(cat.m_synonyms[8].m_name, "Laden", ());
-    }
-    else
-    {
-      TEST(false, ("Unexpected group name:", readableTypeName));
-    }
-  });
+  {
+    uint32_t counter = 0;
+    holder.ForEachTypeByName(CategoriesHolder::kEnglishCode, strings::MakeUniString("abc"),
+                             [&](uint32_t /* type */) { ++counter; });
+    TEST_EQUAL(counter, 2, ());
+  }
+
+  {
+    uint32_t counter = 0;
+    holder.ForEachTypeByName(CategoriesHolder::kEnglishCode, strings::MakeUniString("ddd"),
+                             [&](uint32_t /* type */) { ++counter; });
+    TEST_EQUAL(counter, 3, ());
+  }
+
+  {
+    uint32_t counter = 0;
+    holder.ForEachTypeByName(CategoriesHolder::kEnglishCode, strings::MakeUniString("eee"),
+                             [&](uint32_t /* type */) { ++counter; });
+    TEST_EQUAL(counter, 3, ());
+  }
 }
 
 UNIT_TEST(CategoriesIndex_Smoke)
@@ -359,6 +314,7 @@ UNIT_TEST(CategoriesIndex_AllCategories)
 
   index.AddAllCategoriesInAllLangs();
   // Consider deprecating this method if this bound rises as high as a million.
+  LOG(LINFO, ("Number of nodes in the CategoriesIndex trie:", index.GetNumTrieNodes()));
   TEST_LESS(index.GetNumTrieNodes(), 400000, ());
 }
 #endif
@@ -372,56 +328,6 @@ UNIT_TEST(CategoriesIndex_AllCategoriesEnglishName)
   CategoriesIndex index;
 
   index.AddAllCategoriesInLang(CategoriesHolder::MapLocaleToInteger("en"));
-  TEST_LESS(index.GetNumTrieNodes(), 6000, ());
+  TEST_LESS(index.GetNumTrieNodes(), 8000, ());
 }
 #endif
-
-UNIT_TEST(CategoriesIndex_UniqueNames)
-{
-  classificator::Load();
-  auto const & cl = classif();
-
-  editor::EditorConfig config;
-  osm::NewFeatureCategories categories(config);
-
-  auto const & disabled = CategoriesHolder::kDisabledLanguages;
-
-  bool noDuplicates = true;
-  for (auto const & locale : CategoriesHolder::kLocaleMapping)
-  {
-    string const lang(locale.m_name);
-    if (find(disabled.begin(), disabled.end(), lang) != disabled.end())
-      continue;
-    categories.AddLanguage(lang);
-    auto const & names = categories.GetAllCategoryNames(lang);
-
-    auto firstFn = bind(&pair<string, uint32_t>::first, _1);
-    set<string> uniqueNames(make_transform_iterator(names.begin(), firstFn),
-                            make_transform_iterator(names.end(), firstFn));
-    if (uniqueNames.size() == names.size())
-      continue;
-
-    LOG(LWARNING, ("Invalid category translations", lang));
-
-    map<string, vector<uint32_t>> typesByName;
-    for (auto const & entry : names)
-      typesByName[entry.first].push_back(entry.second);
-
-    for (auto const & entry : typesByName)
-    {
-      if (entry.second.size() <= 1)
-        continue;
-      noDuplicates = false;
-      ostringstream str;
-      str << entry.first << ":";
-      for (auto const & type : entry.second)
-        str << " " << cl.GetReadableObjectName(type);
-      LOG(LWARNING, (str.str()));
-    }
-
-    LOG(LWARNING,
-        ("++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++"));
-  };
-
-  TEST(noDuplicates, ());
-}

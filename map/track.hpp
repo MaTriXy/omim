@@ -1,54 +1,59 @@
 #pragma once
 
+#include "kml/types.hpp"
+
 #include "drape_frontend/user_marks_provider.hpp"
-#include "drape/color.hpp"
 
-#include "geometry/polyline2d.hpp"
-
-#include "base/buffer_vector.hpp"
-#include "base/macros.hpp"
-
-namespace location
-{
-  class RouteMatchingInfo;
-}
+#include <string>
 
 class Track : public df::UserLineMark
 {
-  DISALLOW_COPY_AND_MOVE(Track);
-
+  using Base = df::UserLineMark;
 public:
-  using PolylineD = m2::PolylineD;
+  Track(kml::TrackData && data, bool interactive);
 
-  struct TrackOutline
-  {
-    float m_lineWidth;
-    dp::Color m_color;
-  };
+  kml::MarkGroupId GetGroupId() const override { return m_groupID; }
 
-  struct Params
-  {
-    buffer_vector<TrackOutline, 2> m_colors;
-    string m_name;
-  };
+  bool IsDirty() const override { return m_isDirty; }
+  void ResetChanges() const override { m_isDirty = false; }
 
-  explicit Track(PolylineD const & polyline, Params const & p);
+  kml::TrackData const & GetData() const { return m_data; }
 
-  string const & GetName() const;
-  PolylineD const & GetPolyline() const { return m_polyline; }
+  std::string GetName() const;
   m2::RectD GetLimitRect() const;
   double GetLengthMeters() const;
+  double GetLengthMeters(size_t pointIndex) const;
+  bool IsInteractive() const;
 
+  int GetMinZoom() const override { return 1; }
+  df::DepthLayer GetDepthLayer() const override;
   size_t GetLayerCount() const override;
-  dp::Color const & GetColor(size_t layerIndex) const override;
+  dp::Color GetColor(size_t layerIndex) const override;
   float GetWidth(size_t layerIndex) const override;
-  float GetLayerDepth(size_t layerIndex) const override;
+  float GetDepth(size_t layerIndex) const override;
+  std::vector<m2::PointD> GetPoints() const override;
+  std::vector<geometry::PointWithAltitude> const & GetPointsWithAltitudes() const;
 
-  /// Line geometry enumeration
-  size_t GetPointCount() const override;
-  m2::PointD const & GetPoint(size_t pointIndex) const override;
+  void Attach(kml::MarkGroupId groupId);
+  void Detach();
+
+  bool GetPoint(double distanceInMeters, m2::PointD & pt) const;
 
 private:
-  PolylineD m_polyline;
-  Params m_params;
+  void CacheDataForInteraction();
+  bool HasAltitudes() const;
+  std::vector<double> GetLengthsImpl() const;
+  m2::RectD GetLimitRectImpl() const;
+
+  kml::TrackData m_data;
+  kml::MarkGroupId m_groupID = kml::kInvalidMarkGroupId;
+
+  struct InteractionData
+  {
+    std::vector<double> m_lengths;
+    m2::RectD m_limitRect;
+  };
+  std::optional<InteractionData> m_interactionData;
+
+  mutable bool m_isDirty = true;
 };

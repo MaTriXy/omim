@@ -2,42 +2,26 @@
 #import "MWMMyTarget.h"
 #import "MWMNavigationController.h"
 
-#include "indexer/map_style.hpp"
-
-#include "storage/index.hpp"
-
 @class MapViewController;
-@class LocationManager;
+@class MWMCarPlayService;
 
-typedef NS_ENUM(NSUInteger, MWMRoutingPlaneMode) {
-  MWMRoutingPlaneModeNone,
-  MWMRoutingPlaneModePlacePage,
-  MWMRoutingPlaneModeSearchSource,
-  MWMRoutingPlaneModeSearchDestination
-};
+NS_ASSUME_NONNULL_BEGIN
 
-@interface MapsAppDelegate
-    : UIResponder<UIApplicationDelegate, UIAlertViewDelegate, DownloadIndicatorProtocol>
+@interface MapsAppDelegate : UIResponder<UIApplicationDelegate, DownloadIndicatorProtocol>
 {
   NSInteger m_activeDownloadsCounter;
   UIBackgroundTaskIdentifier m_backgroundTask;
-  UIBackgroundTaskIdentifier m_editorUploadBackgroundTask;
-  UIAlertView * m_loadingAlertView;
 }
 
 @property(nonatomic) UIWindow * window;
-@property(nonatomic) MWMRoutingPlaneMode routingPlaneMode;
 
+@property(nonatomic, readonly) MWMCarPlayService *carplayService API_AVAILABLE(ios(12.0));
 @property(nonatomic, readonly) MapViewController * mapViewController;
 @property(nonatomic, readonly) BOOL isDrapeEngineCreated;
 
 @property(nonatomic) MWMMyTarget * myTarget;
 
 + (MapsAppDelegate *)theApp;
-
-- (BOOL)hasApiURL;
-
-+ (void)initPushNotificationsWithLaunchOptions:(NSDictionary *)launchOptions;
 
 - (void)enableStandby;
 - (void)disableStandby;
@@ -49,13 +33,10 @@ typedef NS_ENUM(NSUInteger, MWMRoutingPlaneMode) {
 - (void)enableDownloadIndicator;
 
 - (void)showMap;
-- (void)startMapStyleChecker;
-- (void)stopMapStyleChecker;
 - (void)showAlertIfRequired;
-+ (void)setAutoNightModeOff:(BOOL)off;
-+ (void)resetToDefaultMapStyle;
-+ (void)changeMapStyleIfNedeed;
 
-- (void)setMapStyle:(MapStyle)mapStyle;
+- (NSUInteger)badgeNumber;
 
 @end
+
+NS_ASSUME_NONNULL_END

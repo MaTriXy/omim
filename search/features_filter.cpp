@@ -2,13 +2,10 @@
 
 #include "search/cbv.hpp"
 
-#include "std/algorithm.hpp"
-#include "std/vector.hpp"
-
 namespace search
 {
 // FeaturesFilter ----------------------------------------------------------------------------------
-FeaturesFilter::FeaturesFilter(CBV const & filter, uint32_t threshold)
+FeaturesFilter::FeaturesFilter(CBV const & filter, uint64_t threshold)
   : m_filter(filter), m_threshold(threshold)
 {
 }
@@ -32,7 +29,7 @@ CBV LocalityFilter::Filter(CBV const & cbv) const
 }
 
 // ViewportFilter ----------------------------------------------------------------------------------
-ViewportFilter::ViewportFilter(CBV const & filter, uint32_t threshold)
+ViewportFilter::ViewportFilter(CBV const & filter, uint64_t threshold)
   : FeaturesFilter(filter, threshold)
 {
 }

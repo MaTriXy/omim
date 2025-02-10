@@ -4,15 +4,21 @@
 
 #include "indexer/classificator_loader.hpp"
 
+#include "coding/point_coding.hpp"
+
+#include <vector>
+
+using namespace feature;
+
 namespace
 {
   typedef m2::PointD P;
 
   class VectorEmitter : public FeatureEmitterIFace
   {
-    vector<FeatureBuilder1> m_vec;
+    std::vector<FeatureBuilder> m_vec;
   public:
-    virtual void operator() (FeatureBuilder1 const & fb)
+    virtual void operator() (FeatureBuilder const & fb)
     {
       m_vec.push_back(fb);
     }
@@ -38,7 +44,7 @@ UNIT_TEST(FeatureMerger_MultipleTypes)
   P arrPt[] = { P(0, 0), P(1, 1), P(2, 2), P(3, 3) };
   size_t const count = ARRAY_SIZE(arrPt)-1;
 
-  FeatureBuilder1 arrF[count];
+  FeatureBuilder arrF[count];
 
   for (size_t i = 0; i < count; ++i)
   {
@@ -59,7 +65,7 @@ UNIT_TEST(FeatureMerger_MultipleTypes)
   arrF[1].AddType(4);
   arrF[2].AddType(4);
 
-  FeatureMergeProcessor processor(POINT_COORD_BITS);
+  FeatureMergeProcessor processor(kPointCoordBits);
 
   for (size_t i = 0; i < count; ++i)
     processor(arrF[i]);
@@ -88,41 +94,41 @@ UNIT_TEST(FeatureMerger_Branches)
          o
   */
 
-  vector<FeatureBuilder1> vF;
+  std::vector<FeatureBuilder> vF;
 
-  vF.push_back(FeatureBuilder1());
+  vF.push_back(FeatureBuilder());
   vF.back().AddPoint(P(-2, 0));
   vF.back().AddPoint(P(-1, 0));
 
-  vF.push_back(FeatureBuilder1());
+  vF.push_back(FeatureBuilder());
   vF.back().AddPoint(P(-1, 0));
   vF.back().AddPoint(P(0, 1));
 
-  vF.push_back(FeatureBuilder1());
+  vF.push_back(FeatureBuilder());
   vF.back().AddPoint(P(-1, 0));
   vF.back().AddPoint(P(0, 0));
 
-  vF.push_back(FeatureBuilder1());
+  vF.push_back(FeatureBuilder());
   vF.back().AddPoint(P(-1, 0));
   vF.back().AddPoint(P(0, -1));
 
-  vF.push_back(FeatureBuilder1());
+  vF.push_back(FeatureBuilder());
   vF.back().AddPoint(P(0, 1));
   vF.back().AddPoint(P(1, 0));
 
-  vF.push_back(FeatureBuilder1());
+  vF.push_back(FeatureBuilder());
   vF.back().AddPoint(P(0, 0));
   vF.back().AddPoint(P(1, 0));
 
-  vF.push_back(FeatureBuilder1());
+  vF.push_back(FeatureBuilder());
   vF.back().AddPoint(P(0, -1));
   vF.back().AddPoint(P(1, 0));
 
-  vF.push_back(FeatureBuilder1());
+  vF.push_back(FeatureBuilder());
   vF.back().AddPoint(P(1, 0));
   vF.back().AddPoint(P(2, 0));
 
-  FeatureMergeProcessor processor(POINT_COORD_BITS);
+  FeatureMergeProcessor processor(kPointCoordBits);
 
   for (size_t i = 0; i < vF.size(); ++i)
   {
@@ -142,37 +148,37 @@ UNIT_TEST(FeatureMerger_Rounds)
 {
   classificator::Load();
 
-  vector<FeatureBuilder1> vF;
+  std::vector<FeatureBuilder> vF;
 
-  vF.push_back(FeatureBuilder1());
+  vF.push_back(FeatureBuilder());
   vF.back().AddPoint(P(-10, 0));
   vF.back().AddPoint(P(-5, 0));
 
   // make first round feature
-  vF.push_back(FeatureBuilder1());
+  vF.push_back(FeatureBuilder());
   vF.back().AddPoint(P(-4, 1));
   vF.back().AddPoint(P(-3, 0));
   vF.back().AddPoint(P(-4, -1));
   vF.back().AddPoint(P(-5, 0));
   vF.back().AddPoint(P(-4, 1));
 
-  vF.push_back(FeatureBuilder1());
+  vF.push_back(FeatureBuilder());
   vF.back().AddPoint(P(-3, 0));
   vF.back().AddPoint(P(3, 0));
 
   // make second round feature
-  vF.push_back(FeatureBuilder1());
+  vF.push_back(FeatureBuilder());
   vF.back().AddPoint(P(4, -1));
   vF.back().AddPoint(P(3, 0));
   vF.back().AddPoint(P(4, 1));
   vF.back().AddPoint(P(5, 0));
   vF.back().AddPoint(P(4, -1));
 
-  vF.push_back(FeatureBuilder1());
+  vF.push_back(FeatureBuilder());
   vF.back().AddPoint(P(5, 0));
   vF.back().AddPoint(P(10, 0));
 
-  FeatureMergeProcessor processor(POINT_COORD_BITS);
+  FeatureMergeProcessor processor(kPointCoordBits);
 
   for (size_t i = 0; i < vF.size(); ++i)
   {

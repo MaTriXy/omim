@@ -2,9 +2,9 @@ package com.mapswithme.maps.bookmarks.data;
 
 import android.os.Parcel;
 import android.os.Parcelable;
-import android.support.annotation.IntRange;
-import android.support.annotation.NonNull;
-import android.support.annotation.Nullable;
+import androidx.annotation.IntRange;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -31,16 +31,21 @@ public class Metadata implements Parcelable
     FMD_POSTCODE(15),
     // TODO: It is hacked in jni and returns full Wikipedia url. Should use separate getter instead.
     FMD_WIKIPEDIA(16),
-    FMD_MAXSPEED(17),
+    // FMD_MAXSPEED(17),
     FMD_FLATS(18),
     FMD_HEIGHT(19),
     FMD_MIN_HEIGHT(20),
     FMD_DENOMINATION(21),
     FMD_BUILDING_LEVELS(22),
+    FWD_TEST_ID(23),
     FMD_SPONSORED_ID(24),
     FMD_PRICE_RATE(25),
-    FMD_RATING(26);
-
+    FMD_RATING(26),
+    FMD_BANNER_URL(27),
+    FMD_LEVEL(28),
+    FMD_AIRPORT_IATA(29),
+    FMD_BRAND(30),
+    FMD_DURATION(31);
     private final int mMetaType;
 
     MetadataType(int metadataType)
@@ -49,7 +54,7 @@ public class Metadata implements Parcelable
     }
 
     @NonNull
-    public static MetadataType fromInt(@IntRange(from = 1, to = 26) int metaType)
+    public static MetadataType fromInt(@IntRange(from = 1, to = 28) int metaType)
     {
       for (MetadataType type : values())
         if (type.mMetaType == metaType)
@@ -93,6 +98,11 @@ public class Metadata implements Parcelable
   String getMetadata(MetadataType type)
   {
     return mMetadataMap.get(type);
+  }
+
+  boolean isEmpty()
+  {
+    return mMetadataMap.isEmpty();
   }
 
   @Override

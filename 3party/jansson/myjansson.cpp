@@ -1,112 +1,143 @@
 #include "3party/jansson/myjansson.hpp"
 
-namespace my
+#include <type_traits>
+
+using namespace std;
+
+namespace
 {
-void FromJSON(json_t * root, string & result)
+template <typename T>
+string FromJSONToString(json_t const * root)
+{
+  T result;
+  FromJSON(root, result);
+  return strings::to_string(result);
+}
+}  // namespace
+
+namespace base
+{
+json_t * GetJSONObligatoryField(json_t * root, std::string const & field)
+{
+  return GetJSONObligatoryField(root, field.c_str());
+}
+
+json_t * GetJSONObligatoryField(json_t * root, char const * field)
+{
+  return const_cast<json_t *>(GetJSONObligatoryField(const_cast<json_t const *>(root), field));
+}
+
+json_t const * GetJSONObligatoryField(json_t const * root, std::string const & field)
+{
+  return GetJSONObligatoryField(root, field.c_str());
+}
+
+json_t const * GetJSONObligatoryField(json_t const * root, char const * field)
+{
+  auto * value = base::GetJSONOptionalField(root, field);
+  if (!value)
+    MYTHROW(base::Json::Exception, ("Obligatory field", field, "is absent."));
+  return value;
+}
+
+json_t * GetJSONOptionalField(json_t * root, std::string const & field)
+{
+  return GetJSONOptionalField(root, field.c_str());
+}
+
+json_t * GetJSONOptionalField(json_t * root, char const * field)
+{
+  return const_cast<json_t *>(GetJSONOptionalField(const_cast<json_t const *>(root), field));
+}
+
+json_t const * GetJSONOptionalField(json_t const * root, std::string const & field)
+{
+  return GetJSONOptionalField(root, field.c_str());
+}
+
+json_t const * GetJSONOptionalField(json_t const * root, char const * field)
+{
+  if (!json_is_object(root))
+    MYTHROW(base::Json::Exception, ("Bad json object while parsing", field));
+  return json_object_get(root, field);
+}
+
+bool JSONIsNull(json_t const * root) { return json_is_null(root); }
+
+std::string DumpToString(JSONPtr const & json, size_t flags)
+{
+  std::string result;
+  size_t size = json_dumpb(json.get(), nullptr, 0, flags);
+  if (size == 0)
+    MYTHROW(base::Json::Exception, ("Zero size JSON while serializing"));
+
+  result.resize(size);
+  if (size != json_dumpb(json.get(), &result.front(), size, flags))
+    MYTHROW(base::Json::Exception, ("Wrong size JSON written while serializing"));
+
+  return result;
+}
+
+JSONPtr LoadFromString(std::string const & str)
+{
+  json_error_t jsonError = {};
+  json_t * result = json_loads(str.c_str(), 0, &jsonError);
+  if (!result)
+    MYTHROW(base::Json::Exception, (jsonError.text));
+  return JSONPtr(result);
+}
+
+}  // namespace base
+
+void FromJSON(json_t const * root, double & result)
+{
+  if (!json_is_number(root))
+    MYTHROW(base::Json::Exception, ("Object must contain a json number."));
+  result = json_number_value(root);
+}
+
+void FromJSON(json_t const * root, bool & result)
+{
+  if (!json_is_true(root) && !json_is_false(root))
+    MYTHROW(base::Json::Exception, ("Object must contain a boolean value."));
+  result = json_is_true(root);
+}
+
+string FromJSONToString(json_t const * root)
+{
+  if (json_is_string(root))
+    return FromJSONToString<string>(root);
+
+  if (json_is_integer(root))
+    return FromJSONToString<json_int_t>(root);
+
+  if (json_is_real(root))
+    return FromJSONToString<double>(root);
+
+  if (json_is_boolean(root))
+    return FromJSONToString<bool>(root);
+
+  MYTHROW(base::Json::Exception, ("Unexpected json type"));
+}
+
+namespace std
+{
+void FromJSON(json_t const * root, string & result)
 {
   if (!json_is_string(root))
-    MYTHROW(my::Json::Exception, ("The field must contain a json string."));
-  result = string(json_string_value(root));
+    MYTHROW(base::Json::Exception, ("The field must contain a json string."));
+  result = json_string_value(root);
 }
+}  // namespace std
 
-void FromJSONObject(json_t * root, string const & field, string & result)
+namespace strings
 {
-  if (!json_is_object(root))
-    MYTHROW(my::Json::Exception, ("Bad json object when parsing", field));
-  json_t * val = json_object_get(root, field.c_str());
-  if (!val)
-    MYTHROW(my::Json::Exception, ("Obligatory field", field, "is absent."));
-  if (!json_is_string(val))
-    MYTHROW(my::Json::Exception, ("The field", field, "must contain a json string."));
-  result = string(json_string_value(val));
-}
-
-void FromJSONObject(json_t * root, string const & field, strings::UniString & result)
+void FromJSON(json_t const * root, UniString & result)
 {
   string s;
-  FromJSONObject(root, field, s);
-  result = strings::MakeUniString(s);
+  FromJSON(root, s);
+  result = MakeUniString(s);
 }
 
-void FromJSONObject(json_t * root, string const & field, double & result)
-{
-  if (!json_is_object(root))
-    MYTHROW(my::Json::Exception, ("Bad json object when parsing", field));
-  json_t * val = json_object_get(root, field.c_str());
-  if (!val)
-    MYTHROW(my::Json::Exception, ("Obligatory field", field, "is absent."));
-  if (!json_is_number(val))
-    MYTHROW(my::Json::Exception, ("The field", field, "must contain a json number."));
-  result = json_number_value(val);
-}
-
-void FromJSONObject(json_t * root, string const & field, json_int_t & result)
-{
-  if (!json_is_object(root))
-    MYTHROW(my::Json::Exception, ("Bad json object when parsing", field));
-  json_t * val = json_object_get(root, field.c_str());
-  if (!val)
-    MYTHROW(my::Json::Exception, ("Obligatory field", field, "is absent."));
-  if (!json_is_number(val))
-    MYTHROW(my::Json::Exception, ("The field", field, "must contain a json number."));
-  result = json_integer_value(val);
-}
-
-void FromJSONObjectOptionalField(json_t * root, string const & field, string & result)
-{
-  if (!json_is_object(root))
-    MYTHROW(my::Json::Exception, ("Bad json object when parsing", field));
-  json_t * val = json_object_get(root, field.c_str());
-  if (!val)
-  {
-    result.clear();
-    return;
-  }
-  if (!json_is_string(val))
-    MYTHROW(my::Json::Exception, ("The field", field, "must contain a json string."));
-  result = string(json_string_value(val));
-}
-
-void FromJSONObjectOptionalField(json_t * root, string const & field, json_int_t & result)
-{
-  if (!json_is_object(root))
-    MYTHROW(my::Json::Exception, ("Bad json object when parsing", field));
-  json_t * val = json_object_get(root, field.c_str());
-  if (!val)
-  {
-    result = 0;
-    return;
-  }
-  if (!json_is_number(val))
-    MYTHROW(my::Json::Exception, ("The field", field, "must contain a json number."));
-  result = json_integer_value(val);
-}
-
-void FromJSONObjectOptionalField(json_t * root, string const & field, bool & result, bool def)
-{
-  if (!json_is_object(root))
-    MYTHROW(my::Json::Exception, ("Bad json object when parsing", field));
-  json_t * val = json_object_get(root, field.c_str());
-  if (!val)
-  {
-    result = def;
-    return;
-  }
-  if (!json_is_boolean(val))
-    MYTHROW(my::Json::Exception, ("The field", field, "must contain a boolean value."));
-  result = json_is_true(val);
-}
-
-void FromJSONObjectOptionalField(json_t * root, string const & field, json_t *& result)
-{
-  json_t * obj = json_object_get(root, field.c_str());
-  if (!obj)
-  {
-    result = nullptr;
-    return;
-  }
-  if (!json_is_object(obj))
-    MYTHROW(my::Json::Exception, ("The field", field, "must contain a json object."));
-  FromJSON(obj, result);
-}
-}  // namespace my
+base::JSONPtr ToJSON(UniString const & s) { return ToJSON(ToUtf8(s)); }
+}  // namespace strings

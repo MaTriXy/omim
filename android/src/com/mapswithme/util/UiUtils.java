@@ -4,52 +4,77 @@ import android.animation.Animator;
 import android.app.Activity;
 import android.content.ContentResolver;
 import android.content.Context;
-import android.content.DialogInterface;
 import android.content.res.Configuration;
 import android.content.res.Resources;
+import android.content.res.TypedArray;
+import android.graphics.Color;
 import android.graphics.Rect;
 import android.net.Uri;
 import android.os.Build;
-import android.support.annotation.AnyRes;
-import android.support.annotation.DimenRes;
-import android.support.annotation.DrawableRes;
-import android.support.annotation.IdRes;
-import android.support.annotation.NonNull;
-import android.support.annotation.StringRes;
-import android.support.design.widget.TextInputLayout;
-import android.support.v7.app.AlertDialog;
-import android.support.v7.widget.Toolbar;
+import android.text.Html;
 import android.text.TextUtils;
+import android.text.method.LinkMovementMethod;
+import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.Surface;
+import android.view.TouchDelegate;
 import android.view.View;
+import android.view.ViewGroup;
 import android.view.ViewTreeObserver;
+import android.view.Window;
+import android.view.WindowManager;
 import android.view.animation.Animation;
 import android.view.animation.Animation.AnimationListener;
 import android.widget.Button;
-import android.widget.ImageView;
+import android.widget.FrameLayout;
 import android.widget.TextView;
+import android.widget.Toast;
 
+import androidx.annotation.AnyRes;
+import androidx.annotation.AttrRes;
+import androidx.annotation.ColorInt;
+import androidx.annotation.ColorRes;
+import androidx.annotation.DimenRes;
+import androidx.annotation.IdRes;
+import androidx.annotation.NonNull;
+import androidx.annotation.StringRes;
+import androidx.appcompat.widget.Toolbar;
+import androidx.core.content.ContextCompat;
+import androidx.recyclerview.widget.RecyclerView;
+import com.google.android.material.textfield.TextInputLayout;
 import com.mapswithme.maps.MwmApplication;
 import com.mapswithme.maps.R;
 
 public final class UiUtils
 {
-  private static float sScreenDensity;
+  private static final int DEFAULT_TINT_COLOR = Color.parseColor("#20000000");
+  public static final int NO_ID = -1;
+  public static final String NEW_STRING_DELIMITER = "\n";
+  public static final String PHRASE_SEPARATOR = " • ";
+  public static final String WIDE_PHRASE_SEPARATOR = "  •  ";
+  public static final String APPROXIMATE_SYMBOL = "~";
 
-  public static class SimpleAnimationListener implements AnimationListener
+  public static void addStatusBarOffset(@NonNull View view)
   {
-    @Override
-    public void onAnimationStart(Animation animation)
-    {}
+    ViewGroup.MarginLayoutParams params = (ViewGroup.MarginLayoutParams) view.getLayoutParams();
+    params.setMargins(0, UiUtils.getStatusBarHeight(view.getContext()), 0, 0);
+  }
 
-    @Override
-    public void onAnimationEnd(Animation animation)
-    {}
+  public static void bringViewToFrontOf(@NonNull View frontView, @NonNull View backView)
+  {
+    if (Utils.isLollipopOrLater())
+      frontView.setZ(backView.getZ() + 1);
+    else
+      frontView.bringToFront();
+  }
 
-    @Override
-    public void onAnimationRepeat(Animation animation)
-    {}
+  public static void linkifyView(@NonNull View view, @IdRes int id, @StringRes int stringId,
+                                 @NonNull String link)
+  {
+    TextView policyView = view.findViewById(id);
+    Resources rs = policyView.getResources();
+    policyView.setText(Html.fromHtml(rs.getString(stringId, link)));
+    policyView.setMovementMethod(LinkMovementMethod.getInstance());
   }
 
   public static class SimpleAnimatorListener implements Animator.AnimatorListener
@@ -78,11 +103,7 @@ public final class UiUtils
       @Override
       public void onGlobalLayout() {
         // viewTreeObserver can be dead(isAlive() == false), we should get a new one here.
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.JELLY_BEAN)
-          view.getViewTreeObserver().removeGlobalOnLayoutListener(this);
-        else
-          view.getViewTreeObserver().removeOnGlobalLayoutListener(this);
-
+        view.getViewTreeObserver().removeOnGlobalLayoutListener(this);
         callback.onGlobalLayout();
       }
     });
@@ -104,12 +125,12 @@ public final class UiUtils
     });
   }
 
-  public static void hide(View view)
+  public static void hide(@NonNull View view)
   {
     view.setVisibility(View.GONE);
   }
 
-  public static void hide(View... views)
+  public static void hide(@NonNull View... views)
   {
     for (final View v : views)
       v.setVisibility(View.GONE);
@@ -117,7 +138,11 @@ public final class UiUtils
 
   public static void hide(View frame, @IdRes int viewId)
   {
-    hide(frame.findViewById(viewId));
+    View view = frame.findViewById(viewId);
+    if (view == null)
+      return;
+
+    hide(view);
   }
 
   public static void hide(View frame, @IdRes int... viewIds)
@@ -139,7 +164,11 @@ public final class UiUtils
 
   public static void show(View frame, @IdRes int viewId)
   {
-    show(frame.findViewById(viewId));
+    View view = frame.findViewById(viewId);
+    if (view == null)
+      return;
+
+    show(view);
   }
 
   public static void show(View frame, @IdRes int... viewIds)
@@ -203,12 +232,35 @@ public final class UiUtils
     view.setVisibility(condition ? View.VISIBLE : View.GONE);
   }
 
+  public static void hideIf(boolean condition, View... views)
+  {
+    if (condition)
+    {
+      hide(views);
+    }
+    else
+    {
+      show(views);
+    }
+  }
+
   public static void showIf(boolean condition, View... views)
   {
     if (condition)
       show(views);
     else
       hide(views);
+  }
+
+  public static void showIf(boolean condition, View parent, @IdRes int... viewIds)
+  {
+    for (@IdRes int id : viewIds)
+    {
+      if (condition)
+        show(parent.findViewById(id));
+      else
+        hide(parent.findViewById(id));
+    }
   }
 
   public static void setTextAndShow(TextView tv, CharSequence text)
@@ -223,28 +275,16 @@ public final class UiUtils
     showIf(!TextUtils.isEmpty(text), tv);
   }
 
+  public static void clearTextAndHide(TextView tv)
+  {
+    tv.setText("");
+    hide(tv);
+  }
+
   public static void showHomeUpButton(Toolbar toolbar)
   {
     toolbar.setNavigationIcon(ThemeUtils.getResource(toolbar.getContext(), R.attr.homeAsUpIndicator));
   }
-
-  public static AlertDialog buildAlertDialog(Activity activity, int titleId)
-  {
-    return new AlertDialog.Builder(activity)
-            .setCancelable(false)
-            .setMessage(titleId)
-            .setPositiveButton(R.string.ok, new DialogInterface.OnClickListener() {
-              @Override
-              public void onClick(DialogInterface dlg, int which) { dlg.dismiss(); }
-            })
-            .create();
-  }
-
-  public static void showAlertDialog(Activity activity, int titleId)
-  {
-    buildAlertDialog(activity, titleId).show();
-  }
-
 
   public static String deviceOrientationAsString(Activity activity)
   {
@@ -267,27 +307,14 @@ public final class UiUtils
     return rotation;
   }
 
-  public static boolean isTablet()
+  public static boolean isTablet(@NonNull Context context)
   {
-    return MwmApplication.get().getResources().getBoolean(R.bool.tabletLayout);
+    return MwmApplication.from(context).getResources().getBoolean(R.bool.tabletLayout);
   }
 
-  public static int dimen(@DimenRes int id)
-  {
-    return dimen(MwmApplication.get(), id);
-  }
-
-  public static int dimen(Context context, @DimenRes int id)
+  public static int dimen(@NonNull Context context, @DimenRes int id)
   {
     return context.getResources().getDimensionPixelSize(id);
-  }
-
-  public static int toPx(int dp)
-  {
-    if (sScreenDensity == 0)
-      sScreenDensity = MwmApplication.get().getResources().getDisplayMetrics().density;
-
-    return (int) (dp * sScreenDensity + 0.5);
   }
 
   public static void updateButton(Button button)
@@ -300,24 +327,6 @@ public final class UiUtils
   {
     button.setTextColor(ThemeUtils.getColor(button.getContext(), button.isEnabled() ? R.attr.redButtonTextColor
                                                                                     : R.attr.redButtonTextColorDisabled));
-  }
-
-  public static void updateAccentButton(Button button)
-  {
-    button.setTextColor(ThemeUtils.getColor(button.getContext(), button.isEnabled() ? R.attr.accentButtonTextColor
-                                                                                    : R.attr.accentButtonTextColorDisabled));
-  }
-
-  public static void setupPlaceholder(View frame, @DrawableRes int imageRes, @StringRes int titleRes, @StringRes int subtitleRes)
-  {
-    ImageView image = (ImageView) frame.findViewById(R.id.image);
-    image.setImageResource(imageRes);
-
-    TextView title = (TextView) frame.findViewById(R.id.title);
-    title.setText(titleRes);
-
-    TextView subtitle = (TextView) frame.findViewById(R.id.subtitle);
-    subtitle.setText(subtitleRes);
   }
 
   public static Uri getUriToResId(@NonNull Context context, @AnyRes int resId)
@@ -336,7 +345,7 @@ public final class UiUtils
                                                  : layout.getContext().getResources().getColor(R.color.base_red));
   }
 
-  public static boolean isLandscape(Context context)
+  public static boolean isLandscape(@NonNull Context context)
   {
     return context.getResources().getConfiguration().orientation == Configuration.ORIENTATION_LANDSCAPE;
   }
@@ -357,6 +366,201 @@ public final class UiUtils
     Rect viewRect = new Rect(viewX, viewY, viewX + width, viewY + height);
 
     return viewRect.contains(x, y);
+  }
+
+  public static int getStatusBarHeight(@NonNull Context context)
+  {
+    int result = 0;
+    Resources res = context.getResources();
+    int resourceId = res.getIdentifier("status_bar_height", "dimen", "android");
+    if (resourceId > 0)
+      result = res.getDimensionPixelSize(resourceId);
+
+    return result;
+  }
+
+  public static void extendViewWithStatusBar(@NonNull View view)
+  {
+    int statusBarHeight = getStatusBarHeight(view.getContext());
+    ViewGroup.LayoutParams lp = view.getLayoutParams();
+    if (lp.height == ViewGroup.LayoutParams.WRAP_CONTENT)
+    {
+      extendViewPaddingTop(view, statusBarHeight);
+      return;
+    }
+
+    lp.height += statusBarHeight;
+    view.setLayoutParams(lp);
+    extendViewPaddingTop(view, statusBarHeight);
+  }
+
+  public static void extendViewPaddingWithStatusBar(@NonNull View view)
+  {
+    int statusBarHeight = getStatusBarHeight(view.getContext());
+    extendViewPaddingTop(view, statusBarHeight);
+  }
+
+  private static void extendViewPaddingTop(@NonNull View view, int statusBarHeight)
+  {
+    view.setPadding(view.getPaddingLeft(), view.getPaddingTop() + statusBarHeight,
+                    view.getPaddingRight(), view.getPaddingBottom());
+  }
+
+  public static void extendViewMarginWithStatusBar(@NonNull View view)
+  {
+    int statusBarHeight = getStatusBarHeight(view.getContext());
+    ViewGroup.MarginLayoutParams lp = (ViewGroup.MarginLayoutParams) view.getLayoutParams();
+    int margin = lp.getMarginStart();
+    lp.setMargins(margin, margin + statusBarHeight, margin, margin);
+    view.setLayoutParams(lp);
+  }
+
+  public static void setupStatusBar(@NonNull Activity activity)
+  {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP)
+    {
+      activity.getWindow().getDecorView().setSystemUiVisibility(
+          View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN);
+    }
+    else
+    {
+      activity.getWindow().addFlags(WindowManager.LayoutParams.FLAG_TRANSLUCENT_STATUS);
+    }
+
+    View statusBarTintView = new View(activity);
+    FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, getStatusBarHeight(activity));
+    params.gravity = Gravity.TOP;
+    statusBarTintView.setLayoutParams(params);
+    statusBarTintView.setBackgroundColor(DEFAULT_TINT_COLOR);
+    statusBarTintView.setVisibility(View.VISIBLE);
+    ViewGroup decorViewGroup = (ViewGroup) activity.getWindow().getDecorView();
+    decorViewGroup.addView(statusBarTintView);
+  }
+
+  public static void setupColorStatusBar(@NonNull Activity activity, @ColorRes int statusBarColor)
+  {
+    Window window = activity.getWindow();
+    window.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
+    window.setStatusBarColor(ContextCompat.getColor(activity, statusBarColor));
+  }
+
+  public static void setupNavigationIcon(@NonNull Toolbar toolbar,
+                                         @NonNull View.OnClickListener listener)
+  {
+    View customNavigationButton = toolbar.findViewById(R.id.back);
+    if (customNavigationButton != null)
+    {
+      customNavigationButton.setOnClickListener(listener);
+    }
+    else
+    {
+      setupHomeUpButtonAsNavigationIcon(toolbar, listener);
+    }
+  }
+
+  public static void setupHomeUpButtonAsNavigationIcon(@NonNull Toolbar toolbar,
+                                                       @NonNull View.OnClickListener listener)
+  {
+    UiUtils.showHomeUpButton(toolbar);
+    toolbar.setNavigationOnClickListener(listener);
+  }
+
+  public static void clearHomeUpButton(@NonNull Toolbar toolbar)
+  {
+    toolbar.setNavigationIcon(null);
+    toolbar.setNavigationOnClickListener(null);
+  }
+
+  public static int getCompassYOffset(@NonNull Context context)
+  {
+    return getStatusBarHeight(context);
+  }
+
+  @AnyRes
+  public static int getStyledResourceId(@NonNull Context context, @AttrRes int res)
+  {
+    TypedArray a = null;
+    try
+    {
+      a = context.obtainStyledAttributes(new int[] {res});
+      return a.getResourceId(0, NO_ID);
+    }
+    finally
+    {
+      if (a != null)
+        a.recycle();
+    }
+  }
+
+  public static void setBackgroundDrawable(View view, @AttrRes int res)
+  {
+    view.setBackgroundResource(getStyledResourceId(view.getContext(), res));
+  }
+
+  public static void expandTouchAreaForView(@NonNull final View view, final int extraArea)
+  {
+    final View parent = (View) view.getParent();
+    parent.post(() ->
+                {
+                  Rect rect = new Rect();
+                  view.getHitRect(rect);
+                  rect.top -= extraArea;
+                  rect.left -= extraArea;
+                  rect.right += extraArea;
+                  rect.bottom += extraArea;
+                  parent.setTouchDelegate(new TouchDelegate(rect, view));
+                });
+  }
+
+  public static void expandTouchAreaForViews(int extraArea, @NonNull View... views)
+  {
+    for (View view : views)
+      expandTouchAreaForView(view, extraArea);
+  }
+
+  public static void expandTouchAreaForView(@NonNull final View view, final int top, final int left,
+                                            final int bottom, final int right)
+  {
+    final View parent = (View) view.getParent();
+    parent.post(() ->
+                {
+                  Rect rect = new Rect();
+                  view.getHitRect(rect);
+                  rect.top -= top;
+                  rect.left -= left;
+                  rect.right += right;
+                  rect.bottom += bottom;
+                  parent.setTouchDelegate(new TouchDelegate(rect, view));
+                });
+  }
+
+  @ColorInt
+  public static int getNotificationColor(@NonNull Context context)
+  {
+    return context.getResources().getColor(R.color.notification);
+  }
+
+  public static void showToastAtTop(@NonNull Context context, @StringRes int stringId)
+  {
+    Toast toast = Toast.makeText(context, stringId, Toast.LENGTH_LONG);
+    toast.setGravity(Gravity.TOP, 0, 0);
+    toast.show();
+  }
+
+  public static void showRecyclerItemView(boolean show, @NonNull View view)
+  {
+    if (show)
+    {
+      view.setLayoutParams(new RecyclerView.LayoutParams(
+          ViewGroup.LayoutParams.MATCH_PARENT,
+          ViewGroup.LayoutParams.WRAP_CONTENT));
+      UiUtils.show(view);
+    }
+    else
+    {
+      view.setLayoutParams(new RecyclerView.LayoutParams(0, 0));
+      UiUtils.hide(view);
+    }
   }
 
   // utility class

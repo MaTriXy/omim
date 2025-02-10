@@ -2,35 +2,53 @@
 
 @interface MWMDefaultAlert : MWMAlert
 
++ (instancetype)authErrorAlertWithRetryBlock:(MWMVoidBlock)retryBlock;
 + (instancetype)routeNotFoundAlert;
++ (instancetype)routeNotFoundNoPublicTransportAlert;
++ (instancetype)routeNotFoundTooLongPedestrianAlert;
 + (instancetype)routeFileNotExistAlert;
 + (instancetype)endPointNotFoundAlert;
 + (instancetype)startPointNotFoundAlert;
++ (instancetype)intermediatePointNotFoundAlert;
 + (instancetype)internalRoutingErrorAlert;
-+ (instancetype)incorrectFeauturePositionAlert;
++ (instancetype)incorrectFeaturePositionAlert;
 + (instancetype)internalErrorAlert;
 + (instancetype)notEnoughSpaceAlert;
 + (instancetype)invalidUserNameOrPasswordAlert;
 + (instancetype)noCurrentPositionAlert;
 + (instancetype)pointsInDifferentMWMAlert;
 + (instancetype)disabledLocationAlert;
-+ (instancetype)noWiFiAlertWithOkBlock:(TMWMVoidBlock)okBlock;
++ (instancetype)noWiFiAlertWithOkBlock:(MWMVoidBlock)okBlock andCancelBlock:(MWMVoidBlock)cancelBlock;
 + (instancetype)noConnectionAlert;
-+ (instancetype)migrationProhibitedAlert;
++ (instancetype)searchQuickFilterNoConnectionAlertWithOkBlock:(MWMVoidBlock)okBlock;
 + (instancetype)deleteMapProhibitedAlert;
-+ (instancetype)unsavedEditsAlertWithOkBlock:(TMWMVoidBlock)okBlock;
++ (instancetype)unsavedEditsAlertWithOkBlock:(MWMVoidBlock)okBlock;
 + (instancetype)locationServiceNotSupportedAlert;
-+ (instancetype)locationNotFoundAlertWithOkBlock:(TMWMVoidBlock)okBlock;
-+ (instancetype)point2PointAlertWithOkBlock:(TMWMVoidBlock)okBlock needToRebuild:(BOOL)needToRebuild;
-+ (instancetype)disableAutoDownloadAlertWithOkBlock:(TMWMVoidBlock)okBlock;
-+ (instancetype)downloaderNoConnectionAlertWithOkBlock:(TMWMVoidBlock)okBlock cancelBlock:(TMWMVoidBlock)cancelBlock;
++ (instancetype)point2PointAlertWithOkBlock:(MWMVoidBlock)okBlock needToRebuild:(BOOL)needToRebuild;
++ (instancetype)disableAutoDownloadAlertWithOkBlock:(MWMVoidBlock)okBlock;
++ (instancetype)downloaderNoConnectionAlertWithOkBlock:(MWMVoidBlock)okBlock cancelBlock:(MWMVoidBlock)cancelBlock;
 + (instancetype)downloaderNotEnoughSpaceAlert;
-+ (instancetype)downloaderInternalErrorAlertWithOkBlock:(TMWMVoidBlock)okBlock cancelBlock:(TMWMVoidBlock)cancelBlock;
-+ (instancetype)downloaderNeedUpdateAlertWithOkBlock:(TMWMVoidBlock)okBlock;
-+ (instancetype)routingMigrationAlertWithOkBlock:(TMWMVoidBlock)okBlock;
-+ (instancetype)resetChangesAlertWithBlock:(TMWMVoidBlock)block;
-+ (instancetype)deleteFeatureAlertWithBlock:(TMWMVoidBlock)block;
-+ (instancetype)personalInfoWarningAlertWithBlock:(TMWMVoidBlock)block;
-+ (instancetype)trackWarningAlertWithCancelBlock:(TMWMVoidBlock)block;
++ (instancetype)downloaderInternalErrorAlertWithOkBlock:(MWMVoidBlock)okBlock cancelBlock:(MWMVoidBlock)cancelBlock;
++ (instancetype)downloaderNeedUpdateAlertWithOkBlock:(MWMVoidBlock)okBlock;
++ (instancetype)resetChangesAlertWithBlock:(MWMVoidBlock)block;
++ (instancetype)deleteFeatureAlertWithBlock:(MWMVoidBlock)block;
++ (instancetype)personalInfoWarningAlertWithBlock:(MWMVoidBlock)block;
++ (instancetype)trackWarningAlertWithCancelBlock:(MWMVoidBlock)block;
++ (instancetype)infoAlert:(NSString *)title text:(NSString *)text;
++ (instancetype)convertBookmarksWithCount:(NSUInteger)count okBlock:(MWMVoidBlock)okBlock;
++ (instancetype)bookmarkConversionErrorAlert;
+
++ (instancetype)restoreBookmarkAlertWithMessage:(NSString *)message
+                              rightButtonAction:(MWMVoidBlock)rightButton
+                               leftButtonAction:(MWMVoidBlock)leftButton;
+
++ (instancetype)tagsLoadingErrorAlertWithOkBlock:(MWMVoidBlock)okBlock cancelBlock:(MWMVoidBlock)cancelBlock;
+
++ (instancetype)defaultAlertWithTitle:(NSString *)title
+                              message:(NSString *)message
+                     rightButtonTitle:(NSString *)rightButtonTitle
+                      leftButtonTitle:(NSString *)leftButtonTitle
+                    rightButtonAction:(MWMVoidBlock)action
+                      statisticsEvent:(NSString *)statisticsEvent;
 
 @end

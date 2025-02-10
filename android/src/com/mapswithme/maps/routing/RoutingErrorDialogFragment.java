@@ -1,10 +1,13 @@
 package com.mapswithme.maps.routing;
 
+import android.content.Context;
 import android.content.DialogInterface;
 import android.os.Bundle;
-import android.support.annotation.Nullable;
-import android.support.v4.app.Fragment;
-import android.support.v7.app.AlertDialog;
+
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import androidx.fragment.app.Fragment;
+import androidx.appcompat.app.AlertDialog;
 import android.util.Pair;
 import android.view.View;
 import android.widget.Button;
@@ -18,28 +21,45 @@ import com.mapswithme.util.UiUtils;
 
 public class RoutingErrorDialogFragment extends BaseRoutingErrorDialogFragment
 {
-  private static final String EXTRA_RESULT_CODE = "ResultCode";
+  private static final String EXTRA_RESULT_CODE = "RouterResultCode";
 
   private int mResultCode;
   private String mMessage;
+  private boolean mNeedMoreMaps;
 
   @Override
   void beforeDialogCreated(AlertDialog.Builder builder)
   {
     super.beforeDialogCreated(builder);
 
-    Pair<String, String> titleMessage = ResultCodesHelper.getDialogTitleSubtitle(mResultCode, mMissingMaps.size());
+    ResultCodesHelper.ResourcesHolder resHolder =
+        ResultCodesHelper.getDialogTitleSubtitle(requireContext(), mResultCode, mMissingMaps.size());
+    Pair<String, String> titleMessage = resHolder.getTitleMessage();
+
     builder.setTitle(titleMessage.first);
     mMessage = titleMessage.second;
-
+    builder.setNegativeButton(resHolder.getCancelBtnResId(), null);
     if (ResultCodesHelper.isDownloadable(mResultCode, mMissingMaps.size()))
       builder.setPositiveButton(R.string.download, null);
+
+    mNeedMoreMaps = ResultCodesHelper.isMoreMapsNeeded(mResultCode);
+    if (mNeedMoreMaps)
+      builder.setNegativeButton(R.string.later, null);
   }
 
   private View addMessage(View frame)
   {
     UiUtils.setTextAndHideIfEmpty((TextView)frame.findViewById(R.id.tv__message), mMessage);
     return frame;
+  }
+
+  @Override
+  public void onDismiss(DialogInterface dialog)
+  {
+    if (mNeedMoreMaps && mCancelled)
+      mCancelled = false;
+
+    super.onDismiss(dialog);
   }
 
   @Override
@@ -65,8 +85,11 @@ public class RoutingErrorDialogFragment extends BaseRoutingErrorDialogFragment
     long size = 0;
     for (CountryItem country : mMissingMaps)
     {
-      if (country.status != CountryItem.STATUS_PROGRESS)
-        size += (country.totalSize - country.size);
+      if (country.status != CountryItem.STATUS_PROGRESS &&
+          country.status != CountryItem.STATUS_APPLYING)
+      {
+        size += country.totalSize;
+      }
     }
 
     MapManager.warnOn3g(getActivity(), size, new Runnable()
@@ -74,7 +97,8 @@ public class RoutingErrorDialogFragment extends BaseRoutingErrorDialogFragment
       @Override
       public void run()
       {
-        RoutingMapsDownloadFragment downloader = RoutingMapsDownloadFragment.create(mMapsArray);
+        RoutingMapsDownloadFragment downloader = RoutingMapsDownloadFragment
+            .create(getAppContextOrThrow(), mMapsArray);
         downloader.show(getActivity().getSupportFragmentManager(), downloader.getClass().getSimpleName());
 
         mCancelled = false;
@@ -117,12 +141,14 @@ public class RoutingErrorDialogFragment extends BaseRoutingErrorDialogFragment
     mResultCode = getArguments().getInt(EXTRA_RESULT_CODE);
   }
 
-  public static RoutingErrorDialogFragment create(int resultCode, @Nullable String[] missingMaps)
+  public static RoutingErrorDialogFragment create(@NonNull Context context,
+                                                  int resultCode, @Nullable String[] missingMaps)
   {
     Bundle args = new Bundle();
     args.putInt(EXTRA_RESULT_CODE, resultCode);
     args.putStringArray(EXTRA_MISSING_MAPS, missingMaps);
-    RoutingErrorDialogFragment res = (RoutingErrorDialogFragment)Fragment.instantiate(MwmApplication.get(), RoutingErrorDialogFragment.class.getName());
+    RoutingErrorDialogFragment res = (RoutingErrorDialogFragment) Fragment
+        .instantiate(context, RoutingErrorDialogFragment.class.getName());
     res.setArguments(args);
     return res;
   }

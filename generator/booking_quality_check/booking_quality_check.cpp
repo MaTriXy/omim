@@ -1,30 +1,38 @@
 #include "generator/booking_dataset.hpp"
+
 #include "generator/feature_builder.hpp"
 #include "generator/opentable_dataset.hpp"
 #include "generator/osm_source.hpp"
+#include "generator/processor_booking.hpp"
+#include "generator/raw_generator.hpp"
 #include "generator/sponsored_scoring.hpp"
+#include "generator/translator_collection.hpp"
+#include "generator/translator_factory.hpp"
 
 #include "indexer/classificator_loader.hpp"
 
 #include "geometry/distance_on_sphere.hpp"
 
-#include "coding/file_name_utils.hpp"
-
+#include "base/file_name_utils.hpp"
+#include "base/exception.hpp"
+#include "base/geo_object_id.hpp"
+#include "base/stl_helpers.hpp"
 #include "base/string_utils.hpp"
 
-#include "std/cstdlib.hpp"
-#include "std/cstring.hpp"
-#include "std/fstream.hpp"
-#include "std/iostream.hpp"
-#include "std/numeric.hpp"
-#include "std/random.hpp"
-#include "std/unique_ptr.hpp"
+#include <cstdlib>
+#include <cstring>
+#include <fstream>
+#include <iostream>
+#include <memory>
+#include <numeric>
+#include <random>
 
 #include "3party/gflags/src/gflags/gflags.h"
 
 #include "boost/range/adaptor/map.hpp"
 #include "boost/range/algorithm/copy.hpp"
 
+using namespace std;
 
 DEFINE_string(osm, "", "Input .o5m file");
 DEFINE_string(booking, "", "Path to booking data in .tsv format");
@@ -37,38 +45,26 @@ DEFINE_uint64(selection_size, 1000, "Selection size");
 DEFINE_bool(generate, false, "Generate unmarked sample");
 
 using namespace generator;
+using namespace feature;
 
 namespace
 {
-string PrintBuilder(FeatureBuilder1 const & fb)
+string PrintBuilder(FeatureBuilder const & fb)
 {
   ostringstream s;
 
   s << "Id: " << DebugPrint(fb.GetMostGenericOsmId()) << '\t'
     << "Name: " << fb.GetName(StringUtf8Multilang::kDefaultCode) << '\t';
 
-  auto const params = fb.GetParams();
-  auto const street = params.GetStreet();
-  auto const house = params.house.Get();
+  s << "Params: " << DebugPrint(fb.GetParams()) << '\t';
 
-  string address = street;
-  if (!house.empty())
-  {
-    if (!street.empty())
-      address += ", ";
-    address += house;
-  }
+  auto const center = mercator::ToLatLon(fb.GetKeyPoint());
+  s << "lat: " << center.m_lat << " lon: " << center.m_lon << '\t';
 
-  if (!address.empty())
-    s << "Address: " << address << '\t';
-
-  auto const center = MercatorBounds::ToLatLon(fb.GetKeyPoint());
-  s << "lat: " << center.lat << " lon: " << center.lon << '\t';
-
-  if (fb.GetGeomType() == feature::GEOM_POINT)
-    s << "GeomType: GEOM_POINT";
-  else if (fb.GetGeomType() == feature::GEOM_AREA)
-    s << "GeomType: GEOM_AREA";
+  if (fb.GetGeomType() == GeomType::Point)
+    s << "GeomType: Point";
+  else if (fb.GetGeomType() == GeomType::Area)
+    s << "GeomType: Area";
   else
     CHECK(false, ());
 
@@ -77,7 +73,7 @@ string PrintBuilder(FeatureBuilder1 const & fb)
 
 DECLARE_EXCEPTION(ParseError, RootException);
 
-osm::Id ReadDebuggedPrintedOsmId(string const & str)
+base::GeoObjectId ReadDebuggedPrintedOsmId(string const & str)
 {
   istringstream sstr(str);
   string type;
@@ -87,59 +83,26 @@ osm::Id ReadDebuggedPrintedOsmId(string const & str)
   if (sstr.fail())
     MYTHROW(ParseError, ("Can't make osmId from string", str));
 
-  if (type == "relation")
-    return osm::Id::Relation(id);
-  if (type == "way")
-    return osm::Id::Way(id);
   if (type == "node")
-    return osm::Id::Node(id);
+    return base::MakeOsmNode(id);
+  if (type == "way")
+    return base::MakeOsmWay(id);
+  if (type == "relation")
+    return base::MakeOsmRelation(id);
 
   MYTHROW(ParseError, ("Can't make osmId from string", str));
 }
 
-template <typename Dataset>
-class Emitter : public EmitterBase
+GenerateInfo GetGenerateInfo()
 {
-public:
-  Emitter(Dataset const & dataset, map<osm::Id, FeatureBuilder1> & features)
-    : m_dataset(dataset)
-    , m_features(features)
-  {
-    LOG_SHORT(LINFO, ("OSM data:", FLAGS_osm));
-  }
-
-  void operator()(FeatureBuilder1 & fb) override
-  {
-    if (m_dataset.NecessaryMatchingConditionHolds(fb))
-      m_features.emplace(fb.GetMostGenericOsmId(), fb);
-  }
-
-  void GetNames(vector<string> & names) const override
-  {
-    names.clear();
-  }
-
-  bool Finish() override
-  {
-    LOG_SHORT(LINFO, ("Num of tourism elements:", m_features.size()));
-    return true;
-  }
-
-private:
-  Dataset const & m_dataset;
-  map<osm::Id, FeatureBuilder1> & m_features;
-};
-
-feature::GenerateInfo GetGenerateInfo()
-{
-  feature::GenerateInfo info;
-  info.m_bookingDatafileName = FLAGS_booking;
-  info.m_opentableDatafileName = FLAGS_opentable;
+  GenerateInfo info;
+  info.m_bookingDataFilename = FLAGS_booking;
+  info.m_opentableDataFilename = FLAGS_opentable;
   info.m_osmFileName = FLAGS_osm;
   info.SetNodeStorageType("map");
   info.SetOsmFileType("o5m");
 
-  info.m_intermediateDir = my::GetDirectory(FLAGS_factors);
+  info.m_intermediateDir = base::GetDirectory(FLAGS_factors);
 
   // Set other info params here.
 
@@ -154,14 +117,13 @@ struct SampleItem
 
   SampleItem() = default;
 
-  SampleItem(osm::Id const & osmId, ObjectId const sponsoredId, MatchStatus const match = Uninitialized)
-   : m_osmId(osmId)
-   , m_sponsoredId(sponsoredId)
-   , m_match(match)
+  SampleItem(base::GeoObjectId const & osmId, ObjectId const sponsoredId,
+             MatchStatus match = Uninitialized)
+    : m_osmId(osmId), m_sponsoredId(sponsoredId), m_match(match)
   {
   }
 
-  osm::Id m_osmId;
+  base::GeoObjectId m_osmId;
   ObjectId m_sponsoredId = Object::InvalidObjectId();
 
   MatchStatus m_match = Uninitialized;
@@ -231,17 +193,17 @@ vector<SampleItem<Object>> ReadSampleFromFile(string const & name)
 
 template <typename Dataset, typename Object = typename Dataset::Object>
 void GenerateFactors(Dataset const & dataset,
-                     map<osm::Id, FeatureBuilder1> const & features,
+                     map<base::GeoObjectId, FeatureBuilder> const & features,
                      vector<SampleItem<Object>> const & sampleItems, ostream & ost)
 {
   for (auto const & item : sampleItems)
   {
-    auto const & object = dataset.GetObjectById(item.m_sponsoredId);
+    auto const & object = dataset.GetStorage().GetObjectById(item.m_sponsoredId);
     auto const & feature = features.at(item.m_osmId);
 
     auto const score = generator::sponsored_scoring::Match(object, feature);
 
-    auto const center = MercatorBounds::ToLatLon(feature.GetKeyPoint());
+    auto const center = mercator::ToLatLon(feature.GetKeyPoint());
     double const distanceMeters = ms::DistanceOnEarth(center, object.m_latLon);
     auto const matched = score.IsMatched();
 
@@ -257,8 +219,8 @@ void GenerateFactors(Dataset const & dataset,
     ost << "# " << PrintBuilder(feature) << endl;
     ost << "# " << object << endl;
     ost << "# URL: https://www.openstreetmap.org/?mlat="
-        << object.m_latLon.lat << "&mlon=" << object.m_latLon.lon << "#map=18/"
-        << object.m_latLon.lat << "/" << object.m_latLon.lon << endl;
+        << object.m_latLon.m_lat << "&mlon=" << object.m_latLon.m_lon << "#map=18/"
+        << object.m_latLon.m_lat << "/" << object.m_latLon.m_lon << endl;
   }
 }
 
@@ -270,15 +232,14 @@ enum class DatasetType
 
 template <typename Dataset, typename Object = typename Dataset::Object>
 void GenerateSample(Dataset const & dataset,
-                    map<osm::Id, FeatureBuilder1> const & features,
-                    ostream & ost)
+                    map<base::GeoObjectId, FeatureBuilder> const & features, ostream & ost)
 {
   LOG_SHORT(LINFO, ("Num of elements:", features.size()));
-  vector<osm::Id> elementIndexes(features.size());
+  vector<base::GeoObjectId> elementIndexes(features.size());
   boost::copy(features | boost::adaptors::map_keys, begin(elementIndexes));
 
   // TODO(mgsergio): Try RandomSample (from search:: at the moment of writing).
-  shuffle(elementIndexes.begin(), elementIndexes.end(), minstd_rand(FLAGS_seed));
+  shuffle(elementIndexes.begin(), elementIndexes.end(), minstd_rand(static_cast<uint32_t>(FLAGS_seed)));
   if (FLAGS_selection_size < elementIndexes.size())
     elementIndexes.resize(FLAGS_selection_size);
 
@@ -287,17 +248,14 @@ void GenerateSample(Dataset const & dataset,
   for (auto osmId : elementIndexes)
   {
     auto const & fb = features.at(osmId);
-    auto const sponsoredIndexes = dataset.GetNearestObjects(
-        MercatorBounds::ToLatLon(fb.GetKeyPoint()),
-        Dataset::kMaxSelectedElements,
-        Dataset::kDistanceLimitInMeters);
+    auto const sponsoredIndexes = dataset.GetStorage().GetNearestObjects(mercator::ToLatLon(fb.GetKeyPoint()));
 
     for (auto const sponsoredId : sponsoredIndexes)
     {
-      auto const & object = dataset.GetObjectById(sponsoredId);
+      auto const & object = dataset.GetStorage().GetObjectById(sponsoredId);
       auto const score = sponsored_scoring::Match(object, fb);
 
-      auto const center = MercatorBounds::ToLatLon(fb.GetKeyPoint());
+      auto const center = mercator::ToLatLon(fb.GetKeyPoint());
       double const distanceMeters = ms::DistanceOnEarth(center, object.m_latLon);
       auto const matched = score.IsMatched();
 
@@ -312,8 +270,8 @@ void GenerateSample(Dataset const & dataset,
       outStream << "# " << PrintBuilder(fb) << endl;
       outStream << "# " << object << endl;
       outStream << "# URL: https://www.openstreetmap.org/?mlat="
-                << object.m_latLon.lat << "&mlon=" << object.m_latLon.lon
-                << "#map=18/" << object.m_latLon.lat << "/" << object.m_latLon.lon << endl;
+                << object.m_latLon.m_lat << "&mlon=" << object.m_latLon.m_lon
+                << "#map=18/" << object.m_latLon.m_lat << "/" << object.m_latLon.m_lon << endl;
     }
     if (!sponsoredIndexes.empty())
       outStream << endl << endl;
@@ -334,32 +292,37 @@ void GenerateSample(Dataset const & dataset,
 }
 
 template <typename Dataset>
-string GetDatasetFilePath(feature::GenerateInfo const & info);
+string GetDatasetFilePath(GenerateInfo const & info);
 
 template <>
-string GetDatasetFilePath<BookingDataset>(feature::GenerateInfo const & info)
+string GetDatasetFilePath<BookingDataset>(GenerateInfo const & info)
 {
-  return info.m_bookingDatafileName;
+  return info.m_bookingDataFilename;
 }
 
 template <>
-string GetDatasetFilePath<OpentableDataset>(feature::GenerateInfo const & info)
+string GetDatasetFilePath<OpentableDataset>(GenerateInfo const & info)
 {
-  return info.m_opentableDatafileName;
+  return info.m_opentableDataFilename;
 }
 
 template <typename Dataset, typename Object = typename Dataset::Object>
-void RunImpl(feature::GenerateInfo & info)
+void RunImpl(GenerateInfo & info)
 {
-  // TODO(mgsergio): Log correctly LOG_SHORT(LINFO, ("Booking data:", FLAGS_booking));
-  Dataset dataset(GetDatasetFilePath<Dataset>(info));
-  LOG_SHORT(LINFO, (dataset.Size(), "objects are loaded from a Dataset."));
+  auto const & dataSetFilePath = GetDatasetFilePath<Dataset>(info);
+  Dataset dataset(dataSetFilePath);
+  LOG_SHORT(LINFO, (dataset.GetStorage().Size(), "objects are loaded from a file:", dataSetFilePath));
 
-  map<osm::Id, FeatureBuilder1> features;
-  GenerateFeatures(info, [&dataset, &features](feature::GenerateInfo const & /* info */)
-  {
-    return make_unique<Emitter<Dataset>>(dataset, features);
-  });
+  map<base::GeoObjectId, FeatureBuilder> features;
+  LOG_SHORT(LINFO, ("OSM data:", FLAGS_osm));
+
+  generator::cache::IntermediateDataObjectsCache objectsCache;
+  generator::cache::IntermediateData cacheLoader(objectsCache, info);
+  auto translators = make_shared<TranslatorCollection>();
+  auto processor = make_shared<ProcessorBooking<Dataset>>(dataset, features);
+  translators->Append(CreateTranslator(TranslatorType::Country, processor, cacheLoader.GetCache(), info));
+  RawGenerator generator(info);
+  generator.GenerateCustom(translators);
 
   if (FLAGS_generate)
   {
@@ -376,7 +339,7 @@ void RunImpl(feature::GenerateInfo & info)
   }
 }
 
-void Run(DatasetType const datasetType, feature::GenerateInfo & info)
+void Run(DatasetType const datasetType, GenerateInfo & info)
 {
   switch (datasetType)
   {

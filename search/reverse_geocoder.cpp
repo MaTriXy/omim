@@ -1,17 +1,29 @@
-#include "reverse_geocoder.hpp"
+#include "search/reverse_geocoder.hpp"
 
+#include "search/city_finder.hpp"
 #include "search/mwm_context.hpp"
+#include "search/region_info_getter.hpp"
 
+#include "storage/country_info_getter.hpp"
+
+#include "editor/osm_editor.hpp"
+
+#include "indexer/data_source.hpp"
+#include "indexer/fake_feature_ids.hpp"
 #include "indexer/feature.hpp"
 #include "indexer/feature_algo.hpp"
 #include "indexer/ftypes_matcher.hpp"
-#include "indexer/index.hpp"
 #include "indexer/scales.hpp"
 #include "indexer/search_string_utils.hpp"
 
 #include "base/stl_helpers.hpp"
 
-#include "std/limits.hpp"
+#include <algorithm>
+#include <cstddef>
+#include <functional>
+#include <limits>
+
+using namespace std;
 
 namespace search
 {
@@ -21,37 +33,134 @@ size_t constexpr kSimilarityThresholdPercent = 10;
 int constexpr kQueryScale = scales::GetUpperScale();
 /// Max number of tries (nearest houses with housenumber) to check when getting point address.
 size_t constexpr kMaxNumTriesToApproxAddress = 10;
-} // namespace
 
-ReverseGeocoder::ReverseGeocoder(Index const & index) : m_index(index) {}
+using AppendStreet = function<void(FeatureType & ft)>;
+using FillStreets =
+    function<void(MwmSet::MwmHandle && handle, m2::RectD const & rect, AppendStreet && addStreet)>;
+
+m2::RectD GetLookupRect(m2::PointD const & center, double radiusM)
+{
+  return mercator::RectByCenterXYAndSizeInMeters(center, radiusM);
+}
+
+void AddStreet(FeatureType & ft, m2::PointD const & center, bool includeSquaresAndSuburbs,
+               vector<ReverseGeocoder::Street> & streets)
+{
+  bool const addAsStreet =
+      ft.GetGeomType() == feature::GeomType::Line && ftypes::IsWayChecker::Instance()(ft);
+  bool const isSquareOrSuburb =
+      ftypes::IsSquareChecker::Instance()(ft) || ftypes::IsSuburbChecker::Instance()(ft);
+  bool const addAsSquareOrSuburb = includeSquaresAndSuburbs && isSquareOrSuburb;
+
+  if (!addAsStreet && !addAsSquareOrSuburb)
+    return;
+
+  string name;
+  ft.GetReadableName(name);
+  if (name.empty())
+    return;
+
+  streets.emplace_back(ft.GetID(), feature::GetMinDistanceMeters(ft, center), name, ft.GetNames());
+}
+
+// Following methods join only non-empty arguments in order with
+// commas.
+string Join(string const & s)
+{
+  return s;
+}
+
+template <typename... Args>
+string Join(string const & s, Args &&... args)
+{
+  auto const tail = Join(forward<Args>(args)...);
+  if (s.empty())
+    return tail;
+  if (tail.empty())
+    return s;
+  return s + ", " + tail;
+}
+}  // namespace
+
+ReverseGeocoder::ReverseGeocoder(DataSource const & dataSource) : m_dataSource(dataSource) {}
+
+// static
+optional<uint32_t> ReverseGeocoder::GetMatchedStreetIndex(string const & keyName,
+                                                          vector<Street> const & streets)
+{
+  auto matchStreet = [&](bool ignoreStreetSynonyms) -> optional<uint32_t> {
+    // Find the exact match or the best match in kSimilarityTresholdPercent limit.
+    uint32_t result;
+    size_t minPercent = kSimilarityThresholdPercent + 1;
+
+    auto const key = GetStreetNameAsKey(keyName, ignoreStreetSynonyms);
+    for (auto const & street : streets)
+    {
+      bool fullMatchFound = false;
+      street.m_multilangName.ForEach([&](int8_t /* langCode */, string const & name) {
+        if (fullMatchFound)
+          return;
+
+        strings::UniString const actual = GetStreetNameAsKey(name, ignoreStreetSynonyms);
+
+        size_t const editDistance =
+            strings::EditDistance(key.begin(), key.end(), actual.begin(), actual.end());
+
+        if (editDistance == 0)
+        {
+          result = street.m_id.m_index;
+          fullMatchFound = true;
+          return;
+        }
+
+        if (actual.empty())
+          return;
+
+        size_t const percent = editDistance * 100 / actual.size();
+        if (percent < minPercent)
+        {
+          result = street.m_id.m_index;
+          minPercent = percent;
+        }
+      });
+
+      if (fullMatchFound)
+        return result;
+    }
+
+    if (minPercent <= kSimilarityThresholdPercent)
+      return result;
+    return {};
+  };
+
+  auto result = matchStreet(false /* ignoreStreetSynonyms */);
+  if (result)
+    return result;
+  return matchStreet(true /* ignoreStreetSynonyms */);
+}
+
+// static
+void ReverseGeocoder::GetNearbyStreets(search::MwmContext & context, m2::PointD const & center,
+                                       bool includeSquaresAndSuburbs, vector<Street> & streets)
+{
+  m2::RectD const rect = GetLookupRect(center, kLookupRadiusM);
+
+  auto const addStreet = [&](FeatureType & ft) {
+    AddStreet(ft, center, includeSquaresAndSuburbs, streets);
+  };
+
+  context.ForEachFeature(rect, addStreet);
+  sort(streets.begin(), streets.end(), base::LessBy(&Street::m_distanceMeters));
+}
 
 void ReverseGeocoder::GetNearbyStreets(MwmSet::MwmId const & id, m2::PointD const & center,
                                        vector<Street> & streets) const
 {
-  m2::RectD const rect = GetLookupRect(center, kLookupRadiusM);
-
-  auto const addStreet = [&](FeatureType & ft)
-  {
-    if (ft.GetFeatureType() != feature::GEOM_LINE ||
-        !ftypes::IsStreetChecker::Instance()(ft))
-    {
-      return;
-    }
-
-    string name;
-    if (!ft.GetName(StringUtf8Multilang::kDefaultCode, name))
-      return;
-
-    ASSERT(!name.empty(), ());
-
-    streets.emplace_back(ft.GetID(), feature::GetMinDistanceMeters(ft, center), name);
-  };
-
-  MwmSet::MwmHandle mwmHandle = m_index.GetMwmHandleById(id);
+  MwmSet::MwmHandle mwmHandle = m_dataSource.GetMwmHandleById(id);
   if (mwmHandle.IsAlive())
   {
-    search::MwmContext(move(mwmHandle)).ForEachFeature(rect, addStreet);
-    sort(streets.begin(), streets.end(), my::LessBy(&Street::m_distanceMeters));
+    search::MwmContext context(move(mwmHandle));
+    GetNearbyStreets(context, center, true /* includeSquaresAndSuburbs */, streets);
   }
 }
 
@@ -61,148 +170,276 @@ void ReverseGeocoder::GetNearbyStreets(FeatureType & ft, vector<Street> & street
   GetNearbyStreets(ft.GetID().m_mwmId, feature::GetCenter(ft), streets);
 }
 
-// static
-size_t ReverseGeocoder::GetMatchedStreetIndex(strings::UniString const & keyName,
-                                              vector<Street> const & streets)
+void ReverseGeocoder::GetNearbyStreetsWaysOnly(MwmSet::MwmId const & id, m2::PointD const & center,
+                                               vector<Street> & streets) const
 {
-  // Find the exact match or the best match in kSimilarityTresholdPercent limit.
-  size_t const count = streets.size();
-  size_t result = count;
-  size_t minPercent = kSimilarityThresholdPercent + 1;
-
-  for (size_t i = 0; i < count; ++i)
+  MwmSet::MwmHandle mwmHandle = m_dataSource.GetMwmHandleById(id);
+  if (mwmHandle.IsAlive())
   {
-    strings::UniString const actual = GetStreetNameAsKey(streets[i].m_name);
-
-    size_t const editDistance = strings::EditDistance(keyName.begin(), keyName.end(),
-                                                      actual.begin(), actual.end());
-
-    if (editDistance == 0)
-      return i;
-
-    if (actual.empty())
-      continue;
-
-    size_t const percent = editDistance * 100 / actual.size();
-    if (percent < minPercent)
-    {
-      result = i;
-      minPercent = percent;
-    }
+    search::MwmContext context(move(mwmHandle));
+    GetNearbyStreets(context, center, false /* includeSquaresAndSuburbs */, streets);
   }
-
-  return result;
 }
 
-pair<vector<ReverseGeocoder::Street>, uint32_t>
-ReverseGeocoder::GetNearbyFeatureStreets(FeatureType & ft) const
+string ReverseGeocoder::GetFeatureStreetName(FeatureType & ft) const
 {
-  pair<vector<ReverseGeocoder::Street>, uint32_t> result;
+  Address addr;
+  HouseTable table(m_dataSource);
+  GetNearbyAddress(table, FromFeature(ft, 0.0 /* distMeters */), false /* ignoreEdits */, addr);
+  return addr.m_street.m_name;
+}
 
-  GetNearbyStreets(ft, result.first);
+string ReverseGeocoder::GetOriginalFeatureStreetName(FeatureID const & fid) const
+{
+  Address addr;
+  HouseTable table(m_dataSource);
+  Building bld;
 
-  HouseTable table(m_index);
-  if (!table.Get(ft.GetID(), result.second))
-    result.second = numeric_limits<uint32_t>::max();
+  m_dataSource.ReadFeature([&](FeatureType & ft) { bld = FromFeature(ft, 0.0 /* distMeters */); },
+                           fid);
+  GetNearbyAddress(table, bld, true /* ignoreEdits */, addr);
+  return addr.m_street.m_name;
+}
 
-  return result;
+bool ReverseGeocoder::GetStreetByHouse(FeatureType & house, FeatureID & streetId) const
+{
+  Address addr;
+  HouseTable table(m_dataSource);
+  if (GetNearbyAddress(table, FromFeature(house, 0.0 /* distMeters */), false /* ignoreEdits */, addr))
+  {
+    streetId = addr.m_street.m_id;
+    return true;
+  }
+
+  return false;
 }
 
 void ReverseGeocoder::GetNearbyAddress(m2::PointD const & center, Address & addr) const
 {
-  vector<Building> buildings;
-  GetNearbyBuildings(center, buildings);
+  return GetNearbyAddress(center, kLookupRadiusM, addr);
+}
 
-  HouseTable table(m_index);
+void ReverseGeocoder::GetNearbyAddress(m2::PointD const & center, double maxDistanceM,
+                                       Address & addr) const
+{
+  vector<Building> buildings;
+  GetNearbyBuildings(center, maxDistanceM, buildings);
+
+  HouseTable table(m_dataSource);
   size_t triesCount = 0;
 
   for (auto const & b : buildings)
   {
     // It's quite enough to analize nearest kMaxNumTriesToApproxAddress houses for the exact nearby address.
     // When we can't guarantee suitable address for the point with distant houses.
-    if (GetNearbyAddress(table, b, addr) || (++triesCount == kMaxNumTriesToApproxAddress))
+    if (GetNearbyAddress(table, b, false /* ignoreEdits */, addr) ||
+        (++triesCount == kMaxNumTriesToApproxAddress))
       break;
   }
 }
 
-bool ReverseGeocoder::GetExactAddress(FeatureType const & ft, Address & addr) const
+bool ReverseGeocoder::GetExactAddress(FeatureType & ft, Address & addr) const
 {
   if (ft.GetHouseNumber().empty())
     return false;
-  HouseTable table(m_index);
-  return GetNearbyAddress(table, FromFeature(ft, 0.0 /* distMeters */), addr);
+  HouseTable table(m_dataSource);
+  return GetNearbyAddress(table, FromFeature(ft, 0.0 /* distMeters */), false /* ignoreEdits */,
+                          addr);
 }
 
-bool ReverseGeocoder::GetNearbyAddress(HouseTable & table, Building const & bld,
+bool ReverseGeocoder::GetExactAddress(FeatureID const & fid, Address & addr) const
+{
+  bool res;
+  m_dataSource.ReadFeature([&](FeatureType & ft) { res = GetExactAddress(ft, addr); }, fid);
+  return res;
+}
+
+bool ReverseGeocoder::GetNearbyAddress(HouseTable & table, Building const & bld, bool ignoreEdits,
                                        Address & addr) const
 {
   string street;
-  if (osm::Editor::Instance().GetEditedFeatureStreet(bld.m_id, street))
+  if (!ignoreEdits && osm::Editor::Instance().GetEditedFeatureStreet(bld.m_id, street))
   {
     addr.m_building = bld;
     addr.m_street.m_name = street;
     return true;
   }
 
-  uint32_t ind;
-  if (!table.Get(bld.m_id, ind))
+  uint32_t streetId;
+  HouseToStreetTable::StreetIdType type;
+  if (!table.Get(bld.m_id, type, streetId))
     return false;
 
-  vector<Street> streets;
-  GetNearbyStreets(bld.m_id.m_mwmId, bld.m_center, streets);
-  if (ind < streets.size())
+  switch (type)
   {
+  case HouseToStreetTable::StreetIdType::Index:
+  {
+    vector<Street> streets;
+    // Get streets without squares and suburbs for backward compatibility with data.
+    GetNearbyStreetsWaysOnly(bld.m_id.m_mwmId, bld.m_center, streets);
+    if (streetId < streets.size())
+    {
+      addr.m_building = bld;
+      addr.m_street = streets[streetId];
+      return true;
+    }
+    LOG(LWARNING, ("Out of bound street index", streetId, "for", bld.m_id));
+    return false;
+  }
+  case HouseToStreetTable::StreetIdType::FeatureId:
+  {
+    FeatureID streetFeature(bld.m_id.m_mwmId, streetId);
+    CHECK(bld.m_id.m_mwmId.IsAlive(), (bld.m_id.m_mwmId));
+    m_dataSource.ReadFeature(
+        [&bld, &addr](FeatureType & ft) {
+          string streetName;
+          ft.GetReadableName(streetName);
+          double distance = feature::GetMinDistanceMeters(ft, bld.m_center);
+          addr.m_street = Street(ft.GetID(), distance, streetName, ft.GetNames());
+        },
+        streetFeature);
+    CHECK(!addr.m_street.m_multilangName.IsEmpty(), (bld.m_id.m_mwmId, streetId));
     addr.m_building = bld;
-    addr.m_street = streets[ind];
     return true;
   }
-  else
+  case HouseToStreetTable::StreetIdType::None:
   {
-    LOG(LWARNING, ("Out of bound street index", ind, "for", bld.m_id));
-    return false;
+    // Prior call of table.Get() is expected to fail.
+    UNREACHABLE();
   }
+  }
+  UNREACHABLE();
 }
 
-void ReverseGeocoder::GetNearbyBuildings(m2::PointD const & center, vector<Building> & buildings) const
+void ReverseGeocoder::GetNearbyBuildings(m2::PointD const & center, double radius,
+                                         vector<Building> & buildings) const
 {
-  m2::RectD const rect = GetLookupRect(center, kLookupRadiusM);
-
-  auto const addBuilding = [&](FeatureType & ft)
-  {
-    if (!ft.GetHouseNumber().empty())
-      buildings.push_back(FromFeature(ft, feature::GetMinDistanceMeters(ft, center)));
+  auto const addBuilding = [&](FeatureType & ft) {
+    auto const distance = feature::GetMinDistanceMeters(ft, center);
+    if (!ft.GetHouseNumber().empty() && distance <= radius)
+      buildings.push_back(FromFeature(ft, distance));
   };
 
-  m_index.ForEachInRect(addBuilding, rect, kQueryScale);
-  sort(buildings.begin(), buildings.end(), my::LessBy(&Building::m_distanceMeters));
+  auto const stop = [&]() { return buildings.size() >= kMaxNumTriesToApproxAddress; };
+
+  m_dataSource.ForClosestToPoint(addBuilding, stop, center, radius, kQueryScale);
+  sort(buildings.begin(), buildings.end(), base::LessBy(&Building::m_distanceMeters));
 }
 
 // static
-ReverseGeocoder::Building ReverseGeocoder::FromFeature(FeatureType const & ft, double distMeters)
+ReverseGeocoder::RegionAddress ReverseGeocoder::GetNearbyRegionAddress(
+    m2::PointD const & center, storage::CountryInfoGetter const & infoGetter,
+    CityFinder & cityFinder)
+{
+  RegionAddress addr;
+  addr.m_featureId = cityFinder.GetCityFeatureID(center);
+  if (!addr.m_featureId.IsValid() ||
+      addr.m_featureId.m_mwmId.GetInfo()->GetType() == MwmInfo::WORLD)
+  {
+    addr.m_countryId = infoGetter.GetRegionCountryId(center);
+  }
+  return addr;
+}
+
+string ReverseGeocoder::GetLocalizedRegionAddress(RegionAddress const & addr,
+                                                  RegionInfoGetter const & nameGetter) const
+{
+  if (!addr.IsValid())
+    return {};
+
+  string addrStr;
+  if (addr.m_featureId.IsValid())
+  {
+    m_dataSource.ReadFeature([&addrStr](FeatureType & ft) { ft.GetReadableName(addrStr); },
+                             addr.m_featureId);
+
+    auto const countryName = addr.GetCountryName();
+    if (!countryName.empty())
+    {
+      vector<string> nameParts;
+      nameGetter.GetLocalizedFullName(countryName, nameParts);
+      nameParts.insert(nameParts.begin(), addrStr);
+      nameParts.erase(unique(nameParts.begin(), nameParts.end()), nameParts.end());
+      addrStr = strings::JoinStrings(nameParts, ", ");
+    }
+  }
+  else
+  {
+    ASSERT(storage::IsCountryIdValid(addr.m_countryId), ());
+    addrStr = nameGetter.GetLocalizedFullName(addr.m_countryId);
+  }
+
+  return addrStr;
+}
+
+// static
+ReverseGeocoder::Building ReverseGeocoder::FromFeature(FeatureType & ft, double distMeters)
 {
   return { ft.GetID(), distMeters, ft.GetHouseNumber(), feature::GetCenter(ft) };
 }
 
-// static
-m2::RectD ReverseGeocoder::GetLookupRect(m2::PointD const & center, double radiusM)
+bool ReverseGeocoder::HouseTable::Get(FeatureID const & fid,
+                                      HouseToStreetTable::StreetIdType & type,
+                                      uint32_t & streetIndex)
 {
-  return MercatorBounds::RectByCenterXYAndSizeInMeters(center, radiusM);
-}
+  if (feature::FakeFeatureIds::IsEditorCreatedFeature(fid.m_index))
+    return false;
 
-bool ReverseGeocoder::HouseTable::Get(FeatureID const & fid, uint32_t & streetIndex)
-{
   if (!m_table || m_handle.GetId() != fid.m_mwmId)
   {
-    m_handle = m_index.GetMwmHandleById(fid.m_mwmId);
+    m_handle = m_dataSource.GetMwmHandleById(fid.m_mwmId);
     if (!m_handle.IsAlive())
     {
       LOG(LWARNING, ("MWM", fid, "is dead"));
       return false;
     }
-    m_table = search::HouseToStreetTable::Load(*m_handle.GetValue<MwmValue>());
+    m_table = search::HouseToStreetTable::Load(*m_handle.GetValue());
   }
 
+  type = m_table->GetStreetIdType();
   return m_table->Get(fid.m_index, streetIndex);
+}
+
+string ReverseGeocoder::Address::FormatAddress() const
+{
+  // Check whether we can format address according to the query type
+  // and actual address distance.
+
+  // TODO (@m, @y): we can add "Near" prefix here in future according
+  // to the distance.
+  if (m_building.m_distanceMeters > 200.0)
+    return {};
+
+  return Join(m_street.m_name, m_building.m_name);
+}
+
+bool ReverseGeocoder::RegionAddress::IsValid() const
+{
+  return storage::IsCountryIdValid(m_countryId) || m_featureId.IsValid();
+}
+
+string ReverseGeocoder::RegionAddress::GetCountryName() const
+{
+  if (m_featureId.IsValid() && m_featureId.m_mwmId.GetInfo()->GetType() != MwmInfo::WORLD)
+    return m_featureId.m_mwmId.GetInfo()->GetCountryName();
+  return m_countryId;
+}
+
+bool ReverseGeocoder::RegionAddress::operator==(RegionAddress const & rhs) const
+{
+  return m_countryId == rhs.m_countryId && m_featureId == rhs.m_featureId;
+}
+
+bool ReverseGeocoder::RegionAddress::operator!=(RegionAddress const & rhs) const
+{
+  return !(*this == rhs);
+}
+
+bool ReverseGeocoder::RegionAddress::operator<(RegionAddress const & rhs) const
+{
+  if (m_countryId != rhs.m_countryId)
+    return m_countryId < rhs.m_countryId;
+  return m_featureId < rhs.m_featureId;
 }
 
 string DebugPrint(ReverseGeocoder::Object const & obj)

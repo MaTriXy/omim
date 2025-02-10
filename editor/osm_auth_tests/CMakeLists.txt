@@ -1,35 +1,29 @@
+project(osm_auth_tests)
+
 set(
   SRC
   osm_auth_tests.cpp
   server_api_test.cpp
 )
 
-omim_add_test(osm_auth_tests ${SRC})
+omim_add_test(${PROJECT_NAME} ${SRC})
 
 omim_link_libraries(
-  osm_auth_tests
+  ${PROJECT_NAME}
   editor
+  indexer
   platform
   platform_tests_support
   geometry
   coding
   base
   pugixml
+  protobuf
+  jansson
+  icu
   oauthcpp
-  tomcrypt
-)
-
-target_link_libraries(
-  osm_auth_tests
+  stats_client
+  succinct
+  ${LIBZ}
   ${Qt5Widgets_LIBRARIES}
 )
-
-if (${PLATFORM_MAC})
-  target_link_libraries(
-    osm_auth_tests
-    ${Qt5Widgets_LIBRARIES}
-    "-framework Cocoa"
-    "-framework IOKit"
-    "-framework SystemConfiguration"
-  )
-endif()

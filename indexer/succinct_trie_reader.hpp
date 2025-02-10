@@ -6,14 +6,26 @@
 
 #include "base/assert.hpp"
 #include "base/bits.hpp"
+#include "base/checked_cast.hpp"
 #include "base/macros.hpp"
 #include "base/string_utils.hpp"
 
-#include "std/unique_ptr.hpp"
-#include "std/utility.hpp"
-#include "std/vector.hpp"
+#include <cstdint>
+#include <memory>
+#include <utility>
+#include <vector>
 
+#if defined(__clang__)
+ #pragma clang diagnostic push
+ #pragma clang diagnostic ignored "-Wunused-private-field"
+#endif
+ 
 #include "3party/succinct/rs_bit_vector.hpp"
+ 
+#if defined(__clang__)
+  #pragma clang diagnostic pop
+#endif
+
 
 namespace trie
 {
@@ -83,7 +95,7 @@ private:
     m_numNodes = ReadVarUint<uint32_t, ReaderSource<TReader>>(src);
 
     BitReader<ReaderSource<TReader>> bitReader(src);
-    vector<bool> bv(2 * m_numNodes + 1);
+    std::vector<bool> bv(2 * m_numNodes + 1);
     // Convert the level order representation into the external node representation.
     bv[0] = 1;
     for (size_t i = 0; i < 2 * m_numNodes; ++i)
@@ -101,10 +113,10 @@ private:
       // ids and offsets are delta-encoded
       id += ReadVarUint<uint32_t, ReaderSource<TReader>>(src);
       offset += ReadVarUint<uint32_t, ReaderSource<TReader>>(src);
-      m_finalNodeIndex[id] = i;
+      m_finalNodeIndex[id] = base::asserted_cast<int>(i);
       m_offsetTable[i] = offset;
     }
-    m_offsetTable[numFinalNodes] = src.Size();
+    m_offsetTable[numFinalNodes] = base::checked_cast<uint32_t>(src.Size());
     m_reader = m_reader.SubReader(src.Pos(), src.Size());
   }
 
@@ -120,8 +132,8 @@ private:
   // m_finalNodeIndex[i] is the 0-based index of the i'th
   // node in the list of all final nodes, or -1 if the
   // node is not final.
-  vector<int> m_finalNodeIndex;
-  vector<uint32_t> m_offsetTable;
+  std::vector<int> m_finalNodeIndex;
+  std::vector<uint32_t> m_offsetTable;
 };
 
 template <class TReader, class TValueReader>
@@ -131,24 +143,25 @@ public:
   using TValue = typename TValueReader::ValueType;
   using TCommonData = TopologyAndOffsets<TReader, TValueReader>;
 
-  SuccinctTrieIterator(TReader const & reader, shared_ptr<TCommonData> common,
+  SuccinctTrieIterator(TReader const & reader, std::shared_ptr<TCommonData> common,
                        uint32_t nodeBitPosition)
     : m_reader(reader), m_common(common), m_nodeBitPosition(nodeBitPosition), m_valuesRead(false)
   {
   }
 
-  unique_ptr<SuccinctTrieIterator> Clone() const
+  std::unique_ptr<SuccinctTrieIterator> Clone() const
   {
-    return make_unique<SuccinctTrieIterator>(m_reader, m_common, m_nodeBitPosition);
+    return std::make_unique<SuccinctTrieIterator>(m_reader, m_common, m_nodeBitPosition);
   }
 
-  unique_ptr<SuccinctTrieIterator> GoToEdge(size_t i) const
+  std::unique_ptr<SuccinctTrieIterator> GoToEdge(size_t i) const
   {
     ASSERT_LESS(i, 2, ("Bad edge id of a binary trie."));
     ASSERT_EQUAL(m_common->GetTopology()[m_nodeBitPosition - 1], 1, (m_nodeBitPosition));
 
     // rank(x) returns the number of ones in [0, x) but we count bit positions from 1
-    uint32_t childBitPosition = 2 * m_common->GetTopology().rank(m_nodeBitPosition);
+    uint32_t childBitPosition =
+        base::asserted_cast<uint32_t>(2 * m_common->GetTopology().rank(m_nodeBitPosition));
     if (i == 1)
       ++childBitPosition;
     if (childBitPosition > 2 * m_common->NumNodes() ||
@@ -156,11 +169,11 @@ public:
     {
       return nullptr;
     }
-    return make_unique<SuccinctTrieIterator>(m_reader, m_common, childBitPosition);
+    return std::make_unique<SuccinctTrieIterator>(m_reader, m_common, childBitPosition);
   }
 
   template <typename TEncodingReader>
-  unique_ptr<SuccinctTrieIterator> GoToString(TEncodingReader & bitEncoding, uint32_t numBits)
+  std::unique_ptr<SuccinctTrieIterator> GoToString(TEncodingReader & bitEncoding, uint32_t numBits)
   {
     ReaderSource<TEncodingReader> src(bitEncoding);
 
@@ -182,19 +195,19 @@ public:
     return ret;
   }
 
-  unique_ptr<SuccinctTrieIterator> GoToString(strings::UniString const & s)
+  std::unique_ptr<SuccinctTrieIterator> GoToString(strings::UniString const & s)
   {
-    vector<uint8_t> buf;
+    std::vector<uint8_t> buf;
     uint32_t numBits;
     {
-      MemWriter<vector<uint8_t>> writer(buf);
+      MemWriter<std::vector<uint8_t>> writer(buf);
       numBits = m_common->GetEncoding().EncodeAndWrite(writer, s);
     }
     MemReader reader(&buf[0], buf.size());
     return GoToString(reader, numBits);
   }
 
-  uint32_t NumValues()
+  size_t NumValues()
   {
     if (!m_valuesRead)
       ReadValues();
@@ -216,12 +229,13 @@ private:
       return;
     m_valuesRead = true;
     // Back to 0-based indices.
-    uint32_t m_nodeId = m_common->GetTopology().rank(m_nodeBitPosition) - 1;
+    uint32_t m_nodeId =
+        base::checked_cast<uint32_t>(m_common->GetTopology().rank(m_nodeBitPosition) - 1);
     if (!m_common->NodeIsFinal(m_nodeId))
       return;
     uint32_t offset = m_common->Offset(m_nodeId);
     uint32_t size = m_common->ValueListSize(m_nodeId);
-    ReaderPtr<TReader> subReaderPtr(unique_ptr<TReader>(static_cast<TReader*>(m_reader.CreateSubReader(offset, size).release())));
+    ReaderPtr<TReader> subReaderPtr(std::unique_ptr<TReader>(static_cast<TReader*>(m_reader.CreateSubReader(offset, size).release())));
     ReaderSource<ReaderPtr<TReader>> src(subReaderPtr);
     while (src.Size() > 0)
     {
@@ -232,25 +246,25 @@ private:
   }
 
   TReader const & m_reader;
-  shared_ptr<TCommonData> m_common;
+  std::shared_ptr<TCommonData> m_common;
 
   // The bit with this 1-based index represents this node
   // in the external node representation of binary trie.
   uint32_t m_nodeBitPosition;
 
-  vector<TValue> m_values;
+  std::vector<TValue> m_values;
   bool m_valuesRead;
 };
 
 template <typename TReader, typename TValueReader>
-unique_ptr<SuccinctTrieIterator<TReader, TValueReader>> ReadSuccinctTrie(
+std::unique_ptr<SuccinctTrieIterator<TReader, TValueReader>> ReadSuccinctTrie(
     TReader const & reader, TValueReader valueReader = TValueReader())
 {
   using TCommonData = TopologyAndOffsets<TReader, TValueReader>;
   using TIter = SuccinctTrieIterator<TReader, TValueReader>;
 
-  shared_ptr<TCommonData> common(new TCommonData(reader, valueReader));
-  return make_unique<TIter>(common->GetReader(), common, 1 /* bitPosition */);
+  std::shared_ptr<TCommonData> common(new TCommonData(reader, valueReader));
+  return std::make_unique<TIter>(common->GetReader(), common, 1 /* bitPosition */);
 }
 
 }  // namespace trie

@@ -1,113 +1,104 @@
-#include "base/assert.hpp"
 #include "base/string_utils.hpp"
 
-#include "std/algorithm.hpp"
-#include "std/cmath.hpp"
-#include "std/iomanip.hpp"
-#include "std/iterator.hpp"
-#include "std/target_os.hpp"
+#include "base/assert.hpp"
+
+#include <algorithm>
+#include <cmath>
+#include <iomanip>
+#include <iterator>
+
+#if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wunused-local-typedef"
+#endif
 
 #include <boost/algorithm/string/trim.hpp>
 
+#if defined(__clang__)
+#pragma clang diagnostic pop
+#endif
+
 namespace strings
 {
+namespace
+{
+template <typename T>
+T RealConverter(char const * start, char ** stop);
+
+template <>
+float RealConverter<float>(char const * start, char ** stop)
+{
+  return std::strtof(start, stop);
+}
+
+template <>
+double RealConverter<double>(char const * start, char ** stop)
+{
+  return std::strtod(start, stop);
+}
+
+template <typename T>
+bool ToReal(char const * start, T & result)
+{
+  char * stop;
+  auto const tmp = RealConverter<T>(start, &stop);
+
+  if (*stop != 0 || start == stop || !std::isfinite(tmp))
+    return false;
+
+  result = tmp;
+  return true;
+}
+
+}  // namespace
+
 bool UniString::IsEqualAscii(char const * s) const
 {
-  return (size() == strlen(s) && equal(begin(), end(), s));
+  return (size() == strlen(s) && std::equal(begin(), end(), s));
 }
 
 SimpleDelimiter::SimpleDelimiter(char const * delims)
 {
-  string const s(delims);
-  string::const_iterator it = s.begin();
+  std::string const s(delims);
+  std::string::const_iterator it = s.begin();
   while (it != s.end())
     m_delims.push_back(utf8::unchecked::next(it));
 }
 
-SimpleDelimiter::SimpleDelimiter(char delim)
-{
-  m_delims.push_back(delim);
-}
+SimpleDelimiter::SimpleDelimiter(char delim) { m_delims.push_back(delim); }
 
 bool SimpleDelimiter::operator()(UniChar c) const
 {
-  return find(m_delims.begin(), m_delims.end(), c) != m_delims.end();
+  return std::find(m_delims.begin(), m_delims.end(), c) != m_delims.end();
 }
 
-UniChar LastUniChar(string const & s)
+UniChar LastUniChar(std::string const & s)
 {
   if (s.empty())
     return 0;
-  utf8::unchecked::iterator<string::const_iterator> iter(s.end());
+  utf8::unchecked::iterator<std::string::const_iterator> iter(s.end());
   --iter;
   return *iter;
 }
 
-namespace
+bool to_size_t(char const * start, size_t & i, int base)
 {
-template <typename T, typename TResult>
-bool IntegerCheck(char const * start, char const * stop, T x, TResult & out)
-{
-  if (errno != EINVAL && *stop == 0 && start != stop)
-  {
-    out = static_cast<TResult>(x);
-    return static_cast<T>(out) == x;
-  }
-  errno = 0;
-  return false;
-}
-}  // namespace
+  uint64_t num = 0;
+  if (!to_uint64(start, num, base))
+    return false;
 
-bool to_int(char const * start, int & i, int base /*= 10*/)
-{
-  char * stop;
-  errno = 0; // Library functions do not reset it.
-  long const v = strtol(start, &stop, base);
-  return IntegerCheck(start, stop, v, i);
+  i = static_cast<size_t>(num);
+  return true;
 }
 
-bool to_uint(char const * start, unsigned int & i, int base /*= 10*/)
+bool to_float(char const * start, float & f)
 {
-  char * stop;
-  errno = 0; // Library functions do not reset it.
-  unsigned long const v = strtoul(start, &stop, base);
-  return IntegerCheck(start, stop, v, i);
+  return ToReal(start, f);
 }
 
-bool to_uint64(char const * s, uint64_t & i)
+bool to_double(char const * start, double & d)
 {
-  char * stop;
-#ifdef OMIM_OS_WINDOWS_NATIVE
-  i = _strtoui64(s, &stop, 10);
-#else
-  i = strtoull(s, &stop, 10);
-#endif
-  return *stop == 0 && s != stop;
-}
-
-bool to_int64(char const * s, int64_t & i)
-{
-  char * stop;
-#ifdef OMIM_OS_WINDOWS_NATIVE
-  i = _strtoi64(s, &stop, 10);
-#else
-  i = strtoll(s, &stop, 10);
-#endif
-  return *stop == 0 && s != stop;
-}
-
-bool to_float(char const * s, float & f)
-{
-  char * stop;
-  f = strtof(s, &stop);
-  return *stop == 0 && s != stop && isfinite(f);
-}
-
-bool to_double(char const * s, double & d)
-{
-  char * stop;
-  d = strtod(s, &stop);
-  return *stop == 0 && s != stop && isfinite(d);
+  return ToReal(start, d);
 }
 
 UniString MakeLowerCase(UniString const & s)
@@ -117,18 +108,18 @@ UniString MakeLowerCase(UniString const & s)
   return result;
 }
 
-void MakeLowerCaseInplace(string & s)
+void MakeLowerCaseInplace(std::string & s)
 {
   UniString uniStr;
-  utf8::unchecked::utf8to32(s.begin(), s.end(), back_inserter(uniStr));
+  utf8::unchecked::utf8to32(s.begin(), s.end(), std::back_inserter(uniStr));
   MakeLowerCaseInplace(uniStr);
   s.clear();
   utf8::unchecked::utf32to8(uniStr.begin(), uniStr.end(), back_inserter(s));
 }
 
-string MakeLowerCase(string const & s)
+std::string MakeLowerCase(std::string const & s)
 {
-  string result(s);
+  std::string result(s);
   MakeLowerCaseInplace(result);
   return result;
 }
@@ -140,7 +131,14 @@ UniString Normalize(UniString const & s)
   return result;
 }
 
-void NormalizeDigits(string & utf8)
+std::string Normalize(std::string const & s)
+{
+  auto uniString = MakeUniString(s);
+  NormalizeInplace(uniString);
+  return ToUtf8(uniString);
+}
+
+void NormalizeDigits(std::string & utf8)
 {
   size_t const n = utf8.size();
   size_t const m = n >= 2 ? n - 2 : 0;
@@ -202,31 +200,71 @@ char ascii_to_lower(char in)
     return (in + diff);
   return in;
 }
+}  // namespace
+
+void AsciiToLower(std::string & s) { transform(s.begin(), s.end(), s.begin(), &ascii_to_lower); }
+
+std::string & TrimLeft(std::string & s)
+{
+  s.erase(s.begin(), std::find_if(s.cbegin(), s.cend(), [](auto c) { return !std::isspace(c); }));
+  return s;
 }
 
-void AsciiToLower(string & s) { transform(s.begin(), s.end(), s.begin(), &ascii_to_lower); }
-void Trim(string & s) { boost::trim(s); }
-void Trim(string & s, char const * anyOf) { boost::trim_if(s, boost::is_any_of(anyOf)); }
-bool EqualNoCase(string const & s1, string const & s2)
+std::string & TrimRight(std::string & s)
+{
+  s.erase(std::find_if(s.crbegin(), s.crend(), [](auto c) { return !std::isspace(c); }).base(),
+          s.end());
+  return s;
+}
+
+std::string & Trim(std::string & s) { return TrimLeft(TrimRight(s)); }
+
+std::string & Trim(std::string & s, char const * anyOf)
+{
+  boost::trim_if(s, boost::is_any_of(anyOf));
+  return s;
+}
+
+bool ReplaceFirst(std::string & str, std::string const & from, std::string const & to)
+{
+  auto const pos = str.find(from);
+  if (pos == std::string::npos)
+    return false;
+
+  str.replace(pos, from.length(), to);
+  return true;
+}
+
+bool ReplaceLast(std::string & str, std::string const & from, std::string const & to)
+{
+  auto const pos = str.rfind(from);
+  if (pos == std::string::npos)
+    return false;
+
+  str.replace(pos, from.length(), to);
+  return true;
+}
+
+bool EqualNoCase(std::string const & s1, std::string const & s2)
 {
   return MakeLowerCase(s1) == MakeLowerCase(s2);
 }
 
-UniString MakeUniString(string const & utf8s)
+UniString MakeUniString(std::string const & utf8s)
 {
   UniString result;
-  utf8::unchecked::utf8to32(utf8s.begin(), utf8s.end(), back_inserter(result));
+  utf8::unchecked::utf8to32(utf8s.begin(), utf8s.end(), std::back_inserter(result));
   return result;
 }
 
-string ToUtf8(UniString const & s)
+std::string ToUtf8(UniString const & s)
 {
-  string result;
+  std::string result;
   utf8::unchecked::utf32to8(s.begin(), s.end(), back_inserter(result));
   return result;
 }
 
-bool IsASCIIString(string const & str)
+bool IsASCIIString(std::string const & str)
 {
   for (size_t i = 0; i < str.size(); ++i)
     if (str[i] & 0x80)
@@ -235,21 +273,45 @@ bool IsASCIIString(string const & str)
 }
 
 bool IsASCIIDigit(UniChar c) { return c >= '0' && c <= '9'; }
-bool IsASCIILatin(UniChar c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'); }
-bool StartsWith(UniString const & s, UniString const & p)
+
+bool IsASCIISpace(UniChar c)
 {
-  if (p.size() > s.size())
-    return false;
-  for (size_t i = 0; i < p.size(); ++i)
-  {
-    if (s[i] != p[i])
-      return false;
-  }
-  return true;
+  return c == ' ' || c == '\f' || c == '\n' || c == '\r' || c == '\t' || c == '\v';
 }
 
-bool StartsWith(string const & s1, char const * s2) { return (s1.compare(0, strlen(s2), s2) == 0); }
-bool EndsWith(string const & s1, char const * s2)
+bool IsASCIINumeric(std::string const & str)
+{
+  if (str.empty())
+    return false;
+  return std::all_of(str.begin(), str.end(), strings::IsASCIIDigit);
+}
+
+bool IsASCIILatin(UniChar c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'); }
+
+bool StartsWith(UniString const & s, UniString const & p)
+{
+  return StartsWith(s.begin(), s.end(), p.begin(), p.end());
+}
+
+bool StartsWith(std::string const & s1, char const * s2)
+{
+  return (s1.compare(0, strlen(s2), s2) == 0);
+}
+
+bool StartsWith(std::string const & s1, std::string const & s2)
+{
+  return (s1.compare(0, s2.length(), s2) == 0);
+}
+
+bool EndsWith(UniString const & s1, UniString const & s2)
+{
+  if (s1.size() < s2.size())
+    return false;
+
+  return std::equal(s1.end() - s2.size(), s1.end(), s2.begin());
+}
+
+bool EndsWith(std::string const & s1, char const * s2)
 {
   size_t const n = s1.size();
   size_t const m = strlen(s2);
@@ -258,29 +320,49 @@ bool EndsWith(string const & s1, char const * s2)
   return (s1.compare(n - m, m, s2) == 0);
 }
 
-bool EndsWith(string const & s1, string const & s2)
+bool EndsWith(std::string const & s1, std::string const & s2)
 {
   return s1.size() >= s2.size() && s1.compare(s1.size() - s2.size(), s2.size(), s2) == 0;
 }
 
-string to_string_dac(double d, int dac)
+bool EatPrefix(std::string & s, std::string const & prefix)
 {
-  dac = min(numeric_limits<double>::digits10, dac);
+  if (!StartsWith(s, prefix))
+    return false;
 
-  ostringstream ss;
+  CHECK_LESS_OR_EQUAL(prefix.size(), s.size(), ());
+  s = s.substr(prefix.size());
+  return true;
+}
+
+bool EatSuffix(std::string & s, std::string const & suffix)
+{
+  if (!EndsWith(s, suffix))
+    return false;
+
+  CHECK_LESS_OR_EQUAL(suffix.size(), s.size(), ());
+  s = s.substr(0, s.size() - suffix.size());
+  return true;
+}
+
+std::string to_string_dac(double d, int dac)
+{
+  dac = std::min(std::numeric_limits<double>::digits10, dac);
+
+  std::ostringstream ss;
 
   if (d < 1. && d > -1.)
   {
-    string res;
+    std::string res;
     if (d >= 0.)
     {
-      ss << setprecision(dac + 1) << d + 1;
+      ss << std::setprecision(dac + 1) << d + 1;
       res = ss.str();
       res[0] = '0';
     }
     else
     {
-      ss << setprecision(dac + 1) << d - 1;
+      ss << std::setprecision(dac + 1) << d - 1;
       res = ss.str();
       res[1] = '0';
     }
@@ -289,19 +371,19 @@ string to_string_dac(double d, int dac)
 
   // Calc digits before comma (log10).
   double fD = fabs(d);
-  while (fD >= 1.0 && dac < numeric_limits<double>::digits10)
+  while (fD >= 1.0 && dac < std::numeric_limits<double>::digits10)
   {
     fD /= 10.0;
     ++dac;
   }
 
-  ss << setprecision(dac) << d;
+  ss << std::setprecision(dac) << d;
   return ss.str();
 }
 
-bool IsHTML(string const & utf8)
+bool IsHTML(std::string const & utf8)
 {
-  string::const_iterator it = utf8.begin();
+  std::string::const_iterator it = utf8.begin();
   size_t ltCount = 0;
   size_t gtCount = 0;
   while (it != utf8.end())
@@ -315,15 +397,17 @@ bool IsHTML(string const & utf8)
   return (ltCount > 0 && gtCount > 0);
 }
 
-bool AlmostEqual(string const & str1, string const & str2, size_t mismatchedCount)
+bool AlmostEqual(std::string const & str1, std::string const & str2, size_t mismatchedCount)
 {
-  pair<string::const_iterator, string::const_iterator> mis(str1.begin(), str2.begin());
+  std::pair<std::string::const_iterator, std::string::const_iterator> mis(str1.begin(),
+                                                                          str2.begin());
   auto const str1End = str1.end();
   auto const str2End = str2.end();
 
   for (size_t i = 0; i <= mismatchedCount; ++i)
   {
-    auto const end = mis.first + min(distance(mis.first, str1End), distance(mis.second, str2End));
+    auto const end =
+        mis.first + std::min(distance(mis.first, str1End), distance(mis.second, str2End));
     mis = mismatch(mis.first, end, mis.second);
     if (mis.first == str1End && mis.second == str2End)
       return true;
@@ -335,13 +419,13 @@ bool AlmostEqual(string const & str1, string const & str2, size_t mismatchedCoun
   return false;
 }
 
-void ParseCSVRow(string const & s, char const delimiter, vector<string> & target)
+void ParseCSVRow(std::string const & s, char const delimiter, std::vector<std::string> & target)
 {
   target.clear();
-  using It = TokenizeIterator<SimpleDelimiter, string::const_iterator, true>;
+  using It = TokenizeIterator<SimpleDelimiter, std::string::const_iterator, true>;
   for (It it(s, SimpleDelimiter(delimiter)); it; ++it)
   {
-    string column = *it;
+    std::string column = *it;
     strings::Trim(column);
     target.push_back(move(column));
   }

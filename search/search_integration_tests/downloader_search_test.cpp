@@ -5,24 +5,35 @@
 #include "search/downloader_search_callback.hpp"
 #include "search/mode.hpp"
 #include "search/result.hpp"
-#include "search/search_integration_tests/helpers.hpp"
+#include "search/search_tests_support/helpers.hpp"
 #include "search/search_tests_support/test_results_matching.hpp"
 #include "search/search_tests_support/test_search_request.hpp"
 
 #include "storage/downloader_search_params.hpp"
+#include "storage/downloader_queue_universal.hpp"
 #include "storage/map_files_downloader.hpp"
+#include "storage/queued_country.hpp"
 #include "storage/storage.hpp"
+#include "storage/storage_defines.hpp"
+
+#include "platform/downloader_defines.hpp"
 
 #include "geometry/rect2d.hpp"
 
 #include "base/logging.hpp"
 #include "base/macros.hpp"
 
-#include "std/algorithm.hpp"
-#include "std/string.hpp"
+#include <algorithm>
+#include <functional>
+#include <memory>
+#include <string>
+#include <vector>
 
 using namespace generator::tests_support;
 using namespace search::tests_support;
+using namespace std;
+
+class DataSource;
 
 namespace search
 {
@@ -77,22 +88,17 @@ class TestMapFilesDownloader : public storage::MapFilesDownloader
 {
 public:
   // MapFilesDownloader overrides:
-  void GetServersList(int64_t const mapVersion, string const & mapFileName,
-                      TServersListCallback const & callback) override
-  {
-  }
+  void Remove(storage::CountryId const & id) override {}
+  void Clear() override {}
 
-  void DownloadMapFile(vector<string> const & urls, string const & path, int64_t size,
-                       TFileDownloadedCallback const & onDownloaded,
-                       TDownloadingProgressCallback const & onProgress) override
-  {
-  }
+  storage::QueueInterface const & GetQueue() const override { return m_queue; }
 
-  TProgress GetDownloadingProgress() override { return TProgress{}; }
-  
-  bool IsIdle() override { return false; }
-  
-  void Reset() override {}
+private:
+  void GetServersList(ServersListCallback const & /* callback */) override {}
+
+  void Download(storage::QueuedCountry & queuedCountry) override {}
+
+  storage::Queue m_queue;
 };
 
 class TestDelegate : public DownloaderSearchCallback::Delegate
@@ -105,14 +111,13 @@ public:
 class DownloaderSearchRequest : public TestSearchRequest, public TestDelegate
 {
 public:
-  DownloaderSearchRequest(TestSearchEngine & engine, string const & query)
-    : TestSearchRequest(engine, MakeSearchParams(query), m2::RectD(0, 0, 1, 1) /* viewport */)
+  DownloaderSearchRequest(DataSource & dataSource, TestSearchEngine & engine, string const & query)
+    : TestSearchRequest(engine, MakeSearchParams(query))
     , m_storage(kCountriesTxt, make_unique<TestMapFilesDownloader>())
-    , m_downloaderCallback(static_cast<DownloaderSearchCallback::Delegate &>(*this),
-                           m_engine /* index */, m_engine.GetCountryInfoGetter(), m_storage,
-                           MakeDownloaderParams(query))
+    , m_downloaderCallback(static_cast<DownloaderSearchCallback::Delegate &>(*this), dataSource,
+                           m_engine.GetCountryInfoGetter(), m_storage, MakeDownloaderParams(query))
   {
-    SetCustomOnResults(bind(&DownloaderSearchRequest::OnResultsDownloader, this, _1));
+    SetCustomOnResults(bind(&DownloaderSearchRequest::OnResultsDownloader, this, placeholders::_1));
   }
 
   void OnResultsDownloader(search::Results const & results)
@@ -129,8 +134,8 @@ private:
     search::SearchParams p;
     p.m_query = query;
     p.m_inputLocale = "en";
+    p.m_viewport = m2::RectD(0, 0, 1, 1);
     p.m_mode = search::Mode::Downloader;
-    p.m_forceSearch = true;
     p.m_suggestsEnabled = false;
     return p;
   }
@@ -143,13 +148,14 @@ private:
     p.m_onResults = [this](storage::DownloaderSearchResults const & r)
     {
       CHECK(!m_endMarker, ());
-      if (r.m_endMarker)
-      {
-        m_endMarker = true;
-        return;
-      }
 
-      m_downloaderResults.insert(m_downloaderResults.end(), r.m_results.begin(), r.m_results.end());
+      auto const & results = r.m_results;
+      CHECK_GREATER_OR_EQUAL(results.size(), m_downloaderResults.size(), ());
+      CHECK(equal(m_downloaderResults.begin(), m_downloaderResults.end(), results.begin()), ());
+
+      m_downloaderResults = r.m_results;
+      if (r.m_endMarker)
+        m_endMarker = true;
     };
     return p;
   }
@@ -213,22 +219,22 @@ void TestResults(vector<T> received, vector<T> expected)
 
 UNIT_CLASS_TEST(DownloaderSearchTest, Smoke)
 {
-  AddRegion("Flatland", "Square One", m2::PointD(0.0, 0.0), m2::PointD(1.0, 1.0));
-  AddRegion("", "Square Two", m2::PointD(1.0, 1.0), m2::PointD(3.0, 3.0));
+  AddRegion("Flatland", "Squareland One", m2::PointD(0.0, 0.0), m2::PointD(1.0, 1.0));
+  AddRegion("", "Squareland Two", m2::PointD(1.0, 1.0), m2::PointD(3.0, 3.0));
   AddRegion("Wonderland", "Shortpondland", m2::PointD(-1.0, -1.0), m2::PointD(0.0, 0.0));
   AddRegion("", "Longpondland", m2::PointD(-3.0, -3.0), m2::PointD(-1.0, -1.0));
   BuildWorld();
 
   {
-    DownloaderSearchRequest request(m_engine, "square one");
+    DownloaderSearchRequest request(m_dataSource, m_engine, "squareland one");
     request.Run();
 
     TestResults(request.GetResults(),
-                {storage::DownloaderSearchResult("Square One", "Square One capital")});
+                {storage::DownloaderSearchResult("Squareland One", "Squareland One capital")});
   }
 
   {
-    DownloaderSearchRequest request(m_engine, "shortpondland");
+    DownloaderSearchRequest request(m_dataSource, m_engine, "shortpondland");
     request.Run();
 
     TestResults(request.GetResults(),
@@ -236,19 +242,19 @@ UNIT_CLASS_TEST(DownloaderSearchTest, Smoke)
   }
 
   {
-    DownloaderSearchRequest request(m_engine, "flatland");
+    DownloaderSearchRequest request(m_dataSource, m_engine, "flatland");
     request.Run();
 
     TestResults(request.GetResults(), {storage::DownloaderSearchResult("Flatland", "Flatland")});
   }
 
   {
-    DownloaderSearchRequest request(m_engine, "square");
+    DownloaderSearchRequest request(m_dataSource, m_engine, "squareland");
     request.Run();
 
     TestResults(request.GetResults(),
-                {storage::DownloaderSearchResult("Square One", "Square One capital"),
-                 storage::DownloaderSearchResult("Square Two", "Square Two capital")});
+                {storage::DownloaderSearchResult("Squareland One", "Squareland One capital"),
+                 storage::DownloaderSearchResult("Squareland Two", "Squareland Two capital")});
   }
 }
 }  // namespace

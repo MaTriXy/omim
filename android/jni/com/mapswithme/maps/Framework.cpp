@@ -1,45 +1,90 @@
-#include "Framework.hpp"
-#include "UserMarkHelper.hpp"
+#include "com/mapswithme/maps/Framework.hpp"
+
 #include "com/mapswithme/core/jni_helper.hpp"
-#include "com/mapswithme/maps/bookmarks/data/BookmarkManager.hpp"
+#include "com/mapswithme/maps/guides/Guides.hpp"
+#include "com/mapswithme/maps/UserMarkHelper.hpp"
 #include "com/mapswithme/opengl/androidoglcontextfactory.hpp"
 #include "com/mapswithme/platform/Platform.hpp"
+#include "com/mapswithme/util/FeatureIdBuilder.hpp"
+#include "com/mapswithme/util/NetworkPolicy.hpp"
+#include "com/mapswithme/vulkan/android_vulkan_context_factory.hpp"
 
 #include "map/chart_generator.hpp"
+#include "map/everywhere_search_params.hpp"
+#include "map/notifications/notification_queue.hpp"
 #include "map/user_mark.hpp"
+#include "map/purchase.hpp"
 
-#include "search/everywhere_search_params.hpp"
+#include "partners_api/ads/ads_engine.hpp"
+#include "partners_api/ads/banner.hpp"
+#include "partners_api/ads/mopub_ads.hpp"
+#include "partners_api/booking_block_params.hpp"
+#include "partners_api/megafon_countries.hpp"
 
+#include "web_api/utils.hpp"
+
+#include "storage/storage_defines.hpp"
 #include "storage/storage_helpers.hpp"
 
-#include "drape_frontend/visual_params.hpp"
 #include "drape_frontend/user_event_stream.hpp"
+#include "drape_frontend/visual_params.hpp"
+
 #include "drape/pointers.hpp"
+#include "drape/support_manager.hpp"
 #include "drape/visual_scale.hpp"
 
-#include "coding/file_container.hpp"
-#include "coding/file_name_utils.hpp"
+#include "coding/files_container.hpp"
 
 #include "geometry/angles.hpp"
+#include "geometry/mercator.hpp"
+#include "geometry/point_with_altitude.hpp"
+
+#include "indexer/feature_altitude.hpp"
+
+#include "routing/following_info.hpp"
+#include "routing/speed_camera_manager.hpp"
 
 #include "platform/country_file.hpp"
 #include "platform/local_country_file.hpp"
 #include "platform/local_country_file_utils.hpp"
 #include "platform/location.hpp"
 #include "platform/measurement_utils.hpp"
+#include "platform/network_policy.hpp"
 #include "platform/platform.hpp"
 #include "platform/preferred_languages.hpp"
 #include "platform/settings.hpp"
+#include "platform/localization.hpp"
 
-#include "base/math.hpp"
+#include "base/assert.hpp"
+#include "base/file_name_utils.hpp"
 #include "base/logging.hpp"
+#include "base/math.hpp"
 #include "base/sunrise_sunset.hpp"
 
-android::Framework * g_framework = 0;
+#include <cstdint>
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
+
+using namespace std;
+using namespace std::placeholders;
+using namespace notifications;
+
+unique_ptr<android::Framework> g_framework;
+
+namespace platform
+{
+NetworkPolicy ToNativeNetworkPolicy(JNIEnv * env, jobject obj)
+{
+  return NetworkPolicy(network_policy::GetNetworkPolicyStatus(env, obj));
+}
+}  // namespace platform
 
 using namespace storage;
 using platform::CountryFile;
 using platform::LocalCountryFile;
+using platform::ToNativeNetworkPolicy;
 
 static_assert(sizeof(int) >= 4, "Size of jint in less than 4 bytes.");
 
@@ -50,7 +95,14 @@ namespace
   return g_framework->NativeFramework();
 }
 
-jobject g_mapObjectListener;
+jobject g_placePageActivationListener = nullptr;
+int const kUndefinedTip = -1;
+
+android::AndroidVulkanContextFactory * CastFactory(drape_ptr<dp::GraphicsContextFactory> const & f)
+{
+  ASSERT(dynamic_cast<android::AndroidVulkanContextFactory *>(f.get()) != nullptr, ());
+  return static_cast<android::AndroidVulkanContextFactory *>(f.get());
+}
 }  // namespace
 
 namespace android
@@ -66,13 +118,16 @@ enum MultiTouchAction
 
 Framework::Framework()
   : m_lastCompass(0.0)
-  , m_isContextDestroyed(false)
+  , m_isSurfaceDestroyed(false)
   , m_currentMode(location::PendingPosition)
   , m_isCurrentModeInitialized(false)
   , m_isChoosePositionMode(false)
 {
-  ASSERT_EQUAL ( g_framework, 0, () );
-  g_framework = this;
+  m_work.GetTrafficManager().SetStateListener(bind(&Framework::TrafficStateChanged, this, _1));
+  m_work.GetTransitManager().SetStateListener(bind(&Framework::TransitSchemeStateChanged, this, _1));
+  m_work.GetIsolinesManager().SetStateListener(bind(&Framework::IsolinesSchemeStateChanged, this, _1));
+  m_work.GetGuidesManager().SetStateListener(bind(&Framework::GuidesLayerStateChanged, this, _1));
+  m_work.GetPowerManager().Subscribe(this);
 }
 
 void Framework::OnLocationError(int errorCode)
@@ -82,19 +137,13 @@ void Framework::OnLocationError(int errorCode)
 
 void Framework::OnLocationUpdated(location::GpsInfo const & info)
 {
+  ASSERT(IsDrapeEngineCreated(), ());
   m_work.OnLocationUpdate(info);
-
-  if (!IsDrapeEngineCreated())
-  {
-    location::EMyPositionMode const mode = GetMyPositionMode();
-    if (mode == location::PendingPosition)
-      SetMyPositionMode(location::Follow);
-  }
 }
 
 void Framework::OnCompassUpdated(location::CompassInfo const & info, bool forceRedraw)
 {
-  static double const COMPASS_THRESHOLD = my::DegToRad(1.0);
+  static double const COMPASS_THRESHOLD = base::DegToRad(1.0);
 
   /// @todo Do not emit compass bearing too often.
   /// Need to make more experiments in future.
@@ -105,49 +154,121 @@ void Framework::OnCompassUpdated(location::CompassInfo const & info, bool forceR
   }
 }
 
-void Framework::UpdateCompassSensor(int ind, float * arr)
-{
-  m_sensors[ind].Next(arr);
-}
-
 void Framework::MyPositionModeChanged(location::EMyPositionMode mode, bool routingActive)
 {
   if (m_myPositionModeSignal)
     m_myPositionModeSignal(mode, routingActive);
 }
 
-void Framework::SetMyPositionMode(location::EMyPositionMode mode)
+void Framework::TrafficStateChanged(TrafficManager::TrafficState state)
 {
-    OnMyPositionModeChanged(mode);
-    settings::Set(settings::kLocationStateMode, m_currentMode);
-    MyPositionModeChanged(m_currentMode, false /* routingActive, does not matter */);
+  if (m_onTrafficStateChangedFn)
+    m_onTrafficStateChangedFn(state);
 }
 
-bool Framework::CreateDrapeEngine(JNIEnv * env, jobject jSurface, int densityDpi, bool firstLaunch)
+void Framework::TransitSchemeStateChanged(TransitReadManager::TransitSchemeState state)
 {
-  m_contextFactory = make_unique_dp<dp::ThreadSafeFactory>(new AndroidOGLContextFactory(env, jSurface));
-  AndroidOGLContextFactory const * factory = m_contextFactory->CastFactory<AndroidOGLContextFactory>();
-  if (!factory->IsValid())
-  {
-    LOG(LWARNING, ("Invalid GL context."));
+  if (m_onTransitStateChangedFn)
+    m_onTransitStateChangedFn(state);
+}
+
+void Framework::IsolinesSchemeStateChanged(IsolinesManager::IsolinesState state)
+{
+  if (m_onIsolinesStateChangedFn)
+    m_onIsolinesStateChangedFn(state);
+}
+
+void Framework::GuidesLayerStateChanged(GuidesManager::GuidesState state)
+{
+  if (m_onGuidesStateChangedFn)
+    m_onGuidesStateChangedFn(state);
+}
+
+bool Framework::DestroySurfaceOnDetach()
+{
+  if (m_vulkanContextFactory)
     return false;
+  return true;
+}
+
+bool Framework::CreateDrapeEngine(JNIEnv * env, jobject jSurface, int densityDpi, bool firstLaunch,
+                                  bool launchByDeepLink, int appVersionCode)
+{
+  // Vulkan is supported only since Android 8.0, because some Android devices with Android 7.x
+  // have fatal driver issue, which can lead to process termination and whole OS destabilization.
+  int constexpr kMinSdkVersionForVulkan = 26;
+  int const sdkVersion = GetAndroidSdkVersion();
+  auto const vulkanForbidden = sdkVersion < kMinSdkVersionForVulkan ||
+                               dp::SupportManager::Instance().IsVulkanForbidden();
+  if (vulkanForbidden)
+    LOG(LWARNING, ("Vulkan API is forbidden on this device."));
+
+  if (m_work.LoadPreferredGraphicsAPI() == dp::ApiVersion::Vulkan && !vulkanForbidden)
+  {
+    m_vulkanContextFactory =
+        make_unique_dp<AndroidVulkanContextFactory>(appVersionCode, sdkVersion);
+    if (!CastFactory(m_vulkanContextFactory)->IsVulkanSupported())
+    {
+      LOG(LWARNING, ("Vulkan API is not supported."));
+      m_vulkanContextFactory.reset();
+    }
+
+    if (m_vulkanContextFactory)
+    {
+      auto f = CastFactory(m_vulkanContextFactory);
+      f->SetSurface(env, jSurface);
+      if (!f->IsValid())
+      {
+        LOG(LWARNING, ("Invalid Vulkan API context."));
+        m_vulkanContextFactory.reset();
+      }
+    }
+  }
+
+  AndroidOGLContextFactory * oglFactory = nullptr;
+  if (!m_vulkanContextFactory)
+  {
+    m_oglContextFactory = make_unique_dp<dp::ThreadSafeFactory>(
+      new AndroidOGLContextFactory(env, jSurface));
+    oglFactory = m_oglContextFactory->CastFactory<AndroidOGLContextFactory>();
+    if (!oglFactory->IsValid())
+    {
+      LOG(LWARNING, ("Invalid GL context."));
+      return false;
+    }
   }
 
   ::Framework::DrapeCreationParams p;
-  p.m_surfaceWidth = factory->GetWidth();
-  p.m_surfaceHeight = factory->GetHeight();
-  p.m_visualScale = dp::VisualScale(densityDpi);
+  if (m_vulkanContextFactory)
+  {
+    auto f = CastFactory(m_vulkanContextFactory);
+    p.m_apiVersion = dp::ApiVersion::Vulkan;
+    p.m_surfaceWidth = f->GetWidth();
+    p.m_surfaceHeight = f->GetHeight();
+  }
+  else
+  {
+    CHECK(oglFactory != nullptr, ());
+    p.m_apiVersion = oglFactory->IsSupportedOpenGLES3() ? dp::ApiVersion::OpenGLES3 :
+                                                          dp::ApiVersion::OpenGLES2;
+    p.m_surfaceWidth = oglFactory->GetWidth();
+    p.m_surfaceHeight = oglFactory->GetHeight();
+  }
+  p.m_visualScale = static_cast<float>(dp::VisualScale(densityDpi));
   p.m_hasMyPositionState = m_isCurrentModeInitialized;
   p.m_initialMyPositionState = m_currentMode;
   p.m_isChoosePositionMode = m_isChoosePositionMode;
-  p.m_isFirstLaunch = firstLaunch;
+  p.m_hints.m_isFirstLaunch = firstLaunch;
+  p.m_hints.m_isLaunchByDeepLink = launchByDeepLink;
   ASSERT(!m_guiPositions.empty(), ("GUI elements must be set-up before engine is created"));
   p.m_widgetsInitInfo = m_guiPositions;
 
-  m_work.LoadBookmarks();
   m_work.SetMyPositionModeListener(bind(&Framework::MyPositionModeChanged, this, _1, _2));
 
-  m_work.CreateDrapeEngine(make_ref(m_contextFactory), move(p));
+  if (m_vulkanContextFactory)
+    m_work.CreateDrapeEngine(make_ref(m_vulkanContextFactory), move(p));
+  else
+    m_work.CreateDrapeEngine(make_ref(m_oglContextFactory), move(p));
   m_work.EnterForeground();
 
   return true;
@@ -158,59 +279,153 @@ bool Framework::IsDrapeEngineCreated()
   return m_work.IsDrapeEngineCreated();
 }
 
-void Framework::Resize(int w, int h)
+void Framework::Resize(JNIEnv * env, jobject jSurface, int w, int h)
 {
-  m_contextFactory->CastFactory<AndroidOGLContextFactory>()->UpdateSurfaceSize();
+  if (m_vulkanContextFactory)
+  {
+    auto vulkanContextFactory = CastFactory(m_vulkanContextFactory);
+    if (vulkanContextFactory->GetWidth() != w || vulkanContextFactory->GetHeight() != h)
+    {
+      m_vulkanContextFactory->SetPresentAvailable(false);
+      m_work.SetRenderingDisabled(false /* destroySurface */);
+
+      vulkanContextFactory->ChangeSurface(env, jSurface, w, h);
+
+      vulkanContextFactory->SetPresentAvailable(true);
+      m_work.SetRenderingEnabled();
+    }
+  }
+  else
+  {
+    m_oglContextFactory->CastFactory<AndroidOGLContextFactory>()->UpdateSurfaceSize(w, h);
+  }
   m_work.OnSize(w, h);
 
   //TODO: remove after correct visible rect calculation.
   frm()->SetVisibleViewport(m2::RectD(0, 0, w, h));
 }
 
-void Framework::DetachSurface(bool destroyContext)
+void Framework::DetachSurface(bool destroySurface)
 {
-  LOG(LINFO, ("Detach surface."));
-  if (destroyContext)
+  LOG(LINFO, ("Detach surface started. destroySurface =", destroySurface));
+  if (m_vulkanContextFactory)
   {
-    LOG(LINFO, ("Destroy context."));
-    m_isContextDestroyed = true;
-    m_work.EnterBackground();
+    m_vulkanContextFactory->SetPresentAvailable(false);
   }
-  m_work.SetRenderingDisabled(destroyContext);
+  else
+  {
+    ASSERT(m_oglContextFactory != nullptr, ());
+    m_oglContextFactory->SetPresentAvailable(false);
+  }
 
-  ASSERT(m_contextFactory != nullptr, ());
-  AndroidOGLContextFactory * factory = m_contextFactory->CastFactory<AndroidOGLContextFactory>();
-  factory->ResetSurface();
+  if (destroySurface)
+  {
+    LOG(LINFO, ("Destroy surface."));
+    m_isSurfaceDestroyed = true;
+    m_work.OnDestroySurface();
+  }
+
+  if (m_vulkanContextFactory)
+  {
+    // With Vulkan we don't need to recreate all graphics resources,
+    // we have to destroy only resources bound with surface (swapchains,
+    // image views, framebuffers and command buffers). All these resources will be
+    // destroyed in ResetSurface().
+    m_work.SetRenderingDisabled(false /* destroySurface */);
+
+    // Allow pipeline dump only on enter background.
+    CastFactory(m_vulkanContextFactory)->ResetSurface(destroySurface /* allowPipelineDump */);
+  }
+  else
+  {
+    m_work.SetRenderingDisabled(destroySurface);
+    auto factory = m_oglContextFactory->CastFactory<AndroidOGLContextFactory>();
+    factory->ResetSurface();
+  }
+  LOG(LINFO, ("Detach surface finished."));
 }
 
 bool Framework::AttachSurface(JNIEnv * env, jobject jSurface)
 {
-  LOG(LINFO, ("Attach surface."));
+  LOG(LINFO, ("Attach surface started."));
 
-  ASSERT(m_contextFactory != nullptr, ());
-  AndroidOGLContextFactory * factory = m_contextFactory->CastFactory<AndroidOGLContextFactory>();
-  factory->SetSurface(env, jSurface);
-
-  if (!factory->IsValid())
+  int w = 0, h = 0;
+  if (m_vulkanContextFactory)
   {
-    LOG(LWARNING, ("Invalid GL context."));
-    return false;
+    auto factory = CastFactory(m_vulkanContextFactory);
+    factory->SetSurface(env, jSurface);
+    if (!factory->IsValid())
+    {
+      LOG(LWARNING, ("Invalid Vulkan API context."));
+      return false;
+    }
+    w = factory->GetWidth();
+    h = factory->GetHeight();
+  }
+  else
+  {
+    ASSERT(m_oglContextFactory != nullptr, ());
+    auto factory = m_oglContextFactory->CastFactory<AndroidOGLContextFactory>();
+    factory->SetSurface(env, jSurface);
+    if (!factory->IsValid())
+    {
+      LOG(LWARNING, ("Invalid GL context."));
+      return false;
+    }
+    w = factory->GetWidth();
+    h = factory->GetHeight();
   }
 
   ASSERT(!m_guiPositions.empty(), ("GUI elements must be set-up before engine is created"));
 
-  m_work.SetRenderingEnabled(factory);
-
-  if (m_isContextDestroyed)
+  if (m_vulkanContextFactory)
   {
-    LOG(LINFO, ("Recover GL resources, viewport size:", factory->GetWidth(), factory->GetHeight()));
-    m_work.UpdateDrapeEngine(factory->GetWidth(), factory->GetHeight());
-    m_isContextDestroyed = false;
-
-    m_work.EnterForeground();
+    m_vulkanContextFactory->SetPresentAvailable(true);
+    m_work.SetRenderingEnabled();
+  }
+  else
+  {
+    m_oglContextFactory->SetPresentAvailable(true);
+    m_work.SetRenderingEnabled(make_ref(m_oglContextFactory));
   }
 
+  if (m_isSurfaceDestroyed)
+  {
+    LOG(LINFO, ("Recover surface, viewport size:", w, h));
+    bool const recreateContextDependentResources = (m_vulkanContextFactory == nullptr);
+    m_work.OnRecoverSurface(w, h, recreateContextDependentResources);
+    m_isSurfaceDestroyed = false;
+  }
+
+  LOG(LINFO, ("Attach surface finished."));
+
   return true;
+}
+
+void Framework::PauseSurfaceRendering()
+{
+  if (m_vulkanContextFactory)
+    m_vulkanContextFactory->SetPresentAvailable(false);
+  if (m_oglContextFactory)
+    m_oglContextFactory->SetPresentAvailable(false);
+
+  LOG(LINFO, ("Pause surface rendering."));
+}
+
+void Framework::ResumeSurfaceRendering()
+{
+  if (m_vulkanContextFactory)
+  {
+    if (CastFactory(m_vulkanContextFactory)->IsValid())
+      m_vulkanContextFactory->SetPresentAvailable(true);
+  }
+  if (m_oglContextFactory)
+  {
+    AndroidOGLContextFactory * factory = m_oglContextFactory->CastFactory<AndroidOGLContextFactory>();
+    if (factory->IsValid())
+      factory->SetPresentAvailable(true);
+  }
+  LOG(LINFO, ("Resume surface rendering."));
 }
 
 void Framework::SetMapStyle(MapStyle mapStyle)
@@ -220,7 +435,12 @@ void Framework::SetMapStyle(MapStyle mapStyle)
 
 void Framework::MarkMapStyle(MapStyle mapStyle)
 {
-  m_work.MarkMapStyle(mapStyle);
+  // In case of Vulkan rendering we don't recreate geometry and textures data, so
+  // we need use SetMapStyle instead of MarkMapStyle in all cases.
+  if (m_vulkanContextFactory)
+    m_work.SetMapStyle(mapStyle);
+  else
+    m_work.MarkMapStyle(mapStyle);
 }
 
 MapStyle Framework::GetMapStyle() const
@@ -261,7 +481,9 @@ Storage & Framework::GetStorage()
   return m_work.GetStorage();
 }
 
-void Framework::ShowNode(TCountryId const & idx, bool zoomToDownloadButton)
+DataSource const & Framework::GetDataSource() { return m_work.GetDataSource(); }
+
+void Framework::ShowNode(CountryId const & idx, bool zoomToDownloadButton)
 {
   if (zoomToDownloadButton)
   {
@@ -329,7 +551,7 @@ void Framework::Scale(m2::PointD const & centerPt, int targetZoom, bool animate)
 {
   ref_ptr<df::DrapeEngine> engine = m_work.GetDrapeEngine();
   if (engine)
-    engine->SetModelViewCenter(centerPt, targetZoom, animate);
+    engine->SetModelViewCenter(centerPt, targetZoom, animate, false);
 }
 
 ::Framework * Framework::NativeFramework()
@@ -340,7 +562,7 @@ void Framework::Scale(m2::PointD const & centerPt, int targetZoom, bool animate)
 bool Framework::Search(search::EverywhereSearchParams const & params)
 {
   m_searchQuery = params.m_query;
-  return m_work.SearchEverywhere(params);
+  return m_work.GetSearchAPI().SearchEverywhere(params);
 }
 
 void Framework::AddLocalMaps()
@@ -353,14 +575,14 @@ void Framework::RemoveLocalMaps()
   m_work.DeregisterAllMaps();
 }
 
-void Framework::ReplaceBookmark(BookmarkAndCategory const & ind, BookmarkData & bm)
+void Framework::ReplaceBookmark(kml::MarkId markId, kml::BookmarkData & bm)
 {
-  m_work.ReplaceBookmark(ind.m_categoryIndex, ind.m_bookmarkIndex, bm);
+  m_work.GetBookmarkManager().GetEditSession().UpdateBookmark(markId, bm);
 }
 
-size_t Framework::ChangeBookmarkCategory(BookmarkAndCategory const & ind, size_t newCat)
+void Framework::MoveBookmark(kml::MarkId markId, kml::MarkGroupId curCat, kml::MarkGroupId newCat)
 {
-  return m_work.MoveBookmark(ind.m_bookmarkIndex, ind.m_categoryIndex, newCat);
+  m_work.GetBookmarkManager().GetEditSession().MoveBookmark(markId, curCat, newCat);
 }
 
 bool Framework::ShowMapForURL(string const & url)
@@ -395,10 +617,41 @@ string Framework::GetOutdatedCountriesString()
   return res;
 }
 
-void Framework::ShowTrack(int category, int track)
+void Framework::SetTrafficStateListener(TrafficManager::TrafficStateChangedFn const & fn)
 {
-  Track const * nTrack = NativeFramework()->GetBmCategory(category)->GetTrack(track);
-  NativeFramework()->ShowTrack(*nTrack);
+  m_onTrafficStateChangedFn = fn;
+}
+
+void Framework::SetTransitSchemeListener(TransitReadManager::TransitStateChangedFn const & function)
+{
+  m_onTransitStateChangedFn = function;
+}
+
+void Framework::SetIsolinesListener(IsolinesManager::IsolinesStateChangedFn const & function)
+{
+  m_onIsolinesStateChangedFn = function;
+}
+
+void Framework::SetGuidesListener(GuidesManager::GuidesStateChangedFn const & function)
+{
+  m_onGuidesStateChangedFn = function;
+}
+
+bool Framework::IsTrafficEnabled()
+{
+  return m_work.GetTrafficManager().IsEnabled();
+}
+
+void Framework::EnableTraffic()
+{
+  m_work.GetTrafficManager().SetEnabled(true);
+  NativeFramework()->SaveTrafficEnabled(true);
+}
+
+void Framework::DisableTraffic()
+{
+  m_work.GetTrafficManager().SetEnabled(false);
+  NativeFramework()->SaveTrafficEnabled(false);
 }
 
 void Framework::SetMyPositionModeListener(location::TMyPositionModeChanged const & fn)
@@ -410,8 +663,9 @@ location::EMyPositionMode Framework::GetMyPositionMode()
 {
   if (!m_isCurrentModeInitialized)
   {
-    m_currentMode = location::NotFollowNoPosition;
-    settings::Get(settings::kLocationStateMode, m_currentMode);
+    if (!settings::Get(settings::kLocationStateMode, m_currentMode))
+      m_currentMode = location::NotFollowNoPosition;
+
     m_isCurrentModeInitialized = true;
   }
 
@@ -426,15 +680,8 @@ void Framework::OnMyPositionModeChanged(location::EMyPositionMode mode)
 
 void Framework::SwitchMyPositionNextMode()
 {
-  if (IsDrapeEngineCreated())
-  {
-    m_work.SwitchMyPositionNextMode();
-    return;
-  }
-
-  // Engine is not available, but the client requests to change mode.
-  if (GetMyPositionMode() == location::NotFollowNoPosition)
-    SetMyPositionMode(location::PendingPosition);
+  ASSERT(IsDrapeEngineCreated(), ());
+  m_work.SwitchMyPositionNextMode();
 }
 
 void Framework::SetupWidget(gui::EWidget widget, float x, float y, dp::Anchor anchor)
@@ -461,41 +708,27 @@ void Framework::SetupMeasurementSystem()
   m_work.SetupMeasurementSystem();
 }
 
-void Framework::SetPlacePageInfo(place_page::Info const & info)
-{
-  m_info = info;
-}
-
 place_page::Info & Framework::GetPlacePageInfo()
 {
-  return m_info;
+  return m_work.GetCurrentPlacePageInfo();
 }
 
-void Framework::RequestBookingMinPrice(string const & hotelId, string const & currencyCode, function<void(string const &, string const &)> const & callback)
+void Framework::RequestBookingMinPrice(JNIEnv * env, jobject policy,
+                                       booking::BlockParams && params,
+                                       booking::BlockAvailabilityCallback const & callback)
 {
-  return m_work.GetBookingApi().GetMinPrice(hotelId, currencyCode, callback);
+  auto const bookingApi = m_work.GetBookingApi(ToNativeNetworkPolicy(env, policy));
+  if (bookingApi)
+    bookingApi->GetBlockAvailability(move(params), callback);
 }
 
-void Framework::RequestBookingInfo(string const & hotelId, string const & lang,
-                                   function<void(BookingApi::HotelInfo const &)> const & callback)
+void Framework::RequestBookingInfo(JNIEnv * env, jobject policy,
+                                   string const & hotelId, string const & lang,
+                                   booking::GetHotelInfoCallback const & callback)
 {
-  return m_work.GetBookingApi().GetHotelInfo(hotelId, lang, callback);
-}
-
-bool Framework::HasSpaceForMigration()
-{
-  return m_work.IsEnoughSpaceForMigrate();
-}
-
-void Framework::Migrate(bool keepOldMaps)
-{
-  m_work.Migrate(keepOldMaps);
-}
-
-storage::TCountryId Framework::PreMigrate(ms::LatLon const & position, Storage::TChangeCountryFunction const & statusChangeListener,
-                                                                       Storage::TProgressFunction const & progressListener)
-{
-  return m_work.PreMigrate(position, statusChangeListener, progressListener);
+  auto const bookingApi = m_work.GetBookingApi(ToNativeNetworkPolicy(env, policy));
+  if (bookingApi)
+    bookingApi->GetHotelInfo(hotelId, lang, callback);
 }
 
 bool Framework::IsAutoRetryDownloadFailed()
@@ -513,19 +746,154 @@ void Framework::EnableDownloadOn3g()
   m_work.GetDownloadingPolicy().EnableCellularDownload(true);
 }
 
-uint64_t Framework::RequestUberProducts(ms::LatLon const & from, ms::LatLon const & to,
-                                        uber::ProductsCallback const & callback,
-                                        uber::ErrorCallback const & errorCallback)
+void Framework::DisableAdProvider(ads::Banner::Type const type, ads::Banner::Place const place)
 {
-  return m_work.GetUberApi().GetAvailableProducts(from, to, callback, errorCallback);
+  m_work.DisableAdProvider(type, place);
 }
 
-uber::RideRequestLinks Framework::GetUberLinks(string const & productId, ms::LatLon const & from, ms::LatLon const & to)
+uint64_t Framework::RequestTaxiProducts(JNIEnv * env, jobject policy, ms::LatLon const & from,
+                                        ms::LatLon const & to,
+                                        taxi::SuccessCallback const & onSuccess,
+                                        taxi::ErrorCallback const & onError)
 {
-  return uber::Api::GetRideRequestLinks(productId, from, to);
+  auto const taxiEngine = m_work.GetTaxiEngine(ToNativeNetworkPolicy(env, policy));
+  if (!taxiEngine)
+    return 0;
+
+  return taxiEngine->GetAvailableProducts(from, to, onSuccess, onError);
 }
 
+taxi::RideRequestLinks Framework::GetTaxiLinks(JNIEnv * env, jobject policy, taxi::Provider::Type type,
+                                               string const & productId, ms::LatLon const & from,
+                                               ms::LatLon const & to)
+{
+  auto const taxiEngine = m_work.GetTaxiEngine(ToNativeNetworkPolicy(env, policy));
+  if (!taxiEngine)
+    return {};
 
+  return taxiEngine->GetRideRequestLinks(type, productId, from, to);
+}
+
+void Framework::RequestUGC(FeatureID const & fid, ugc::Api::UGCCallback const & ugcCallback)
+{
+  m_work.GetUGC(fid, ugcCallback);
+}
+
+void Framework::SetUGCUpdate(FeatureID const & fid, ugc::UGCUpdate const & ugc,
+                             ugc::Api::OnResultCallback const & callback /*  = nullptr */)
+{
+  m_work.GetUGCApi()->SetUGCUpdate(fid, ugc, callback);
+}
+
+void Framework::UploadUGC()
+{
+  m_work.UploadUGC(nullptr /* onCompleteUploading */);
+}
+
+int Framework::ToDoAfterUpdate() const
+{
+  return (int) m_work.ToDoAfterUpdate();
+}
+
+uint64_t Framework::GetLocals(JNIEnv * env, jobject policy, double lat, double lon,
+                              locals::LocalsSuccessCallback const & successFn,
+                              locals::LocalsErrorCallback const & errorFn)
+{
+  auto api = NativeFramework()->GetLocalsApi(ToNativeNetworkPolicy(env, policy));
+  if (api == nullptr)
+    return 0;
+
+  std::string const langStr = languages::GetCurrentNorm();
+  size_t constexpr kResultsOnPage = 5;
+  size_t constexpr kPageNumber = 1;
+  return api->GetLocals(lat, lon, langStr, kResultsOnPage, kPageNumber, successFn, errorFn);
+}
+
+void Framework::GetPromoCityGallery(JNIEnv * env, jobject policy,
+                                    m2::PointD const & point, UTM utm,
+                                    promo::CityGalleryCallback const & onSuccess,
+                                    promo::OnError const & onError)
+{
+  auto api = NativeFramework()->GetPromoApi(ToNativeNetworkPolicy(env, policy));
+  if (api == nullptr)
+  {
+    onError();
+    return;
+  }
+
+  api->GetCityGallery(point, languages::GetCurrentNorm(), utm, onSuccess, onError);
+}
+
+void Framework::GetPromoPoiGallery(JNIEnv * env, jobject policy,
+                                   m2::PointD const & point, promo::Tags const & tags,
+                                   bool useCoordinates, UTM utm,
+                                   promo::CityGalleryCallback const & onSuccess,
+                                   promo::OnError const & onError)
+{
+  auto api = NativeFramework()->GetPromoApi(ToNativeNetworkPolicy(env, policy));
+  if (api == nullptr)
+  {
+    onError();
+    return;
+  }
+
+  api->GetPoiGallery(point, languages::GetCurrentNorm(), tags, useCoordinates, utm, onSuccess,
+                     onError);
+}
+
+promo::AfterBooking Framework::GetPromoAfterBooking(JNIEnv * env, jobject policy)
+{
+  auto api = NativeFramework()->GetPromoApi(ToNativeNetworkPolicy(env, policy));
+  if (api == nullptr)
+    return {};
+
+  return api->GetAfterBooking(languages::GetCurrentNorm());
+}
+
+std::string Framework::GetPromoCityUrl(JNIEnv * env, jobject policy, jdouble lat, jdouble lon)
+{
+  auto api = NativeFramework()->GetPromoApi(ToNativeNetworkPolicy(env, policy));
+  if (api == nullptr)
+    return {};
+  auto const point = mercator::FromLatLon(static_cast<double>(lat), static_cast<double>(lon));
+  return api->GetCityUrl(point);
+}
+
+void Framework::LogLocalAdsEvent(local_ads::EventType type, double lat, double lon, uint16_t accuracy)
+{
+  ::Framework * frm = g_framework->NativeFramework();
+  if (!frm->HasPlacePageInfo())
+    return;
+
+  auto const & info = g_framework->GetPlacePageInfo();
+  auto const & featureID = info.GetID();
+  auto const & mwmInfo = featureID.m_mwmId.GetInfo();
+  if (!mwmInfo)
+    return;
+
+  local_ads::Event event(type, mwmInfo->GetVersion(), mwmInfo->GetCountryName(), featureID.m_index,
+                         m_work.GetDrawScale(), local_ads::Clock::now(), lat, lon, accuracy);
+  m_work.GetLocalAdsManager().GetStatistics().RegisterEvent(std::move(event));
+}
+
+void Framework::OnPowerFacilityChanged(power_management::Facility const facility, bool enabled)
+{
+  // Dummy
+  // TODO: provide information for UI Properties.
+}
+
+void Framework::OnPowerSchemeChanged(power_management::Scheme const actualScheme)
+{
+  // Dummy
+  // TODO: provide information for UI Properties.
+}
+
+FeatureID Framework::BuildFeatureId(JNIEnv * env, jobject featureId)
+{
+  static FeatureIdBuilder const builder(env);
+
+  return builder.Build(env, featureId);
+}
 }  // namespace android
 
 //============ GLUE CODE for com.mapswithme.maps.Framework class =============//
@@ -539,7 +907,8 @@ uber::RideRequestLinks Framework::GetUberLinks(string const & productId, ms::Lat
 
 extern "C"
 {
-void CallRoutingListener(shared_ptr<jobject> listener, int errorCode, vector<storage::TCountryId> const & absentMaps)
+void CallRoutingListener(shared_ptr<jobject> listener, int errorCode,
+                         storage::CountriesSet const & absentMaps)
 {
   JNIEnv * env = jni::GetEnv();
   jmethodID const method = jni::GetMethodID(env, *listener, "onRoutingEvent", "(I[Ljava/lang/String;)V");
@@ -555,26 +924,74 @@ void CallRouteProgressListener(shared_ptr<jobject> listener, float progress)
   env->CallVoidMethod(*listener, methodId, progress);
 }
 
-/// @name JNI EXPORTS
-//@{
-JNIEXPORT jstring JNICALL
-Java_com_mapswithme_maps_Framework_nativeGetNameAndAddress(JNIEnv * env, jclass clazz, jdouble lat, jdouble lon)
+void CallRouteRecommendationListener(shared_ptr<jobject> listener,
+                                     RoutingManager::Recommendation recommendation)
 {
-  search::AddressInfo const info = frm()->GetAddressInfoAtPoint(MercatorBounds::FromLatLon(lat, lon));
-  return jni::ToJavaString(env, info.FormatNameAndAddress());
+  JNIEnv * env = jni::GetEnv();
+  jmethodID const methodId = jni::GetMethodID(env, *listener, "onRecommend", "(I)V");
+  env->CallVoidMethod(*listener, methodId, static_cast<int>(recommendation));
+}
+
+void CallSetRoutingLoadPointsListener(shared_ptr<jobject> listener, bool success)
+{
+  JNIEnv * env = jni::GetEnv();
+  jmethodID const methodId = jni::GetMethodID(env, *listener, "onRoutePointsLoaded", "(Z)V");
+  env->CallVoidMethod(*listener, methodId, static_cast<jboolean>(success));
+}
+
+RoutingManager::LoadRouteHandler g_loadRouteHandler;
+
+void CallPurchaseValidationListener(shared_ptr<jobject> listener, Purchase::ValidationCode code,
+                                    Purchase::ValidationResponse const & validationResponse)
+{
+  JNIEnv * env = jni::GetEnv();
+  jmethodID const methodId = jni::GetMethodID(env, *listener, "onValidatePurchase",
+    "(ILjava/lang/String;Ljava/lang/String;Ljava/lang/String;Z)V");
+
+  jni::TScopedLocalRef const serverId(env, jni::ToJavaString(env, validationResponse.m_info.m_serverId));
+  jni::TScopedLocalRef const vendorId(env, jni::ToJavaString(env, validationResponse.m_info.m_vendorId));
+  jni::TScopedLocalRef const receiptData(env, jni::ToJavaString(env, validationResponse.m_info.m_receiptData));
+
+  env->CallVoidMethod(*listener, methodId, static_cast<jint>(code), serverId.get(), vendorId.get(),
+                      receiptData.get(), static_cast<jboolean>(validationResponse.m_isTrial));
+}
+
+void CallStartPurchaseTransactionListener(shared_ptr<jobject> listener, bool success,
+                                          std::string const & serverId,
+                                          std::string const & vendorId)
+{
+  JNIEnv * env = jni::GetEnv();
+  jmethodID const methodId = jni::GetMethodID(env, *listener, "onStartTransaction",
+                                              "(ZLjava/lang/String;Ljava/lang/String;)V");
+
+  jni::TScopedLocalRef const serverIdStr(env, jni::ToJavaString(env, serverId));
+  jni::TScopedLocalRef const vendorIdStr(env, jni::ToJavaString(env, vendorId));
+
+  env->CallVoidMethod(*listener, methodId, static_cast<jboolean>(success),
+                      serverIdStr.get(), vendorIdStr.get());
+}
+
+/// @name JNI EXPORTS
+JNIEXPORT jstring JNICALL
+Java_com_mapswithme_maps_Framework_nativeGetAddress(JNIEnv * env, jclass clazz, jdouble lat, jdouble lon)
+{
+  auto const info = frm()->GetAddressAtPoint(mercator::FromLatLon(lat, lon));
+  return jni::ToJavaString(env, info.FormatAddress());
 }
 
 JNIEXPORT void JNICALL
 Java_com_mapswithme_maps_Framework_nativeClearApiPoints(JNIEnv * env, jclass clazz)
 {
-  UserMarkControllerGuard guard(frm()->GetBookmarkManager(), UserMarkType::API_MARK);
-  guard.m_controller.Clear();
+  frm()->GetBookmarkManager().GetEditSession().ClearGroup(UserMark::Type::API);
 }
 
-JNIEXPORT jint JNICALL
+JNIEXPORT jobject JNICALL
 Java_com_mapswithme_maps_Framework_nativeParseAndSetApiUrl(JNIEnv * env, jclass clazz, jstring url)
 {
-  return static_cast<jint>(frm()->ParseAndSetApiURL(jni::ToNativeString(env, url)));
+  static jmethodID const resultConstructor = jni::GetConstructorID(env, g_parsingResultClazz, "(IZ)V");
+  auto const result = frm()->ParseAndSetApiURL(jni::ToNativeString(env, url));
+  return env->NewObject(g_parsingResultClazz, resultConstructor, static_cast<jint>(result.m_type),
+                        static_cast<jboolean>(result.m_isSuccess));
 }
 
 JNIEXPORT jobject JNICALL
@@ -595,41 +1012,79 @@ Java_com_mapswithme_maps_Framework_nativeGetParsedRoutingData(JNIEnv * env, jcla
                                          {
                                            jni::TScopedLocalRef const name(env, jni::ToJavaString(env, point.m_name));
                                            return env->NewObject(pointClazz, pointConstructor,
-                                                                 MercatorBounds::YToLat(point.m_org.y),
-                                                                 MercatorBounds::XToLon(point.m_org.x), name.get());
+                                                                 mercator::YToLat(point.m_org.y),
+                                                                 mercator::XToLon(point.m_org.x), name.get());
                                          });
 
   return env->NewObject(routeDataClazz, routeDataConstructor, points, routingData.m_type);
 }
 
-JNIEXPORT void JNICALL
-Java_com_mapswithme_maps_Framework_nativeSetMapObjectListener(JNIEnv * env, jclass clazz, jobject jListener)
+JNIEXPORT jobject JNICALL
+Java_com_mapswithme_maps_Framework_nativeGetParsedSearchRequest(JNIEnv * env, jclass clazz)
 {
-  g_mapObjectListener = env->NewGlobalRef(jListener);
-  // void onMapObjectActivated(MapObject object);
-  jmethodID const activatedId = jni::GetMethodID(env, g_mapObjectListener, "onMapObjectActivated",
-                                                 "(Lcom/mapswithme/maps/bookmarks/data/MapObject;)V");
-  // void onDismiss(boolean switchFullScreenMode);
-  jmethodID const dismissId = jni::GetMethodID(env, g_mapObjectListener, "onDismiss", "(Z)V");
-  frm()->SetMapSelectionListeners([activatedId](place_page::Info const & info)
-  {
-    JNIEnv * env = jni::GetEnv();
-    g_framework->SetPlacePageInfo(info);
-    jni::TScopedLocalRef mapObject(env, usermark_helper::CreateMapObject(env, info));
-    env->CallVoidMethod(g_mapObjectListener, activatedId, mapObject.get());
-  }, [dismissId](bool switchFullScreenMode)
-  {
-    JNIEnv * env = jni::GetEnv();
-    g_framework->SetPlacePageInfo({});
-    env->CallVoidMethod(g_mapObjectListener, dismissId, switchFullScreenMode);
-  });
+  using namespace url_scheme;
+  static jclass const cl = jni::GetGlobalClassRef(env, "com/mapswithme/maps/api/ParsedSearchRequest");
+  // Java signature : ParsedSearchRequest(String query, String locale, double lat, double lon, boolean isSearchOnMap)
+  static jmethodID const ctor = jni::GetConstructorID(env, cl, "(Ljava/lang/String;Ljava/lang/String;DDZ)V");
+  auto const & r = frm()->GetParsedSearchRequest();
+  return env->NewObject(cl, ctor, jni::ToJavaString(env, r.m_query), jni::ToJavaString(env, r.m_locale), r.m_centerLat, r.m_centerLon, r.m_isSearchOnMap);
 }
 
 JNIEXPORT void JNICALL
-Java_com_mapswithme_maps_Framework_nativeRemoveMapObjectListener(JNIEnv * env, jclass)
+Java_com_mapswithme_maps_Framework_nativePlacePageActivationListener(JNIEnv *env, jclass clazz,
+                                                                     jobject jListener)
 {
-  frm()->SetMapSelectionListeners({}, {});
-  env->DeleteGlobalRef(g_mapObjectListener);
+  LOG(LINFO, ("Set global map object listener"));
+  g_placePageActivationListener = env->NewGlobalRef(jListener);
+  // void onPlacePageActivated(MapObject object);
+  jmethodID const activatedId = jni::GetMethodID(env, g_placePageActivationListener,
+                                                 "onPlacePageActivated",
+                                                 "(Lcom/mapswithme/maps/widget/placepage/PlacePageData;)V");
+  // void onPlacePageDeactivated(boolean switchFullScreenMode);
+  jmethodID const deactivateId = jni::GetMethodID(env, g_placePageActivationListener,
+                                                  "onPlacePageDeactivated", "(Z)V");
+  auto const fillPlacePage = [activatedId]()
+  {
+    JNIEnv * env = jni::GetEnv();
+    auto const & info = frm()->GetCurrentPlacePageInfo();
+    jni::TScopedLocalRef placePageDataRef(env, nullptr);
+    if (info.IsTrack())
+    {
+      auto const categoryId = info.GetBookmarkCategoryId();
+      auto const serverId = frm()->GetBookmarkManager().GetCategoryServerId(categoryId);
+      auto const elevationInfo = frm()->GetBookmarkManager().MakeElevationInfo(info.GetTrackId());
+      placePageDataRef.reset(usermark_helper::CreateElevationInfo(env, serverId, elevationInfo));
+    }
+    else if (info.IsGuide())
+    {
+      auto const & guidesManager = frm()->GetGuidesManager();
+      auto const gallery = guidesManager.GetGallery();
+      placePageDataRef.reset(guides::CreateGallery(env, gallery));
+    }
+    else
+    {
+      placePageDataRef.reset(usermark_helper::CreateMapObject(env, info));
+    }
+    env->CallVoidMethod(g_placePageActivationListener, activatedId, placePageDataRef.get());
+  };
+  auto const closePlacePage = [deactivateId](bool switchFullScreenMode)
+  {
+    JNIEnv * env = jni::GetEnv();
+    env->CallVoidMethod(g_placePageActivationListener, deactivateId, switchFullScreenMode);
+  };
+  frm()->SetPlacePageListeners(fillPlacePage, closePlacePage, fillPlacePage);
+}
+
+JNIEXPORT void JNICALL
+Java_com_mapswithme_maps_Framework_nativeRemovePlacePageActivationListener(JNIEnv *env, jclass)
+{
+  if (g_placePageActivationListener == nullptr)
+    return;
+
+  frm()->SetPlacePageListeners({} /* onOpen */, {} /* onClose */, {} /* onUpdate */);
+  LOG(LINFO, ("Remove global map object listener"));
+  env->DeleteGlobalRef(g_placePageActivationListener);
+  g_placePageActivationListener = nullptr;
 }
 
 JNIEXPORT jstring JNICALL
@@ -662,16 +1117,17 @@ JNIEXPORT jobject JNICALL
 Java_com_mapswithme_maps_Framework_nativeGetDistanceAndAzimuthFromLatLon(
     JNIEnv * env, jclass clazz, jdouble lat, jdouble lon, jdouble cLat, jdouble cLon, jdouble north)
 {
-  double const merY = MercatorBounds::LatToY(lat);
-  double const merX = MercatorBounds::LonToX(lon);
+  double const merY = mercator::LatToY(lat);
+  double const merX = mercator::LonToX(lon);
   return Java_com_mapswithme_maps_Framework_nativeGetDistanceAndAzimuth(env, clazz, merX, merY, cLat, cLon, north);
 }
 
 JNIEXPORT jobject JNICALL
 Java_com_mapswithme_maps_Framework_nativeFormatLatLon(JNIEnv * env, jclass, jdouble lat, jdouble lon, jboolean useDMSFormat)
 {
-  return jni::ToJavaString(env, (useDMSFormat ? measurement_utils::FormatLatLonAsDMS(lat, lon, 2)
-                                              : measurement_utils::FormatLatLon(lat, lon, 6)));
+  return jni::ToJavaString(
+      env, (useDMSFormat ? measurement_utils::FormatLatLonAsDMS(lat, lon, 2)
+                         : measurement_utils::FormatLatLon(lat, lon, true /* withSemicolon */, 6)));
 }
 
 JNIEXPORT jobjectArray JNICALL
@@ -695,19 +1151,41 @@ Java_com_mapswithme_maps_Framework_nativeFormatLatLonToArr(JNIEnv * env, jclass,
 JNIEXPORT jobject JNICALL
 Java_com_mapswithme_maps_Framework_nativeFormatAltitude(JNIEnv * env, jclass, jdouble alt)
 {
-  return jni::ToJavaString(env, measurement_utils::FormatAltitude(alt));
+  auto const localizedUnits = platform::GetLocalizedAltitudeUnits();
+  return jni::ToJavaString(env, measurement_utils::FormatAltitudeWithLocalization(alt,
+                                                                                  localizedUnits.m_low));
 }
 
 JNIEXPORT jobject JNICALL
 Java_com_mapswithme_maps_Framework_nativeFormatSpeed(JNIEnv * env, jclass, jdouble speed)
 {
-  return jni::ToJavaString(env, measurement_utils::FormatSpeedWithDeviceUnits(speed));
+  return jni::ToJavaString(env, measurement_utils::FormatSpeed(speed));
 }
 
 JNIEXPORT jobject JNICALL
 Java_com_mapswithme_maps_Framework_nativeGetOutdatedCountriesString(JNIEnv * env, jclass)
 {
   return jni::ToJavaString(env, g_framework->GetOutdatedCountriesString());
+}
+
+JNIEXPORT jobjectArray JNICALL
+Java_com_mapswithme_maps_Framework_nativeGetOutdatedCountries(JNIEnv * env, jclass)
+{
+  vector<Country const *> countries;
+  Storage const & storage = g_framework->GetStorage();
+  storage.GetOutdatedCountries(countries);
+
+  vector<string> ids;
+  for (auto country : countries)
+    ids.push_back(country->Name());
+
+  return jni::ToJavaStringArray(env, ids);
+}
+
+JNIEXPORT jint JNICALL
+Java_com_mapswithme_maps_Framework_nativeToDoAfterUpdate(JNIEnv * env, jclass)
+{
+  return g_framework->ToDoAfterUpdate();
 }
 
 JNIEXPORT jboolean JNICALL
@@ -735,9 +1213,9 @@ Java_com_mapswithme_maps_Framework_nativeGetDrawScale(JNIEnv * env, jclass)
 }
 
 JNIEXPORT void JNICALL
-Java_com_mapswithme_maps_Framework_nativeUpdateUserViewportChanged(JNIEnv * env, jclass)
+Java_com_mapswithme_maps_Framework_nativePokeSearchInViewport(JNIEnv * env, jclass)
 {
-  frm()->UpdateUserViewportChanged();
+  frm()->GetSearchAPI().PokeSearchInViewport();
 }
 
 JNIEXPORT jdoubleArray JNICALL
@@ -745,7 +1223,7 @@ Java_com_mapswithme_maps_Framework_nativeGetScreenRectCenter(JNIEnv * env, jclas
 {
   m2::PointD const center = frm()->GetViewportCenter();
 
-  double latlon[] = {MercatorBounds::YToLat(center.y), MercatorBounds::XToLon(center.x)};
+  double latlon[] = {mercator::YToLat(center.y), mercator::XToLon(center.x)};
   jdoubleArray jLatLon = env->NewDoubleArray(2);
   env->SetDoubleArrayRegion(jLatLon, 0, 2, latlon);
 
@@ -753,9 +1231,9 @@ Java_com_mapswithme_maps_Framework_nativeGetScreenRectCenter(JNIEnv * env, jclas
 }
 
 JNIEXPORT void JNICALL
-Java_com_mapswithme_maps_Framework_nativeShowTrackRect(JNIEnv * env, jclass, jint cat, jint track)
+Java_com_mapswithme_maps_Framework_nativeShowTrackRect(JNIEnv * env, jclass, jlong track)
 {
-  g_framework->ShowTrack(cat, track);
+  frm()->ShowTrack(static_cast<kml::TrackId>(track));
 }
 
 JNIEXPORT jstring JNICALL
@@ -799,126 +1277,165 @@ Java_com_mapswithme_maps_Framework_nativeSetWritableDir(JNIEnv * env, jclass, js
   g_framework->AddLocalMaps();
 }
 
-JNIEXPORT void JNICALL
-Java_com_mapswithme_maps_Framework_nativeLoadBookmarks(JNIEnv * env, jclass)
-{
-  frm()->LoadBookmarks();
-}
-
 JNIEXPORT jboolean JNICALL
 Java_com_mapswithme_maps_Framework_nativeIsRoutingActive(JNIEnv * env, jclass)
 {
-  return frm()->IsRoutingActive();
+  return frm()->GetRoutingManager().IsRoutingActive();
 }
 
 JNIEXPORT jboolean JNICALL
 Java_com_mapswithme_maps_Framework_nativeIsRouteBuilding(JNIEnv * env, jclass)
 {
-  return frm()->IsRouteBuilding();
+  return frm()->GetRoutingManager().IsRouteBuilding();
 }
 
 JNIEXPORT jboolean JNICALL
 Java_com_mapswithme_maps_Framework_nativeIsRouteBuilt(JNIEnv * env, jclass)
 {
-  return frm()->IsRouteBuilt();
+  return frm()->GetRoutingManager().IsRouteBuilt();
 }
 
 JNIEXPORT void JNICALL
 Java_com_mapswithme_maps_Framework_nativeCloseRouting(JNIEnv * env, jclass)
 {
-  frm()->CloseRouting();
+  frm()->GetRoutingManager().CloseRouting(true /* remove route points */);
 }
 
 JNIEXPORT void JNICALL
-Java_com_mapswithme_maps_Framework_nativeBuildRoute(JNIEnv * env, jclass,
-                                                    jdouble startLat,  jdouble startLon,
-                                                    jdouble finishLat, jdouble finishLon)
+Java_com_mapswithme_maps_Framework_nativeBuildRoute(JNIEnv * env, jclass)
 {
-  frm()->BuildRoute(MercatorBounds::FromLatLon(startLat, startLon),
-                    MercatorBounds::FromLatLon(finishLat, finishLon), 0 /* timeoutSec */);
+  frm()->GetRoutingManager().BuildRoute();
+}
 
+JNIEXPORT void JNICALL
+Java_com_mapswithme_maps_Framework_nativeRemoveRoute(JNIEnv * env, jclass)
+{
+  frm()->GetRoutingManager().RemoveRoute(false /* deactivateFollowing */);
 }
 
 JNIEXPORT void JNICALL
 Java_com_mapswithme_maps_Framework_nativeFollowRoute(JNIEnv * env, jclass)
 {
-  frm()->FollowRoute();
+  frm()->GetRoutingManager().FollowRoute();
 }
 
 JNIEXPORT void JNICALL
 Java_com_mapswithme_maps_Framework_nativeDisableFollowing(JNIEnv * env, jclass)
 {
-  frm()->DisableFollowMode();
+  frm()->GetRoutingManager().DisableFollowMode();
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_mapswithme_maps_Framework_nativeGetUserAgent(JNIEnv * env, jclass)
+{
+  return jni::ToJavaString(env, GetPlatform().GetAppUserAgent());
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_mapswithme_maps_Framework_nativeGetDeviceId(JNIEnv * env, jclass)
+{
+  return jni::ToJavaString(env, web_api::DeviceId());
 }
 
 JNIEXPORT jobjectArray JNICALL
-Java_com_mapswithme_maps_Framework_nativeGenerateTurnNotifications(JNIEnv * env, jclass)
+Java_com_mapswithme_maps_Framework_nativeGenerateNotifications(JNIEnv * env, jclass)
 {
   ::Framework * fr = frm();
-  if (!fr->IsRoutingActive())
+  if (!fr->GetRoutingManager().IsRoutingActive())
     return nullptr;
 
-  vector<string> turnNotifications;
-  fr->GenerateTurnNotifications(turnNotifications);
-  if (turnNotifications.empty())
+  vector<string> notifications;
+  fr->GetRoutingManager().GenerateNotifications(notifications);
+  if (notifications.empty())
     return nullptr;
 
-  return jni::ToJavaStringArray(env, turnNotifications);
+  return jni::ToJavaStringArray(env, notifications);
+}
+
+JNIEXPORT void JNICALL
+Java_com_mapswithme_maps_Framework_nativeSetSpeedCamManagerMode(JNIEnv * env, jclass, jint mode)
+{
+  frm()->GetRoutingManager().GetSpeedCamManager().SetMode(
+    static_cast<routing::SpeedCameraManagerMode>(mode));
+}
+
+JNIEXPORT jint JNICALL
+Java_com_mapswithme_maps_Framework_nativeGetSpeedCamManagerMode(JNIEnv * env, jclass)
+{
+  return static_cast<jint>(frm()->GetRoutingManager().GetSpeedCamManager().GetMode());
 }
 
 JNIEXPORT jobject JNICALL
 Java_com_mapswithme_maps_Framework_nativeGetRouteFollowingInfo(JNIEnv * env, jclass)
 {
   ::Framework * fr = frm();
-  if (!fr->IsRoutingActive())
+  if (!fr->GetRoutingManager().IsRoutingActive())
     return nullptr;
 
-  location::FollowingInfo info;
-  fr->GetRouteFollowingInfo(info);
+  routing::FollowingInfo info;
+  fr->GetRoutingManager().GetRouteFollowingInfo(info);
   if (!info.IsValid())
     return nullptr;
 
   static jclass const klass = jni::GetGlobalClassRef(env, "com/mapswithme/maps/routing/RoutingInfo");
-  // Java signature : RoutingInfo(String distToTarget, String units, String distTurn, String turnSuffix, String currentStreet, String nextStreet,
-  //                              double completionPercent, int vehicleTurnOrdinal, int vehicleNextTurnOrdinal, int pedestrianTurnOrdinal,
-  //                              double pedestrianDirectionLat, double pedestrianDirectionLon, int exitNum, int totalTime, SingleLaneInfo[] lanes)
-  static jmethodID const ctorRouteInfoID = jni::GetConstructorID(env, klass,
-                                               "(Ljava/lang/String;Ljava/lang/String;"
-                                               "Ljava/lang/String;Ljava/lang/String;"
-                                               "Ljava/lang/String;Ljava/lang/String;DIIIDDII"
-                                               "[Lcom/mapswithme/maps/routing/SingleLaneInfo;)V");
+  // Java signature : RoutingInfo(String distToTarget, String units, String distTurn, String
+  //                              turnSuffix, String currentStreet, String nextStreet,
+  //                              double completionPercent, int vehicleTurnOrdinal, int
+  //                              vehicleNextTurnOrdinal, int pedestrianTurnOrdinal, int exitNum,
+  //                              int totalTime, SingleLaneInfo[] lanes)
+  static jmethodID const ctorRouteInfoID =
+      jni::GetConstructorID(env, klass,
+                            "(Ljava/lang/String;Ljava/lang/String;"
+                            "Ljava/lang/String;Ljava/lang/String;"
+                            "Ljava/lang/String;Ljava/lang/String;DIIIII"
+                            "[Lcom/mapswithme/maps/routing/SingleLaneInfo;ZZ)V");
 
-  vector<location::FollowingInfo::SingleLaneInfoClient> const & lanes = info.m_lanes;
+  vector<routing::FollowingInfo::SingleLaneInfoClient> const & lanes = info.m_lanes;
   jobjectArray jLanes = nullptr;
   if (!lanes.empty())
   {
     static jclass const laneClass = jni::GetGlobalClassRef(env, "com/mapswithme/maps/routing/SingleLaneInfo");
-    size_t const lanesSize = lanes.size();
+    auto const lanesSize = static_cast<jsize>(lanes.size());
     jLanes = env->NewObjectArray(lanesSize, laneClass, nullptr);
     ASSERT(jLanes, (jni::DescribeException()));
     static jmethodID const ctorSingleLaneInfoID = jni::GetConstructorID(env, laneClass, "([BZ)V");
 
-    for (size_t j = 0; j < lanesSize; ++j)
+    for (jsize j = 0; j < lanesSize; ++j)
     {
-      size_t const laneSize = lanes[j].m_lane.size();
+      auto const laneSize = static_cast<jsize>(lanes[j].m_lane.size());
       jni::TScopedLocalByteArrayRef singleLane(env, env->NewByteArray(laneSize));
       ASSERT(singleLane.get(), (jni::DescribeException()));
       env->SetByteArrayRegion(singleLane.get(), 0, laneSize, lanes[j].m_lane.data());
 
-      jni::TScopedLocalRef singleLaneInfo(env, env->NewObject(laneClass, ctorSingleLaneInfoID, singleLane.get(), lanes[j].m_isRecommended));
+      jni::TScopedLocalRef singleLaneInfo(
+          env, env->NewObject(laneClass, ctorSingleLaneInfoID, singleLane.get(),
+                              lanes[j].m_isRecommended));
       ASSERT(singleLaneInfo.get(), (jni::DescribeException()));
       env->SetObjectArrayElement(jLanes, j, singleLaneInfo.get());
     }
   }
 
+  auto const & rm = frm()->GetRoutingManager();
+  auto const isSpeedLimitExceeded = rm.IsRoutingActive() ? rm.IsSpeedLimitExceeded() : false;
+  auto const shouldPlaySignal = frm()->GetRoutingManager().GetSpeedCamManager().ShouldPlayBeepSignal();
   jobject const result = env->NewObject(
       klass, ctorRouteInfoID, jni::ToJavaString(env, info.m_distToTarget),
       jni::ToJavaString(env, info.m_targetUnitsSuffix), jni::ToJavaString(env, info.m_distToTurn),
       jni::ToJavaString(env, info.m_turnUnitsSuffix), jni::ToJavaString(env, info.m_sourceName),
-      jni::ToJavaString(env, info.m_targetName), info.m_completionPercent, info.m_turn, info.m_nextTurn, info.m_pedestrianTurn,
-      info.m_pedestrianDirectionPos.lat, info.m_pedestrianDirectionPos.lon, info.m_exitNum, info.m_time, jLanes);
+      jni::ToJavaString(env, info.m_displayedStreetName), info.m_completionPercent, info.m_turn,
+      info.m_nextTurn, info.m_pedestrianTurn, info.m_exitNum, info.m_time, jLanes,
+      static_cast<jboolean>(isSpeedLimitExceeded), static_cast<jboolean>(shouldPlaySignal));
   ASSERT(result, (jni::DescribeException()));
   return result;
+}
+
+JNIEXPORT void JNICALL
+Java_com_mapswithme_maps_Framework_nativeDisableAdProvider(JNIEnv * env, jclass, jint type,
+                                                           jint place)
+{
+  auto const & bannerType = static_cast<ads::Banner::Type>(type);
+  auto const & bannerPlace = static_cast<ads::Banner::Place>(place);
+  g_framework->DisableAdProvider(bannerType, bannerPlace);
 }
 
 JNIEXPORT jintArray JNICALL
@@ -927,11 +1444,21 @@ Java_com_mapswithme_maps_Framework_nativeGenerateRouteAltitudeChartBits(JNIEnv *
   ::Framework * fr = frm();
   ASSERT(fr, ());
 
+  geometry::Altitudes altitudes;
+  vector<double> routePointDistanceM;
+  if (!fr->GetRoutingManager().GetRouteAltitudesAndDistancesM(routePointDistanceM, altitudes))
+  {
+    LOG(LWARNING, ("Can't get distance to route points and altitude."));
+    return nullptr;
+  }
+
   vector<uint8_t> imageRGBAData;
   int32_t minRouteAltitude = 0;
   int32_t maxRouteAltitude = 0;
   measurement_utils::Units units = measurement_utils::Units::Metric;
-  if (!fr->GenerateRouteAltitudeChart(width, height, imageRGBAData, minRouteAltitude, maxRouteAltitude, units))
+  if (!fr->GetRoutingManager().GenerateRouteAltitudeChart(
+        width, height, altitudes, routePointDistanceM, imageRGBAData,
+        minRouteAltitude, maxRouteAltitude, units))
   {
     LOG(LWARNING, ("Can't generate route altitude image."));
     return nullptr;
@@ -963,7 +1490,7 @@ Java_com_mapswithme_maps_Framework_nativeGenerateRouteAltitudeChartBits(JNIEnv *
     return nullptr;
   }
 
-  jintArray imageRGBADataArray = env->NewIntArray(pxlCount);
+  jintArray imageRGBADataArray = env->NewIntArray(static_cast<jsize>(pxlCount));
   ASSERT(imageRGBADataArray, ());
   jint * arrayElements = env->GetIntArrayElements(imageRGBADataArray, 0);
   ASSERT(arrayElements, ());
@@ -993,14 +1520,39 @@ JNIEXPORT void JNICALL
 Java_com_mapswithme_maps_Framework_nativeSetRoutingListener(JNIEnv * env, jclass, jobject listener)
 {
   CHECK(g_framework, ("Framework isn't created yet!"));
-  frm()->SetRouteBuildingListener(bind(&CallRoutingListener, jni::make_global_ref(listener), _1, _2));
+  auto rf = jni::make_global_ref(listener);
+  frm()->GetRoutingManager().SetRouteBuildingListener(
+      [rf](routing::RouterResultCode e, storage::CountriesSet const & countries) {
+        CallRoutingListener(rf, static_cast<int>(e), countries);
+      });
 }
 
 JNIEXPORT void JNICALL
 Java_com_mapswithme_maps_Framework_nativeSetRouteProgressListener(JNIEnv * env, jclass, jobject listener)
 {
   CHECK(g_framework, ("Framework isn't created yet!"));
-  frm()->SetRouteProgressListener(bind(&CallRouteProgressListener, jni::make_global_ref(listener), _1));
+  frm()->GetRoutingManager().SetRouteProgressListener(
+      bind(&CallRouteProgressListener, jni::make_global_ref(listener), _1));
+}
+
+JNIEXPORT void JNICALL
+Java_com_mapswithme_maps_Framework_nativeSetRoutingRecommendationListener(JNIEnv * env, jclass,
+                                                                          jobject listener)
+{
+  CHECK(g_framework, ("Framework isn't created yet!"));
+  frm()->GetRoutingManager().SetRouteRecommendationListener(
+      bind(&CallRouteRecommendationListener, jni::make_global_ref(listener), _1));
+}
+
+JNIEXPORT void JNICALL
+Java_com_mapswithme_maps_Framework_nativeSetRoutingLoadPointsListener(
+        JNIEnv *, jclass, jobject listener)
+{
+  CHECK(g_framework, ("Framework isn't created yet!"));
+  if (listener != nullptr)
+    g_loadRouteHandler = bind(&CallSetRoutingLoadPointsListener, jni::make_global_ref(listener), _1);
+  else
+    g_loadRouteHandler = nullptr;
 }
 
 JNIEXPORT void JNICALL
@@ -1009,26 +1561,18 @@ Java_com_mapswithme_maps_Framework_nativeDeactivatePopup(JNIEnv * env, jclass)
   return g_framework->DeactivatePopup();
 }
 
-JNIEXPORT jdoubleArray JNICALL
-Java_com_mapswithme_maps_Framework_nativePredictLocation(JNIEnv * env, jclass, jdouble lat, jdouble lon, jdouble accuracy,
-                                                         jdouble bearing, jdouble speed, jdouble elapsedSeconds)
-{
-  double latitude = lat;
-  double longitude = lon;
-  ::Framework::PredictLocation(lat, lon, accuracy, bearing, speed, elapsedSeconds);
-  double latlon[] = { lat, lon };
-  jdoubleArray jLatLon = env->NewDoubleArray(2);
-  env->SetDoubleArrayRegion(jLatLon, 0, 2, latlon);
-
-  return jLatLon;
-}
-
 JNIEXPORT void JNICALL
 Java_com_mapswithme_maps_Framework_nativeSetMapStyle(JNIEnv * env, jclass, jint mapStyle)
 {
   MapStyle const val = static_cast<MapStyle>(mapStyle);
   if (val != g_framework->GetMapStyle())
     g_framework->SetMapStyle(val);
+}
+
+JNIEXPORT jint JNICALL
+Java_com_mapswithme_maps_Framework_nativeGetMapStyle(JNIEnv * env, jclass, jint mapStyle)
+{
+  return g_framework->GetMapStyle();
 }
 
 JNIEXPORT void JNICALL
@@ -1042,37 +1586,143 @@ Java_com_mapswithme_maps_Framework_nativeMarkMapStyle(JNIEnv * env, jclass, jint
 JNIEXPORT void JNICALL
 Java_com_mapswithme_maps_Framework_nativeSetRouter(JNIEnv * env, jclass, jint routerType)
 {
-  g_framework->SetRouter(static_cast<routing::RouterType>(routerType));
+  g_framework->GetRoutingManager().SetRouter(static_cast<routing::RouterType>(routerType));
 }
 
 JNIEXPORT jint JNICALL
 Java_com_mapswithme_maps_Framework_nativeGetRouter(JNIEnv * env, jclass)
 {
-  return static_cast<jint>(g_framework->GetRouter());
+  return static_cast<jint>(g_framework->GetRoutingManager().GetRouter());
 }
 
 JNIEXPORT jint JNICALL
 Java_com_mapswithme_maps_Framework_nativeGetLastUsedRouter(JNIEnv * env, jclass)
 {
-  return static_cast<jint>(g_framework->GetLastUsedRouter());
+  return static_cast<jint>(g_framework->GetRoutingManager().GetLastUsedRouter());
 }
 
 JNIEXPORT jint JNICALL
-Java_com_mapswithme_maps_Framework_nativeGetBestRouter(JNIEnv * env, jclass, jdouble srcLat, jdouble srcLon, jdouble dstLat, jdouble dstLon)
+Java_com_mapswithme_maps_Framework_nativeGetBestRouter(JNIEnv * env, jclass,
+                                                       jdouble srcLat, jdouble srcLon,
+                                                       jdouble dstLat, jdouble dstLon)
 {
-  return static_cast<jint>(frm()->GetBestRouter(MercatorBounds::FromLatLon(srcLat, srcLon), MercatorBounds::FromLatLon(dstLat, dstLon)));
+  return static_cast<jint>(frm()->GetRoutingManager().GetBestRouter(
+      mercator::FromLatLon(srcLat, srcLon), mercator::FromLatLon(dstLat, dstLon)));
 }
 
 JNIEXPORT void JNICALL
-Java_com_mapswithme_maps_Framework_nativeSetRouteStartPoint(JNIEnv * env, jclass, jdouble lat, jdouble lon, jboolean valid)
+Java_com_mapswithme_maps_Framework_nativeAddRoutePoint(JNIEnv * env, jclass, jstring title,
+                                                       jstring subtitle, jint markType,
+                                                       jint intermediateIndex,
+                                                       jboolean isMyPosition,
+                                                       jdouble lat, jdouble lon)
 {
-  frm()->SetRouteStartPoint(m2::PointD(MercatorBounds::FromLatLon(lat, lon)), static_cast<bool>(valid));
+  RouteMarkData data;
+  data.m_title = jni::ToNativeString(env, title);
+  data.m_subTitle = jni::ToNativeString(env, subtitle);
+  data.m_pointType = static_cast<RouteMarkType>(markType);
+  data.m_intermediateIndex = static_cast<size_t>(intermediateIndex);
+  data.m_isMyPosition = static_cast<bool>(isMyPosition);
+  data.m_position = m2::PointD(mercator::FromLatLon(lat, lon));
+
+  frm()->GetRoutingManager().AddRoutePoint(std::move(data));
 }
 
 JNIEXPORT void JNICALL
-Java_com_mapswithme_maps_Framework_nativeSetRouteEndPoint(JNIEnv * env, jclass, jdouble lat, jdouble lon, jboolean valid)
+Java_com_mapswithme_maps_Framework_nativeRemoveRoutePoint(JNIEnv * env, jclass,
+                                                          jint markType, jint intermediateIndex)
 {
-  frm()->SetRouteFinishPoint(m2::PointD(MercatorBounds::FromLatLon(lat, lon)), static_cast<bool>(valid));
+  frm()->GetRoutingManager().RemoveRoutePoint(static_cast<RouteMarkType>(markType),
+                                              static_cast<size_t>(intermediateIndex));
+}
+
+JNIEXPORT void JNICALL
+Java_com_mapswithme_maps_Framework_nativeRemoveIntermediateRoutePoints(JNIEnv * env, jclass)
+{
+  frm()->GetRoutingManager().RemoveIntermediateRoutePoints();
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_mapswithme_maps_Framework_nativeCouldAddIntermediatePoint(JNIEnv * env, jclass)
+{
+  return frm()->GetRoutingManager().CouldAddIntermediatePoint();
+}
+
+JNIEXPORT jobjectArray JNICALL
+Java_com_mapswithme_maps_Framework_nativeGetRoutePoints(JNIEnv * env, jclass)
+{
+  auto const points = frm()->GetRoutingManager().GetRoutePoints();
+
+  static jclass const pointClazz = jni::GetGlobalClassRef(env,
+                                   "com/mapswithme/maps/routing/RouteMarkData");
+  // Java signature : RouteMarkData(String title, String subtitle,
+  //                                @RoutePointInfo.RouteMarkType int pointType,
+  //                                int intermediateIndex, boolean isVisible, boolean isMyPosition,
+  //                                boolean isPassed, double lat, double lon)
+  static jmethodID const pointConstructor = jni::GetConstructorID(env, pointClazz,
+                                            "(Ljava/lang/String;Ljava/lang/String;IIZZZDD)V");
+  return jni::ToJavaArray(env, pointClazz, points, [&](JNIEnv * jEnv, RouteMarkData const & data)
+  {
+    jni::TScopedLocalRef const title(env, jni::ToJavaString(env, data.m_title));
+    jni::TScopedLocalRef const subtitle(env, jni::ToJavaString(env, data.m_subTitle));
+    return env->NewObject(pointClazz, pointConstructor,
+                          title.get(), subtitle.get(),
+                          static_cast<jint>(data.m_pointType),
+                          static_cast<jint>(data.m_intermediateIndex),
+                          static_cast<jboolean>(data.m_isVisible),
+                          static_cast<jboolean>(data.m_isMyPosition),
+                          static_cast<jboolean>(data.m_isPassed),
+                          mercator::YToLat(data.m_position.y),
+                          mercator::XToLon(data.m_position.x));
+  });
+}
+
+JNIEXPORT jobject JNICALL
+Java_com_mapswithme_maps_Framework_nativeGetTransitRouteInfo(JNIEnv * env, jclass)
+{
+  auto const routeInfo = frm()->GetRoutingManager().GetTransitRouteInfo();
+
+  static jclass const transitStepClass = jni::GetGlobalClassRef(env,
+                                         "com/mapswithme/maps/routing/TransitStepInfo");
+  // Java signature : TransitStepInfo(@TransitType int type, @Nullable String distance, @Nullable String distanceUnits,
+  //                                  int timeInSec, @Nullable String number, int color, int intermediateIndex)
+  static jmethodID const transitStepConstructor = jni::GetConstructorID(env, transitStepClass,
+                                                  "(ILjava/lang/String;Ljava/lang/String;ILjava/lang/String;II)V");
+
+  jni::TScopedLocalRef const steps(env, jni::ToJavaArray(env, transitStepClass,
+                                                         routeInfo.m_steps,
+                                                         [&](JNIEnv * jEnv, TransitStepInfo const & stepInfo)
+  {
+      jni::TScopedLocalRef const distance(env, jni::ToJavaString(env, stepInfo.m_distanceStr));
+      jni::TScopedLocalRef const distanceUnits(env, jni::ToJavaString(env, stepInfo.m_distanceUnitsSuffix));
+      jni::TScopedLocalRef const number(env, jni::ToJavaString(env, stepInfo.m_number));
+      return env->NewObject(transitStepClass, transitStepConstructor,
+                            static_cast<jint>(stepInfo.m_type),
+                            distance.get(),
+                            distanceUnits.get(),
+                            static_cast<jint>(stepInfo.m_timeInSec),
+                            number.get(),
+                            static_cast<jint>(stepInfo.m_colorARGB),
+                            static_cast<jint>(stepInfo.m_intermediateIndex));
+  }));
+
+  static jclass const transitRouteInfoClass = jni::GetGlobalClassRef(env,
+                                                                     "com/mapswithme/maps/routing/TransitRouteInfo");
+  // Java signature : TransitRouteInfo(@NonNull String totalDistance, @NonNull String totalDistanceUnits, int totalTimeInSec,
+  //                                   @NonNull String totalPedestrianDistance, @NonNull String totalPedestrianDistanceUnits,
+  //                                   int totalPedestrianTimeInSec, @NonNull TransitStepInfo[] steps)
+  static jmethodID const transitRouteInfoConstructor = jni::GetConstructorID(env, transitRouteInfoClass,
+                                                                             "(Ljava/lang/String;Ljava/lang/String;I"
+                                                                             "Ljava/lang/String;Ljava/lang/String;I"
+                                                                             "[Lcom/mapswithme/maps/routing/TransitStepInfo;)V");
+  jni::TScopedLocalRef const distance(env, jni::ToJavaString(env, routeInfo.m_totalDistanceStr));
+  jni::TScopedLocalRef const distanceUnits(env, jni::ToJavaString(env, routeInfo.m_totalDistanceUnitsSuffix));
+  jni::TScopedLocalRef const distancePedestrian(env, jni::ToJavaString(env, routeInfo.m_totalPedestrianDistanceStr));
+  jni::TScopedLocalRef const distancePedestrianUnits(env, jni::ToJavaString(env, routeInfo.m_totalPedestrianUnitsSuffix));
+  return env->NewObject(transitRouteInfoClass, transitRouteInfoConstructor,
+                        distance.get(), distanceUnits.get(), static_cast<jint>(routeInfo.m_totalTimeInSec),
+                        distancePedestrian.get(), distancePedestrianUnits.get(), static_cast<jint>(routeInfo.m_totalPedestrianTimeInSec),
+                        steps.get());
 }
 
 JNIEXPORT void JNICALL
@@ -1128,8 +1778,53 @@ Java_com_mapswithme_maps_Framework_nativeSetAutoZoomEnabled(JNIEnv * env, jclass
   frm()->AllowAutoZoom(autoZoomEnabled);
 }
 
+JNIEXPORT void JNICALL
+Java_com_mapswithme_maps_Framework_nativeSetTransitSchemeEnabled(JNIEnv * env, jclass, jboolean enabled)
+{
+  frm()->GetTransitManager().EnableTransitSchemeMode(static_cast<bool>(enabled));
+}
+
 JNIEXPORT jboolean JNICALL
-Java_com_mapswithme_maps_Framework_nativeGetAutoZoomEnabled(JNIEnv * env, jclass)
+Java_com_mapswithme_maps_Framework_nativeIsTransitSchemeEnabled(JNIEnv * env, jclass)
+{
+  return static_cast<jboolean>(frm()->LoadTransitSchemeEnabled());
+}
+
+JNIEXPORT void JNICALL
+Java_com_mapswithme_maps_Framework_nativeSetIsolinesLayerEnabled(JNIEnv * env, jclass, jboolean enabled)
+{
+  auto const isolinesEnabled = static_cast<bool>(enabled);
+  frm()->GetIsolinesManager().SetEnabled(isolinesEnabled);
+  frm()->SaveIsolinesEnabled(isolinesEnabled);
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_mapswithme_maps_Framework_nativeIsIsolinesLayerEnabled(JNIEnv * env, jclass)
+{
+  return static_cast<jboolean>(frm()->LoadIsolinesEnabled());
+}
+
+JNIEXPORT void JNICALL Java_com_mapswithme_maps_Framework_nativeSetGuidesLayerEnabled(
+    JNIEnv * env, jclass, jboolean enabled)
+{
+  frm()->SaveGuidesEnabled(static_cast<bool>(enabled));
+  frm()->GetGuidesManager().SetEnabled(static_cast<bool>(enabled));
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_mapswithme_maps_Framework_nativeIsGuidesLayerEnabled(JNIEnv * env, jclass)
+{
+  return static_cast<jboolean>(frm()->LoadGuidesEnabled());
+}
+
+JNIEXPORT void JNICALL
+Java_com_mapswithme_maps_Framework_nativeSaveSettingSchemeEnabled(JNIEnv * env, jclass, jboolean enabled)
+{
+  frm()->SaveTransitSchemeEnabled(static_cast<bool>(enabled));
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_mapswithme_maps_Framework_nativeGetAutoZoomEnabled(JNIEnv *, jclass)
 {
   return frm()->LoadAutoZoom();
 }
@@ -1138,30 +1833,35 @@ Java_com_mapswithme_maps_Framework_nativeGetAutoZoomEnabled(JNIEnv * env, jclass
 JNIEXPORT void JNICALL
 Java_com_mapswithme_maps_Framework_nativeZoomToPoint(JNIEnv * env, jclass, jdouble lat, jdouble lon, jint zoom, jboolean animate)
 {
-  g_framework->Scale(m2::PointD(MercatorBounds::FromLatLon(lat, lon)), zoom, animate);
+  g_framework->Scale(m2::PointD(mercator::FromLatLon(lat, lon)), zoom, animate);
 }
 
 JNIEXPORT jobject JNICALL
 Java_com_mapswithme_maps_Framework_nativeDeleteBookmarkFromMapObject(JNIEnv * env, jclass)
 {
-  place_page::Info & info = g_framework->GetPlacePageInfo();
-  bookmarks_helper::RemoveBookmark(info.m_bac.m_categoryIndex, info.m_bac.m_bookmarkIndex);
-  info.m_bac = {};
-  return usermark_helper::CreateMapObject(env, info);
-}
+  if (!frm()->HasPlacePageInfo())
+    return nullptr;
 
-JNIEXPORT void JNICALL
-Java_com_mapswithme_maps_Framework_nativeOnBookmarkCategoryChanged(JNIEnv * env, jclass, jint cat, jint bmk)
-{
-  place_page::Info & info = g_framework->GetPlacePageInfo();
-  info.m_bac.m_categoryIndex = cat;
-  info.m_bac.m_bookmarkIndex = bmk;
+  place_page::Info const & info = g_framework->GetPlacePageInfo();
+  auto const bookmarkId = info.GetBookmarkId();
+  frm()->GetBookmarkManager().GetEditSession().DeleteBookmark(bookmarkId);
+
+  auto buildInfo = info.GetBuildInfo();
+  buildInfo.m_match = place_page::BuildInfo::Match::FeatureOnly;
+  buildInfo.m_userMarkId = kml::kInvalidMarkId;
+  buildInfo.m_source = place_page::BuildInfo::Source::Other;
+  frm()->UpdatePlacePageInfoForCurrentSelection(buildInfo);
+
+  return usermark_helper::CreateMapObject(env, g_framework->GetPlacePageInfo());
 }
 
 JNIEXPORT void JNICALL
 Java_com_mapswithme_maps_Framework_nativeTurnOnChoosePositionMode(JNIEnv *, jclass, jboolean isBusiness, jboolean applyPosition)
 {
-  g_framework->SetChoosePositionMode(true, isBusiness, applyPosition, applyPosition ? g_framework->GetPlacePageInfo().GetMercator() : m2::PointD());
+  auto const pos = applyPosition && frm()->HasPlacePageInfo()
+      ? g_framework->GetPlacePageInfo().GetMercator()
+      : m2::PointD();
+  g_framework->SetChoosePositionMode(true, isBusiness, applyPosition, pos);
 }
 
 JNIEXPORT void JNICALL
@@ -1186,6 +1886,10 @@ Java_com_mapswithme_maps_Framework_nativeIsDownloadedMapAtScreenCenter(JNIEnv *,
 JNIEXPORT jstring JNICALL
 Java_com_mapswithme_maps_Framework_nativeGetActiveObjectFormattedCuisine(JNIEnv * env, jclass)
 {
+  ::Framework * frm = g_framework->NativeFramework();
+  if (!frm->HasPlacePageInfo())
+    return {};
+
   return jni::ToJavaString(env, g_framework->GetPlacePageInfo().FormatCuisines());
 }
 
@@ -1193,5 +1897,450 @@ JNIEXPORT void JNICALL
 Java_com_mapswithme_maps_Framework_nativeSetVisibleRect(JNIEnv * env, jclass, jint left, jint top, jint right, jint bottom)
 {
   frm()->SetVisibleViewport(m2::RectD(left, top, right, bottom));
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_mapswithme_maps_Framework_nativeIsRouteFinished(JNIEnv * env, jclass)
+{
+  return frm()->GetRoutingManager().IsRouteFinished();
+}
+
+JNIEXPORT void JNICALL
+Java_com_mapswithme_maps_Framework_nativeLogLocalAdsEvent(JNIEnv * env, jclass, jint type,
+                                                          jdouble lat, jdouble lon, jint accuracy)
+{
+  g_framework->LogLocalAdsEvent(static_cast<local_ads::EventType>(type), lat, lon, accuracy);
+}
+
+JNIEXPORT void JNICALL
+Java_com_mapswithme_maps_Framework_nativeRunFirstLaunchAnimation(JNIEnv * env, jclass)
+{
+  frm()->RunFirstLaunchAnimation();
+}
+
+JNIEXPORT jint JNICALL
+Java_com_mapswithme_maps_Framework_nativeOpenRoutePointsTransaction(JNIEnv * env, jclass)
+{
+  return frm()->GetRoutingManager().OpenRoutePointsTransaction();
+}
+
+JNIEXPORT void JNICALL
+Java_com_mapswithme_maps_Framework_nativeApplyRoutePointsTransaction(JNIEnv * env, jclass,
+                                                                     jint transactionId)
+{
+  frm()->GetRoutingManager().ApplyRoutePointsTransaction(transactionId);
+}
+
+JNIEXPORT void JNICALL
+Java_com_mapswithme_maps_Framework_nativeCancelRoutePointsTransaction(JNIEnv * env, jclass,
+                                                                      jint transactionId)
+{
+  frm()->GetRoutingManager().CancelRoutePointsTransaction(transactionId);
+}
+
+JNIEXPORT jint JNICALL
+Java_com_mapswithme_maps_Framework_nativeInvalidRoutePointsTransactionId(JNIEnv * env, jclass)
+{
+  return frm()->GetRoutingManager().InvalidRoutePointsTransactionId();
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_mapswithme_maps_Framework_nativeHasSavedRoutePoints()
+{
+  return frm()->GetRoutingManager().HasSavedRoutePoints();
+}
+
+JNIEXPORT void JNICALL
+Java_com_mapswithme_maps_Framework_nativeLoadRoutePoints()
+{
+  frm()->GetRoutingManager().LoadRoutePoints(g_loadRouteHandler);
+}
+
+JNIEXPORT void JNICALL
+Java_com_mapswithme_maps_Framework_nativeSaveRoutePoints()
+{
+  frm()->GetRoutingManager().SaveRoutePoints();
+}
+
+JNIEXPORT void JNICALL
+Java_com_mapswithme_maps_Framework_nativeDeleteSavedRoutePoints()
+{
+  frm()->GetRoutingManager().DeleteSavedRoutePoints();
+}
+
+JNIEXPORT jobjectArray JNICALL
+Java_com_mapswithme_maps_Framework_nativeGetSearchBanners(JNIEnv * env, jclass)
+{
+  return usermark_helper::ToBannersArray(env, frm()->GetAdsEngine().GetSearchBanners());
+}
+
+JNIEXPORT void JNICALL
+Java_com_mapswithme_maps_Framework_nativeAuthenticateUser(JNIEnv * env, jclass, jstring socialToken,
+                                                          jint socialTokenType,
+                                                          jboolean privacyAccepted,
+                                                          jboolean termsAccepted,
+                                                          jboolean promoAccepted,
+                                                          jobject listener)
+{
+  std::shared_ptr<_jobject> gListener(env->NewGlobalRef(listener), [](jobject l)
+  {
+    jni::GetEnv()->DeleteGlobalRef(l);
+  });
+
+  auto const tokenStr = jni::ToNativeString(env, socialToken);
+  auto & user = frm()->GetUser();
+  auto s = make_unique<User::Subscriber>();
+  s->m_postCallAction = User::Subscriber::Action::RemoveSubscriber;
+  s->m_onAuthenticate = [gListener](bool success)
+  {
+    GetPlatform().RunTask(Platform::Thread::Gui, [gListener, success]
+    {
+      auto e = jni::GetEnv();
+      jmethodID const callback = jni::GetMethodID(e, gListener.get(), "onAuthorized", "(Z)V");
+      e->CallVoidMethod(gListener.get(), callback, success);
+    });
+  };
+  user.AddSubscriber(std::move(s));
+  user.Authenticate(tokenStr, static_cast<User::SocialTokenType>(socialTokenType),
+                    static_cast<bool>(privacyAccepted), static_cast<bool>(termsAccepted),
+                    static_cast<bool>(promoAccepted));
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_mapswithme_maps_Framework_nativeIsUserAuthenticated()
+{
+  return frm()->GetUser().IsAuthenticated();
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_mapswithme_maps_Framework_nativeGetPhoneAuthUrl(JNIEnv * env, jclass, jstring redirectUrl)
+{
+  return jni::ToJavaString(env, User::GetPhoneAuthUrl(jni::ToNativeString(env, redirectUrl)));
+}
+
+JNIEXPORT jobjectArray JNICALL
+Java_com_mapswithme_maps_Framework_nativeGetDefaultAuthHeaders(JNIEnv * env, jobject)
+{
+  return jni::ToKeyValueArray(env, web_api::GetDefaultAuthHeaders());
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_mapswithme_maps_Framework_nativeGetPrivacyPolicyLink(JNIEnv * env, jclass)
+{
+  return jni::ToJavaString(env, User::GetPrivacyPolicyLink());
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_mapswithme_maps_Framework_nativeGetTermsOfUseLink(JNIEnv * env, jclass)
+{
+  return jni::ToJavaString(env, User::GetTermsOfUseLink());
+}
+
+JNIEXPORT void JNICALL
+Java_com_mapswithme_maps_Framework_nativeShowFeature(JNIEnv * env, jclass, jobject featureId)
+{
+  auto const f = g_framework->BuildFeatureId(env, featureId);
+
+  if (f.IsValid())
+    frm()->ShowFeature(f);
+}
+
+JNIEXPORT void JNICALL
+Java_com_mapswithme_maps_Framework_nativeShowBookmarkCategory(JNIEnv * env, jclass, jlong cat)
+{
+  frm()->ShowBookmarkCategory(static_cast<kml::MarkGroupId>(cat));
+}
+
+JNIEXPORT jint JNICALL
+Java_com_mapswithme_maps_Framework_nativeGetFilterRating(JNIEnv * env, jclass, jfloat rawRating)
+{
+  return static_cast<jint>(place_page::rating::GetFilterRating(rawRating));
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_mapswithme_maps_Framework_nativeMoPubInitializationBannerId(JNIEnv * env, jclass)
+{
+  return jni::ToJavaString(env, ads::Mopub::InitializationBannerId());
+}
+
+JNIEXPORT jobject JNICALL
+Java_com_mapswithme_maps_Framework_nativeGetDownloaderPromoBanner(JNIEnv * env, jclass,
+                                                                  jstring mwmId)
+{
+  static jclass const downloaderPromoBannerClass = jni::GetGlobalClassRef(env,
+      "com/mapswithme/maps/downloader/DownloaderPromoBanner");
+  // Java signature : DownloaderPromoBanner(@DownloaderPromoType int type, @NonNull String url)
+  static jmethodID const downloaderPromoBannerConstructor = jni::GetConstructorID(env,
+      downloaderPromoBannerClass, "(ILjava/lang/String;)V");
+
+  auto const pos = frm()->GetCurrentPosition();
+  auto const banners =
+      frm()->GetAdsEngine().GetDownloadOnMapBanners(jni::ToNativeString(env, mwmId), pos,
+                                                    languages::GetCurrentNorm());
+
+  if (banners.empty())
+    return nullptr;
+
+  jni::TScopedLocalRef const url(env, jni::ToJavaString(env, banners[0].m_value));
+  return env->NewObject(downloaderPromoBannerClass, downloaderPromoBannerConstructor,
+                        static_cast<jint>(banners[0].m_type), url.get());
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_mapswithme_maps_Framework_nativeHasMegafonCategoryBanner(JNIEnv * env, jclass)
+{
+  auto const & purchase = frm()->GetPurchase();
+  if (purchase && purchase->IsSubscriptionActive(SubscriptionType::RemoveAds))
+    return static_cast<jboolean>(false);
+
+  auto const position = frm()->GetCurrentPosition();
+  if (!position)
+    return static_cast<jboolean>(false);
+
+  auto const latLon = mercator::ToLatLon(*position);
+  return static_cast<jboolean>(ads::HasMegafonCategoryBanner(frm()->GetStorage(),
+                                                             frm()->GetTopmostCountries(latLon),
+                                                             languages::GetCurrentNorm()));
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_mapswithme_maps_Framework_nativeGetMegafonCategoryBannerUrl(JNIEnv * env, jclass)
+{
+  return jni::ToJavaString(env, ads::GetMegafonCategoryBannerUrl());
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_mapswithme_maps_Framework_nativeHasCitymobilCategoryBanner(JNIEnv * env, jclass)
+{
+  if (GetPlatform().ConnectionStatus() == Platform::EConnectionType::CONNECTION_NONE)
+    return static_cast<jboolean>(false);
+
+  auto const pos = frm()->GetCurrentPosition();
+  auto const banners = frm()->GetAdsEngine().GetSearchCategoryBanners(pos);
+
+  return static_cast<jboolean>(!banners.empty() &&
+                               banners.front().m_type == ads::Banner::Type::Citymobil);
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_mapswithme_maps_Framework_nativeGetCitymobilCategoryBannerUrl(JNIEnv * env, jclass)
+{
+  auto const pos = frm()->GetCurrentPosition();
+  auto const banners = frm()->GetAdsEngine().GetSearchCategoryBanners(pos);
+
+  if (banners.empty() || banners.front().m_type != ads::Banner::Type::Citymobil)
+    return jni::ToJavaString(env, "");
+
+  return jni::ToJavaString(env, banners.front().m_value);
+}
+
+JNIEXPORT void JNICALL
+Java_com_mapswithme_maps_Framework_nativeMakeCrash(JNIEnv *env, jclass type)
+{
+  CHECK(false, ("Diagnostic native crash!"));
+}
+
+JNIEXPORT void JNICALL
+Java_com_mapswithme_maps_Framework_nativeValidatePurchase(JNIEnv * env, jclass, jstring serverId,
+                                                          jstring vendorId, jstring purchaseData)
+{
+  auto const & purchase = frm()->GetPurchase();
+  if (purchase == nullptr)
+    return;
+
+  Purchase::ValidationInfo info;
+  info.m_serverId = jni::ToNativeString(env, serverId);
+  info.m_vendorId = jni::ToNativeString(env, vendorId);
+  info.m_receiptData = jni::ToNativeString(env, purchaseData);
+
+  purchase->Validate(info, frm()->GetUser().GetAccessToken());
+}
+
+JNIEXPORT void JNICALL
+Java_com_mapswithme_maps_Framework_nativeStartPurchaseTransaction(JNIEnv * env, jclass,
+                                                                  jstring serverId,
+                                                                  jstring vendorId)
+{
+  auto const & purchase = frm()->GetPurchase();
+  if (purchase == nullptr)
+    return;
+
+  purchase->StartTransaction(jni::ToNativeString(env, serverId),
+                             jni::ToNativeString(env, vendorId),
+                             frm()->GetUser().GetAccessToken());
+}
+
+JNIEXPORT void JNICALL
+Java_com_mapswithme_maps_Framework_nativeSetPurchaseValidationListener(JNIEnv *, jclass,
+                                                                       jobject listener)
+{
+  auto const & purchase = frm()->GetPurchase();
+  if (purchase == nullptr)
+    return;
+
+  if (listener != nullptr)
+  {
+    purchase->SetValidationCallback(bind(&CallPurchaseValidationListener,
+                                         jni::make_global_ref(listener), _1, _2));
+  }
+  else
+  {
+    purchase->SetValidationCallback(nullptr);
+  }
+}
+
+JNIEXPORT void JNICALL
+Java_com_mapswithme_maps_Framework_nativeStartPurchaseTransactionListener(JNIEnv *, jclass,
+                                                                          jobject listener)
+{
+  auto const & purchase = frm()->GetPurchase();
+  if (purchase == nullptr)
+    return;
+
+  if (listener != nullptr)
+  {
+    purchase->SetStartTransactionCallback(bind(&CallStartPurchaseTransactionListener,
+                                          jni::make_global_ref(listener), _1, _2, _3));
+  }
+  else
+  {
+    purchase->SetStartTransactionCallback(nullptr);
+  }
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_mapswithme_maps_Framework_nativeHasActiveSubscription(JNIEnv *, jclass, jint type)
+{
+  auto const & purchase = frm()->GetPurchase();
+  return purchase != nullptr ?
+    static_cast<jboolean>(purchase->IsSubscriptionActive(static_cast<SubscriptionType>(type))) :
+    static_cast<jboolean>(false);
+}
+
+JNIEXPORT void JNICALL
+Java_com_mapswithme_maps_Framework_nativeSetActiveSubscription(JNIEnv *, jclass, jint type,
+                                                               jboolean isActive, jboolean isTrial)
+{
+  auto const & purchase = frm()->GetPurchase();
+  if (purchase == nullptr)
+    return;
+
+  purchase->SetSubscriptionEnabled(static_cast<SubscriptionType>(type), static_cast<bool>(isActive),
+                                   static_cast<bool>(isTrial));
+}
+
+JNIEXPORT jint JNICALL
+Java_com_mapswithme_maps_Framework_nativeGetCurrentTipIndex(JNIEnv * env, jclass)
+{
+  auto const & tipsApi = frm()->GetTipsApi();
+  auto const tip = tipsApi.GetTip();
+  if (!tip)
+    return kUndefinedTip;
+  return static_cast<jint>(*tip);
+}
+
+JNIEXPORT void JNICALL
+Java_com_mapswithme_maps_Framework_nativeBindUser(JNIEnv * env, jclass, jobject listener)
+{
+  auto listenerRef = jni::make_global_ref(listener);
+  auto & user = frm()->GetUser();
+  user.BindUser([listenerRef](bool success)
+  {
+    auto e = jni::GetEnv();
+    jmethodID const callback = jni::GetMethodID(e, *listenerRef, "onUserBound", "(Z)V");
+    e->CallVoidMethod(*listenerRef, callback, static_cast<jboolean>(success));
+  });
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_mapswithme_maps_Framework_nativeGetAccessToken(JNIEnv * env, jclass)
+{
+  auto & user = frm()->GetUser();
+  return jni::ToJavaString(env, user.GetAccessToken());
+}
+
+JNIEXPORT jobject JNICALL
+Java_com_mapswithme_maps_Framework_nativeGetMapObject(JNIEnv * env, jclass,
+                                                      jobject notificationCandidate)
+{
+  NotificationCandidate notification(NotificationCandidate::Type::UgcReview);
+  auto const getBestTypeId =
+      jni::GetMethodID(env, notificationCandidate, "getFeatureBestType", "()Ljava/lang/String;");
+  auto const bestType =
+      static_cast<jstring>(env->CallObjectMethod(notificationCandidate, getBestTypeId));
+  notification.SetBestFeatureType(jni::ToNativeString(env, bestType));
+
+  auto const getMercatorPosXId =
+      jni::GetMethodID(env, notificationCandidate, "getMercatorPosX", "()D");
+  auto const getMercatorPosYId =
+      jni::GetMethodID(env, notificationCandidate, "getMercatorPosY", "()D");
+
+  auto const posX =
+      static_cast<double>(env->CallDoubleMethod(notificationCandidate, getMercatorPosXId));
+  auto const posY =
+      static_cast<double>(env->CallDoubleMethod(notificationCandidate, getMercatorPosYId));
+  notification.SetPos({posX, posY});
+
+  auto const getDefaultNameId =
+      jni::GetMethodID(env, notificationCandidate, "getDefaultName", "()Ljava/lang/String;");
+  auto const defaultName =
+      static_cast<jstring>(env->CallObjectMethod(notificationCandidate, getDefaultNameId));
+  notification.SetDefaultName(jni::ToNativeString(env, defaultName));
+
+  if (frm()->MakePlacePageForNotification(notification))
+    return usermark_helper::CreateMapObject(env, frm()->GetCurrentPlacePageInfo());
+
+  return nullptr;
+}
+
+JNIEXPORT void JNICALL
+Java_com_mapswithme_maps_Framework_nativeSetPowerManagerFacility(JNIEnv *, jclass,
+                                                                 jint facilityType, jboolean state)
+{
+  frm()->GetPowerManager().SetFacility(static_cast<power_management::Facility>(facilityType),
+                                       static_cast<bool>(state));
+}
+
+JNIEXPORT jint JNICALL
+Java_com_mapswithme_maps_Framework_nativeGetPowerManagerScheme(JNIEnv *, jclass)
+{
+  return static_cast<jint>(frm()->GetPowerManager().GetScheme());
+}
+
+JNIEXPORT void JNICALL
+Java_com_mapswithme_maps_Framework_nativeSetPowerManagerScheme(JNIEnv *, jclass, jint schemeType)
+{
+  frm()->GetPowerManager().SetScheme(static_cast<power_management::Scheme>(schemeType));
+}
+
+JNIEXPORT void JNICALL
+Java_com_mapswithme_maps_Framework_nativeSetViewportCenter(JNIEnv *, jclass, jdouble lat,
+                                                           jdouble lon, jint zoom, jboolean isAnim)
+{
+  auto const center = mercator::FromLatLon(static_cast<double>(lat),
+                                           static_cast<double>(lon));
+  frm()->SetViewportCenter(center, static_cast<int>(zoom), static_cast<bool>(isAnim));
+}
+
+JNIEXPORT void JNICALL
+Java_com_mapswithme_maps_Framework_nativeStopLocationFollow(JNIEnv *, jclass)
+{
+  frm()->StopLocationFollow();
+}
+
+JNIEXPORT void JNICALL
+Java_com_mapswithme_maps_Framework_nativeSetSearchViewport(JNIEnv *, jclass, jdouble lat,
+                                                           jdouble lon, jint zoom)
+{
+  auto const center = mercator::FromLatLon(static_cast<double>(lat),
+                                           static_cast<double>(lon));
+  auto const rect = df::GetRectForDrawScale(static_cast<int>(zoom), center);
+  frm()->GetSearchAPI().OnViewportChanged(rect);
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_mapswithme_maps_Framework_nativeHasPlacePageInfo(JNIEnv *, jclass)
+{
+  return static_cast<jboolean>(frm()->HasPlacePageInfo());
 }
 }  // extern "C"

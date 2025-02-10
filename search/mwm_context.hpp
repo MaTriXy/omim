@@ -3,73 +3,100 @@
 #include "search/house_to_street_table.hpp"
 #include "search/lazy_centers_table.hpp"
 
+#include "editor/editable_feature_source.hpp"
+
+#include "indexer/feature_covering.hpp"
+#include "indexer/feature_source.hpp"
 #include "indexer/features_vector.hpp"
-#include "indexer/index.hpp"
+#include "indexer/mwm_set.hpp"
 #include "indexer/scale_index.hpp"
+#include "indexer/unique_index.hpp"
 
 #include "base/macros.hpp"
 
-#include "std/shared_ptr.hpp"
-#include "std/string.hpp"
-#include "std/unique_ptr.hpp"
+#include <cstdint>
+#include <memory>
+#include <optional>
+#include <string>
+#include <utility>
 
 class MwmValue;
 
 namespace search
 {
-void CoverRect(m2::RectD const & rect, int scale, covering::IntervalsT & result);
+void CoverRect(m2::RectD const & rect, int scale, covering::Intervals & result);
 
 /// @todo Move this class into "index" library and make it more generic.
-/// Now it duplicates "Index" functionality.
+/// Now it duplicates "DataSource" functionality.
 class MwmContext
 {
 public:
+  struct MwmType
+  {
+    bool IsFirstBatchMwm(bool inViewport) const
+    {
+      if (inViewport)
+        return m_viewportIntersected;
+      return m_viewportIntersected || m_containsUserPosition || m_containsMatchedCity;
+    }
+
+    bool m_viewportIntersected = false;
+    bool m_containsUserPosition = false;
+    bool m_containsMatchedCity = false;
+    bool m_containsMatchedState = false;
+  };
+
   explicit MwmContext(MwmSet::MwmHandle handle);
+  MwmContext(MwmSet::MwmHandle handle, MwmType type);
 
-  inline MwmSet::MwmId const & GetId() const { return m_handle.GetId(); }
-  inline string const & GetName() const { return GetInfo()->GetCountryName(); }
-  inline shared_ptr<MwmInfo> const & GetInfo() const { return GetId().GetInfo(); }
+  MwmSet::MwmId const & GetId() const { return m_handle.GetId(); }
+  std::string const & GetName() const { return GetInfo()->GetCountryName(); }
+  std::shared_ptr<MwmInfo> const & GetInfo() const { return GetId().GetInfo(); }
+  std::optional<MwmType> const & GetType() const { return m_type; }
 
-  template <typename TFn>
-  void ForEachIndex(covering::IntervalsT const & intervals, uint32_t scale, TFn && fn) const
+  template <typename Fn>
+  void ForEachIndex(covering::Intervals const & intervals, uint32_t scale, Fn && fn) const
   {
     ForEachIndexImpl(intervals, scale, [&](uint32_t index)
                      {
                        // TODO: Optimize deleted checks by getting vector of deleted indexes from
                        // the Editor.
-                       if (GetEditedStatus(index) != osm::Editor::FeatureStatus::Deleted)
+                       if (GetEditedStatus(index) != FeatureStatus::Deleted)
                          fn(index);
                      });
   }
 
-  template <typename TFn>
-  void ForEachIndex(m2::RectD const & rect, TFn && fn) const
+  template <typename Fn>
+  void ForEachIndex(m2::RectD const & rect, Fn && fn) const
   {
     uint32_t const scale = m_value.GetHeader().GetLastScale();
-    covering::IntervalsT intervals;
-    CoverRect(rect, scale, intervals);
-    ForEachIndex(intervals, scale, forward<TFn>(fn));
+    ForEachIndex(rect, scale, std::forward<Fn>(fn));
   }
 
-  template <typename TFn>
-  void ForEachFeature(m2::RectD const & rect, TFn && fn) const
+  template <typename Fn>
+  void ForEachIndex(m2::RectD const & rect, uint32_t scale, Fn && fn) const
+  {
+    covering::Intervals intervals;
+    CoverRect(rect, m_value.GetHeader().GetLastScale(), intervals);
+    ForEachIndex(intervals, scale, std::forward<Fn>(fn));
+  }
+
+  template <typename Fn>
+  void ForEachFeature(m2::RectD const & rect, Fn && fn) const
   {
     uint32_t const scale = m_value.GetHeader().GetLastScale();
-    covering::IntervalsT intervals;
+    covering::Intervals intervals;
     CoverRect(rect, scale, intervals);
 
-    ForEachIndexImpl(intervals, scale, [&](uint32_t index)
-                     {
-                       FeatureType ft;
-                       if (GetFeature(index, ft))
-                         fn(ft);
-                     });
+    ForEachIndexImpl(intervals, scale, [&](uint32_t index) {
+      auto ft = GetFeature(index);
+      if (ft)
+        fn(*ft);
+    });
   }
 
-  // @returns false if feature was deleted by user.
-  WARN_UNUSED_RESULT bool GetFeature(uint32_t index, FeatureType & ft) const;
-
-  WARN_UNUSED_RESULT bool GetStreetIndex(uint32_t houseId, uint32_t & streetId);
+  // Returns false if feature was deleted by user.
+  std::unique_ptr<FeatureType> GetFeature(uint32_t index) const;
 
   WARN_UNUSED_RESULT inline bool GetCenter(uint32_t index, m2::PointD & center)
   {
@@ -77,32 +104,34 @@ public:
   }
 
   MwmSet::MwmHandle m_handle;
-  MwmValue & m_value;
+  MwmValue const & m_value;
 
 private:
-  osm::Editor::FeatureStatus GetEditedStatus(uint32_t index) const
+  FeatureStatus GetEditedStatus(uint32_t index) const
   {
-    return osm::Editor::Instance().GetFeatureStatus(GetId(), index);
+    return m_editableSource.GetFeatureStatus(index);
   }
 
-  template <class TFn>
-  void ForEachIndexImpl(covering::IntervalsT const & intervals, uint32_t scale, TFn && fn) const
+  template <class Fn>
+  void ForEachIndexImpl(covering::Intervals const & intervals, uint32_t scale, Fn && fn) const
   {
-    CheckUniqueIndexes checkUnique(m_value.GetHeader().GetFormat() >= version::Format::v5);
+    CHECK_GREATER_OR_EQUAL(m_value.GetHeader().GetFormat(), version::Format::v5,
+                           ("Old maps should not be registered."));
+    CheckUniqueIndexes checkUnique;
     for (auto const & i : intervals)
-      m_index.ForEachInIntervalAndScale(
-          [&](uint32_t index)
+      m_index.ForEachInIntervalAndScale(i.first, i.second, scale,
+          [&](uint64_t /* key */, uint32_t value)
           {
-            if (checkUnique(index))
-              fn(index);
-          },
-          i.first, i.second, scale);
+            if (checkUnique(value))
+              fn(value);
+          });
   }
 
   FeaturesVector m_vector;
   ScaleIndex<ModelReaderPtr> m_index;
-  unique_ptr<HouseToStreetTable> m_houseToStreetTable;
   LazyCentersTable m_centers;
+  EditableFeatureSource m_editableSource;
+  std::optional<MwmType> m_type;
 
   DISALLOW_COPY_AND_MOVE(MwmContext);
 };

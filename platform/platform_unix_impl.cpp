@@ -1,15 +1,14 @@
 #include "platform/platform.hpp"
 #include "platform/platform_unix_impl.hpp"
 
-#include "coding/file_name_utils.hpp"
-
+#include "base/file_name_utils.hpp"
 #include "base/logging.hpp"
 #include "base/scope_guard.hpp"
 
-#include "std/algorithm.hpp"
-#include "std/cstring.hpp"
-#include "std/regex.hpp"
-#include "std/unique_ptr.hpp"
+#include <algorithm>
+#include <cstring>
+#include <memory>
+#include <regex>
 
 #include <dirent.h>
 #include <sys/types.h>
@@ -21,6 +20,8 @@
 #else
   #include <sys/vfs.h>
 #endif
+
+using namespace std;
 
 namespace
 {
@@ -145,10 +146,24 @@ Platform::EError Platform::GetFileType(string const & path, EFileType & type)
   return ERR_OK;
 }
 
+// static
 bool Platform::IsFileExistsByFullPath(string const & filePath)
 {
   struct stat s;
   return stat(filePath.c_str(), &s) == 0;
+}
+
+//static
+void Platform::DisableBackupForFile(string const & filePath) {}
+
+// static
+string Platform::GetCurrentWorkingDirectory() noexcept
+{
+  char path[PATH_MAX];
+  char const * const dir = getcwd(path, PATH_MAX);
+  if (dir == nullptr)
+    return {};
+  return dir;
 }
 
 bool Platform::IsDirectoryEmpty(string const & directory)

@@ -1,29 +1,23 @@
 #include "search/engine.hpp"
 
-#include "search/geometry_utils.hpp"
 #include "search/processor.hpp"
-#include "search/search_params.hpp"
 
 #include "storage/country_info_getter.hpp"
 
 #include "indexer/categories_holder.hpp"
-#include "indexer/classificator.hpp"
-#include "indexer/scales.hpp"
 #include "indexer/search_string_utils.hpp"
 
-#include "platform/platform.hpp"
-
-#include "geometry/distance_on_sphere.hpp"
-#include "geometry/mercator.hpp"
-
-#include "base/logging.hpp"
 #include "base/scope_guard.hpp"
-#include "base/stl_add.hpp"
+#include "base/stl_helpers.hpp"
+#include "base/timer.hpp"
 
-#include "std/algorithm.hpp"
-#include "std/bind.hpp"
-#include "std/map.hpp"
-#include "std/vector.hpp"
+#include <algorithm>
+#include <cstdint>
+#include <functional>
+#include <map>
+#include <vector>
+
+using namespace std;
 
 namespace search
 {
@@ -31,8 +25,7 @@ namespace
 {
 class InitSuggestions
 {
-  using TSuggestMap = map<pair<strings::UniString, int8_t>, uint8_t>;
-  TSuggestMap m_suggests;
+  map<pair<strings::UniString, int8_t>, uint8_t> m_suggests;
 
 public:
   void operator()(CategoriesHolder::Category::Name const & name)
@@ -90,19 +83,18 @@ Engine::Params::Params(string const & locale, size_t numThreads)
 }
 
 // Engine ------------------------------------------------------------------------------------------
-Engine::Engine(Index & index, CategoriesHolder const & categories,
-               storage::CountryInfoGetter const & infoGetter, unique_ptr<ProcessorFactory> factory,
-               Params const & params)
+Engine::Engine(DataSource & dataSource, CategoriesHolder const & categories,
+               storage::CountryInfoGetter const & infoGetter, Params const & params)
   : m_shutdown(false)
 {
   InitSuggestions doInit;
-  categories.ForEachName(bind<void>(ref(doInit), _1));
+  categories.ForEachName(bind<void>(ref(doInit), placeholders::_1));
   doInit.GetSuggests(m_suggests);
 
   m_contexts.resize(params.m_numThreads);
   for (size_t i = 0; i < params.m_numThreads; ++i)
   {
-    auto processor = factory->Build(index, categories, m_suggests, infoGetter);
+    auto processor = make_unique<Processor>(dataSource, categories, m_suggests, infoGetter);
     processor->SetPreferredLocale(params.m_locale);
     m_contexts[i].m_processor = move(processor);
   }
@@ -110,6 +102,10 @@ Engine::Engine(Index & index, CategoriesHolder const & categories,
   m_threads.reserve(params.m_numThreads);
   for (size_t i = 0; i < params.m_numThreads; ++i)
     m_threads.emplace_back(&Engine::MainLoop, this, ref(m_contexts[i]));
+
+  CacheWorldLocalities();
+  LoadCitiesBoundaries();
+  LoadCountriesTree();
 }
 
 Engine::~Engine()
@@ -124,38 +120,100 @@ Engine::~Engine()
     thread.join();
 }
 
-weak_ptr<ProcessorHandle> Engine::Search(SearchParams const & params, m2::RectD const & viewport)
+weak_ptr<ProcessorHandle> Engine::Search(SearchParams const & params)
 {
   shared_ptr<ProcessorHandle> handle(new ProcessorHandle());
-  PostMessage(Message::TYPE_TASK, [this, params, viewport, handle](Processor & processor)
+  PostMessage(Message::TYPE_TASK, [this, params, handle](Processor & processor)
               {
-                DoSearch(params, viewport, handle, processor);
+                DoSearch(params, handle, processor);
               });
   return handle;
 }
 
-void Engine::SetSupportOldFormat(bool support)
-{
-  PostMessage(Message::TYPE_BROADCAST, [this, support](Processor & processor)
-              {
-                processor.SupportOldFormat(support);
-              });
-}
-
 void Engine::SetLocale(string const & locale)
 {
-  PostMessage(Message::TYPE_BROADCAST, [this, locale](Processor & processor)
-              {
-                processor.SetPreferredLocale(locale);
-              });
+  PostMessage(Message::TYPE_BROADCAST,
+              [locale](Processor & processor) { processor.SetPreferredLocale(locale); });
 }
+
+size_t Engine::GetNumThreads() const { return m_threads.size(); }
 
 void Engine::ClearCaches()
 {
-  PostMessage(Message::TYPE_BROADCAST, [this](Processor & processor)
-              {
-                processor.ClearCaches();
-              });
+  PostMessage(Message::TYPE_BROADCAST, [](Processor & processor) { processor.ClearCaches(); });
+}
+
+void Engine::CacheWorldLocalities()
+{
+  PostMessage(Message::TYPE_BROADCAST,
+              [](Processor & processor) { processor.CacheWorldLocalities(); });
+}
+
+void Engine::LoadCitiesBoundaries()
+{
+  PostMessage(Message::TYPE_BROADCAST,
+              [](Processor & processor) { processor.LoadCitiesBoundaries(); });
+}
+
+void Engine::LoadCountriesTree()
+{
+  PostMessage(Message::TYPE_BROADCAST,
+              [](Processor & processor) { processor.LoadCountriesTree(); });
+}
+
+void Engine::EnableIndexingOfBookmarksDescriptions(bool enable)
+{
+  PostMessage(Message::TYPE_BROADCAST, [enable](Processor & processor) {
+    processor.EnableIndexingOfBookmarksDescriptions(enable);
+  });
+}
+
+void Engine::EnableIndexingOfBookmarkGroup(bookmarks::GroupId const & groupId, bool enable)
+{
+  PostMessage(Message::TYPE_BROADCAST, [=](Processor & processor) {
+    processor.EnableIndexingOfBookmarkGroup(groupId, enable);
+  });
+}
+
+void Engine::ResetBookmarks()
+{
+  PostMessage(Message::TYPE_BROADCAST, [](Processor & processor) {
+    processor.ResetBookmarks();
+  });
+}
+
+void Engine::OnBookmarksCreated(vector<pair<bookmarks::Id, bookmarks::Doc>> const & marks)
+{
+  PostMessage(Message::TYPE_BROADCAST,
+              [marks](Processor & processor) { processor.OnBookmarksCreated(marks); });
+}
+
+void Engine::OnBookmarksUpdated(vector<pair<bookmarks::Id, bookmarks::Doc>> const & marks)
+{
+  PostMessage(Message::TYPE_BROADCAST,
+              [marks](Processor & processor) { processor.OnBookmarksUpdated(marks); });
+}
+
+void Engine::OnBookmarksDeleted(vector<bookmarks::Id> const & marks)
+{
+  PostMessage(Message::TYPE_BROADCAST,
+              [marks](Processor & processor) { processor.OnBookmarksDeleted(marks); });
+}
+
+void Engine::OnBookmarksAttachedToGroup(bookmarks::GroupId const & groupId,
+                                        vector<bookmarks::Id> const & marks)
+{
+  PostMessage(Message::TYPE_BROADCAST, [groupId, marks](Processor & processor) {
+    processor.OnBookmarksAttachedToGroup(groupId, marks);
+  });
+}
+
+void Engine::OnBookmarksDetachedFromGroup(bookmarks::GroupId const & groupId,
+                                          vector<bookmarks::Id> const & marks)
+{
+  PostMessage(Message::TYPE_BROADCAST, [groupId, marks](Processor & processor) {
+    processor.OnBookmarksDetachedFromGroup(groupId, marks);
+  });
 }
 
 void Engine::MainLoop(Context & context)
@@ -216,36 +274,27 @@ void Engine::MainLoop(Context & context)
   }
 }
 
-template <typename... TArgs>
-void Engine::PostMessage(TArgs &&... args)
+template <typename... Args>
+void Engine::PostMessage(Args &&... args)
 {
   lock_guard<mutex> lock(m_mu);
-  m_messages.emplace(forward<TArgs>(args)...);
+  m_messages.emplace(forward<Args>(args)...);
   m_cv.notify_one();
 }
 
-void Engine::DoSearch(SearchParams const & params, m2::RectD const & viewport,
-                      shared_ptr<ProcessorHandle> handle, Processor & processor)
+void Engine::DoSearch(SearchParams const & params, shared_ptr<ProcessorHandle> handle,
+                      Processor & processor)
 {
-  bool const viewportSearch = params.m_mode == Mode::Viewport;
+  LOG(LINFO, ("Search started."));
+  base::Timer timer;
+  SCOPE_GUARD(printDuration, [&timer]() {
+    LOG(LINFO, ("Search ended. Time:", timer.ElapsedSeconds(), "seconds."));
+  });
 
   processor.Reset();
-  processor.Init(viewportSearch);
   handle->Attach(processor);
-  MY_SCOPE_GUARD(detach, [&handle]
-                 {
-                   handle->Detach();
-                 });
+  SCOPE_GUARD(detach, [&handle] { handle->Detach(); });
 
-  // Early exit when query processing is cancelled.
-  if (processor.IsCancelled())
-  {
-    Results results;
-    results.SetEndMarker(true /* isCancelled */);
-    params.m_onResults(results);
-    return;
-  }
-
-  processor.Search(params, viewport);
+  processor.Search(params);
 }
 }  // namespace search

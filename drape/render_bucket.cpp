@@ -1,25 +1,20 @@
 #include "drape/render_bucket.hpp"
 
 #include "drape/attribute_buffer_mutator.hpp"
-#include "drape/debug_rect_renderer.hpp"
+#include "drape/debug_renderer.hpp"
 #include "drape/overlay_handle.hpp"
 #include "drape/overlay_tree.hpp"
 #include "drape/vertex_array_buffer.hpp"
 
-#include "base/stl_add.hpp"
-#include "std/bind.hpp"
+#include "base/stl_helpers.hpp"
 
 namespace dp
 {
-
 RenderBucket::RenderBucket(drape_ptr<VertexArrayBuffer> && buffer)
-  : m_buffer(move(buffer))
-{
-}
+  : m_buffer(std::move(buffer))
+{}
 
-RenderBucket::~RenderBucket()
-{
-}
+RenderBucket::~RenderBucket() {}
 
 ref_ptr<VertexArrayBuffer> RenderBucket::GetBuffer()
 {
@@ -28,7 +23,7 @@ ref_ptr<VertexArrayBuffer> RenderBucket::GetBuffer()
 
 drape_ptr<VertexArrayBuffer> && RenderBucket::MoveBuffer()
 {
-  return move(m_buffer);
+  return std::move(m_buffer);
 }
 
 size_t RenderBucket::GetOverlayHandlesCount() const
@@ -56,9 +51,16 @@ void RenderBucket::AddOverlayHandle(drape_ptr<OverlayHandle> && handle)
   m_overlay.push_back(move(handle));
 }
 
+void RenderBucket::BeforeUpdate()
+{
+  for (auto & overlayHandle : m_overlay)
+    overlayHandle->BeforeUpdate();
+}
+
 void RenderBucket::Update(ScreenBase const & modelView)
 {
-  for (drape_ptr<OverlayHandle> & overlayHandle : m_overlay)
+  BeforeUpdate();
+  for (auto & overlayHandle : m_overlay)
   {
     if (overlayHandle->IsVisible())
       overlayHandle->Update(modelView);
@@ -67,17 +69,29 @@ void RenderBucket::Update(ScreenBase const & modelView)
 
 void RenderBucket::CollectOverlayHandles(ref_ptr<OverlayTree> tree)
 {
-  for (drape_ptr<OverlayHandle> const & overlayHandle : m_overlay)
+  BeforeUpdate();
+  for (auto const & overlayHandle : m_overlay)
     tree->Add(make_ref(overlayHandle));
+}
+
+bool RenderBucket::HasOverlayHandles() const
+{
+  return !m_overlay.empty();
 }
 
 void RenderBucket::RemoveOverlayHandles(ref_ptr<OverlayTree> tree)
 {
-  for (drape_ptr<OverlayHandle> const & overlayHandle : m_overlay)
+  for (auto const & overlayHandle : m_overlay)
     tree->Remove(make_ref(overlayHandle));
 }
 
-void RenderBucket::Render(bool drawAsLine)
+void RenderBucket::SetOverlayVisibility(bool isVisible)
+{
+  for (auto const & overlayHandle : m_overlay)
+    overlayHandle->SetIsVisible(isVisible);
+}
+
+void RenderBucket::Render(ref_ptr<GraphicsContext> context, bool drawAsLine)
 {
   ASSERT(m_buffer != nullptr, ());
 
@@ -85,7 +99,7 @@ void RenderBucket::Render(bool drawAsLine)
   {
     // in simple case when overlay is symbol each element will be contains 6 indexes
     AttributeBufferMutator attributeMutator;
-    IndexBufferMutator indexMutator(6 * m_overlay.size());
+    IndexBufferMutator indexMutator(static_cast<uint32_t>(6 * m_overlay.size()));
     ref_ptr<IndexBufferMutator> rfpIndex = make_ref(&indexMutator);
     ref_ptr<AttributeBufferMutator> rfpAttrib = make_ref(&attributeMutator);
 
@@ -103,9 +117,9 @@ void RenderBucket::Render(bool drawAsLine)
         handle->GetAttributeMutation(rfpAttrib);
     }
 
-    m_buffer->ApplyMutation(hasIndexMutation ? rfpIndex : nullptr, rfpAttrib);
+    m_buffer->ApplyMutation(context, hasIndexMutation ? rfpIndex : nullptr, rfpAttrib);
   }
-  m_buffer->Render(drawAsLine);
+  m_buffer->Render(context, drawAsLine);
 }
 
 void RenderBucket::SetFeatureMinZoom(int minZoom)
@@ -114,28 +128,29 @@ void RenderBucket::SetFeatureMinZoom(int minZoom)
     m_featuresMinZoom = minZoom;
 }
 
-void RenderBucket::RenderDebug(ScreenBase const & screen) const
+void RenderBucket::RenderDebug(ref_ptr<GraphicsContext> context, ScreenBase const & screen,
+                               ref_ptr<DebugRenderer> debugRectRenderer) const
 {
-#ifdef RENDER_DEBUG_RECTS
-  if (!m_overlay.empty())
+  if (!debugRectRenderer || !debugRectRenderer->IsEnabled() || m_overlay.empty())
+    return;
+
+  for (auto const & handle : m_overlay)
   {
-    for (auto const & handle : m_overlay)
+    if (!screen.PixelRect().IsIntersect(handle->GetPixelRect(screen, false)))
+      continue;
+
+    auto const & rects = handle->GetExtendedPixelShape(screen);
+    for (auto const & rect : rects)
     {
-      if (!screen.PixelRect().IsIntersect(handle->GetPixelRect(screen, false)))
+      if (screen.isPerspective() && !screen.PixelRectIn3d().IsIntersect(m2::RectD(rect)))
         continue;
 
-      OverlayHandle::Rects const & rects = handle->GetExtendedPixelShape(screen);
-      for (auto const & rect : rects)
-      {
-        if (screen.isPerspective() && !screen.PixelRectIn3d().IsIntersect(m2::RectD(rect)))
-          continue;
+      auto color = dp::Color::Green();
+      if (!handle->IsVisible())
+        color = handle->IsReady() ? dp::Color::Red() : dp::Color::Yellow();
 
-        DebugRectRenderer::Instance().DrawRect(screen, rect, handle->IsVisible() ?
-                                               dp::Color::Green() : dp::Color::Red());
-      }
+      debugRectRenderer->DrawRect(context, screen, rect, color);
     }
   }
-#endif
 }
-
-} // namespace dp
+}  // namespace dp

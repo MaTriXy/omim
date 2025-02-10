@@ -1,48 +1,58 @@
 #include "search/mwm_context.hpp"
 
+#include "indexer/cell_id.hpp"
+#include "indexer/fake_feature_ids.hpp"
+#include "indexer/feature_source.hpp"
+
 namespace search
 {
-void CoverRect(m2::RectD const & rect, int scale, covering::IntervalsT & result)
+void CoverRect(m2::RectD const & rect, int scale, covering::Intervals & result)
 {
   covering::CoveringGetter covering(rect, covering::ViewportWithLowLevels);
-  auto const & intervals = covering.Get(scale);
+  auto const & intervals = covering.Get<RectId::DEPTH_LEVELS>(scale);
   result.insert(result.end(), intervals.begin(), intervals.end());
 }
 
 MwmContext::MwmContext(MwmSet::MwmHandle handle)
-  : m_handle(move(handle))
-  , m_value(*m_handle.GetValue<MwmValue>())
+  : m_handle(std::move(handle))
+  , m_value(*m_handle.GetValue())
   , m_vector(m_value.m_cont, m_value.GetHeader(), m_value.m_table.get())
   , m_index(m_value.m_cont.GetReader(INDEX_FILE_TAG), m_value.m_factory)
   , m_centers(m_value)
+  , m_editableSource(m_handle)
 {
 }
 
-bool MwmContext::GetFeature(uint32_t index, FeatureType & ft) const
+MwmContext::MwmContext(MwmSet::MwmHandle handle, MwmType type)
+  : m_handle(std::move(handle))
+  , m_value(*m_handle.GetValue())
+  , m_vector(m_value.m_cont, m_value.GetHeader(), m_value.m_table.get())
+  , m_index(m_value.m_cont.GetReader(INDEX_FILE_TAG), m_value.m_factory)
+  , m_centers(m_value)
+  , m_editableSource(m_handle)
+  , m_type(type)
 {
+}
+
+std::unique_ptr<FeatureType> MwmContext::GetFeature(uint32_t index) const
+{
+  std::unique_ptr<FeatureType> ft;
   switch (GetEditedStatus(index))
   {
-  case osm::Editor::FeatureStatus::Deleted:
-  case osm::Editor::FeatureStatus::Obsolete:
-    return false;
-  case osm::Editor::FeatureStatus::Modified:
-  case osm::Editor::FeatureStatus::Created:
-    VERIFY(osm::Editor::Instance().GetEditedFeature(GetId(), index, ft), ());
-    return true;
-  case osm::Editor::FeatureStatus::Untouched:
-    m_vector.GetByIndex(index, ft);
-    ft.SetID(FeatureID(GetId(), index));
-    return true;
+  case FeatureStatus::Deleted:
+  case FeatureStatus::Obsolete:
+    return ft;
+  case FeatureStatus::Modified:
+  case FeatureStatus::Created:
+    ft = m_editableSource.GetModifiedFeature(index);
+    CHECK(ft, ());
+    return ft;
+  case FeatureStatus::Untouched:
+    auto ft = m_vector.GetByIndex(index);
+    CHECK(ft, ());
+    ft->SetID(FeatureID(GetId(), index));
+    return ft;
   }
-}
-
-bool MwmContext::GetStreetIndex(uint32_t houseId, uint32_t & streetId)
-{
-  if (!m_houseToStreetTable)
-  {
-    m_houseToStreetTable = HouseToStreetTable::Load(m_value);
-    ASSERT(m_houseToStreetTable, ());
-  }
-  return m_houseToStreetTable->Get(houseId, streetId);
+  UNREACHABLE();
 }
 }  // namespace search

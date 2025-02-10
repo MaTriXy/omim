@@ -33,8 +33,11 @@
   CFStreamCreatePairWithSocketToHost(NULL, (__bridge CFStringRef)(host), (UInt32)port, &readStream,
                                      &writeStream);
 
-  NSDictionary * settings = @{(id)kCFStreamSSLValidatesCertificateChain : @NO,
-                              (id)kCFStreamSSLLevel : (id)kCFStreamSocketSecurityLevelTLSv1,
+  NSDictionary * settings = @{
+#ifndef OMIM_PRODUCTION
+                              (id)kCFStreamSSLValidatesCertificateChain : @NO,
+#endif
+                              (id)kCFStreamSSLLevel : (id)kCFStreamSocketSecurityLevelNegotiatedSSL
                               };
 
   CFReadStreamSetProperty(readStream, kCFStreamPropertySSLSettings, (CFTypeRef)settings);
@@ -98,7 +101,7 @@
     else
     {
       LOG(LERROR, ("An error has occurred on the read stream."));
-#ifdef OMIN_PRODUCTION
+#ifdef OMIM_PRODUCTION
       LOG(LERROR, (self.inputStream.streamError));
 #else
       NSLog(@"%@", self.inputStream.streamError);
@@ -135,7 +138,7 @@
     else
     {
       LOG(LERROR, ("An error has occurred on the write stream."));
-#ifdef OMIN_PRODUCTION
+#ifdef OMIM_PRODUCTION
       LOG(LERROR, (self.outputStream.streamError));
 #else
       NSLog(@"%@", self.outputStream.streamError);
@@ -157,7 +160,7 @@ public:
   PlatformSocket();
   // Socket overrides
   ~PlatformSocket();
-  bool Open(string const & host, uint16_t port) override;
+  bool Open(std::string const & host, uint16_t port) override;
   void Close() override;
   bool Read(uint8_t * data, uint32_t count) override;
   bool Write(uint8_t const * data, uint32_t count) override;
@@ -167,9 +170,9 @@ private:
   SocketImpl * m_socketImpl = nullptr;
 };
 
-unique_ptr<Socket> CreateSocket()
+std::unique_ptr<Socket> CreateSocket()
 {
-  return make_unique<PlatformSocket>();
+  return std::make_unique<PlatformSocket>();
 }
 
 PlatformSocket::PlatformSocket() { m_socketImpl = [[SocketImpl alloc] init]; }
@@ -180,7 +183,7 @@ PlatformSocket::~PlatformSocket()
   m_socketImpl = nullptr;
 }
 
-bool PlatformSocket::Open(string const & host, uint16_t port)
+bool PlatformSocket::Open(std::string const & host, uint16_t port)
 {
   return [m_socketImpl open:@(host.c_str()) port:port];
 }

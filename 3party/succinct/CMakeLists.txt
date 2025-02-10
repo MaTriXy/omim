@@ -1,15 +1,15 @@
-cmake_minimum_required(VERSION 3.2)
-
-project(succinct C CXX)
-
-add_compile_options(
-  "-Wall"
-  "-std=c++11"
-)
+project(succinct)
 
 add_definitions(-DLTC_NO_ROLC)
 
 include_directories(src/headers)
+
+add_clang_compile_options(
+  "-Wno-unused-local-typedef"
+  "-Wno-unused-private-field"
+)
+
+add_gcc_compile_options("-Wno-unused-local-typedef")
 
 set(
   SRC
@@ -38,4 +38,4 @@ set(
   vbyte.hpp
 )
 
-add_library(succinct ${SRC})
+add_library(${PROJECT_NAME} ${SRC})

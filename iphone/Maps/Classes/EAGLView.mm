@@ -1,22 +1,42 @@
-#import "Common.h"
 #import "EAGLView.h"
-#import "MapsAppDelegate.h"
-#import "MWMDirectionView.h"
-
-#import "../Platform/opengl/iosOGLContextFactory.h"
+#import "iosOGLContextFactory.h"
+#import "MWMMapWidgets.h"
+#import "SwiftBridge.h"
 
 #import "3party/Alohalytics/src/alohalytics_objc.h"
 
-#include "Framework.h"
-#include "indexer/classificator_loader.hpp"
+#include "base/assert.hpp"
+#include "base/logging.hpp"
 
-#include "platform/platform.hpp"
-
+#include "drape/drape_global.hpp"
+#include "drape/pointers.hpp"
 #include "drape/visual_scale.hpp"
+#include "drape_frontend/visual_params.hpp"
 
-#include "std/bind.hpp"
-#include "std/limits.hpp"
-#include "std/unique_ptr.hpp"
+#include <CoreApi/Framework.h>
+
+#ifdef OMIM_METAL_AVAILABLE
+#import "MetalContextFactory.h"
+#import <MetalKit/MetalKit.h>
+#endif
+
+namespace dp
+{
+  class GraphicsContextFactory;
+}
+
+@interface EAGLView()
+{
+  dp::ApiVersion m_apiVersion;
+  drape_ptr<dp::GraphicsContextFactory> m_factory;
+  // Do not call onSize from layoutSubViews when real size wasn't changed.
+  // It's possible when we add/remove subviews (bookmark balloons) and it hangs the map without this check
+  CGRect m_lastViewSize;
+  bool m_presentAvailable;
+  double main_visualScale;
+}
+@property(nonatomic, readwrite) BOOL graphicContextInitialized;
+@end
 
 @implementation EAGLView
 
@@ -41,10 +61,45 @@ double getExactDPI(double contentScaleFactor)
 }
 } //  namespace
 
++ (dp::ApiVersion)getSupportedApiVersion
+{
+  static dp::ApiVersion apiVersion = dp::ApiVersion::Invalid;
+  if (apiVersion != dp::ApiVersion::Invalid)
+    return apiVersion;
+  
+#ifdef OMIM_METAL_AVAILABLE
+  if (@available(iOS 10.0, *))
+  {
+    if (GetFramework().LoadPreferredGraphicsAPI() == dp::ApiVersion::Metal)
+    {
+      id<MTLDevice> tempDevice = MTLCreateSystemDefaultDevice();
+      if (tempDevice)
+        apiVersion = dp::ApiVersion::Metal;
+    }
+  }
+#endif
+  
+  if (apiVersion == dp::ApiVersion::Invalid)
+  {
+    EAGLContext * tempContext = [[EAGLContext alloc] initWithAPI:kEAGLRenderingAPIOpenGLES3];
+    if (tempContext != nil)
+      apiVersion = dp::ApiVersion::OpenGLES3;
+    else
+      apiVersion = dp::ApiVersion::OpenGLES2;
+  }
+  
+  return apiVersion;
+}
+
 // You must implement this method
 + (Class)layerClass
 {
+#ifdef OMIM_METAL_AVAILABLE
+  auto const apiVersion = [EAGLView getSupportedApiVersion];
+  return apiVersion == dp::ApiVersion::Metal ? [CAMetalLayer class] : [CAEAGLLayer class];
+#else
   return [CAEAGLLayer class];
+#endif
 }
 
 // The GL view is stored in the nib file. When it's unarchived it's sent -initWithCoder:
@@ -61,80 +116,92 @@ double getExactDPI(double contentScaleFactor)
 
 - (void)initialize
 {
-  lastViewSize = CGRectZero;
+  m_presentAvailable = false;
+  m_lastViewSize = CGRectZero;
+  m_apiVersion = [EAGLView getSupportedApiVersion];
 
-  // Setup Layer Properties
-  CAEAGLLayer * eaglLayer = (CAEAGLLayer *)self.layer;
-
-  eaglLayer.opaque = YES;
-  eaglLayer.drawableProperties = @{kEAGLDrawablePropertyRetainedBacking : @NO,
-                                   kEAGLDrawablePropertyColorFormat : kEAGLColorFormatRGBA8};
-
-  // Correct retina display support in opengl renderbuffer
+  // Correct retina display support in renderbuffer.
   self.contentScaleFactor = [[UIScreen mainScreen] nativeScale];
+  
+  if (m_apiVersion == dp::ApiVersion::Metal)
+  {
+#ifdef OMIM_METAL_AVAILABLE
+    CAMetalLayer * layer = (CAMetalLayer *)self.layer;
+    layer.device = MTLCreateSystemDefaultDevice();
+    NSAssert(layer.device != NULL, @"Metal is not supported on this device");
+    layer.opaque = YES;
+#endif
+  }
+  else
+  {
+    CAEAGLLayer * layer = (CAEAGLLayer *)self.layer;
+    layer.opaque = YES;
+    layer.drawableProperties = @{kEAGLDrawablePropertyRetainedBacking : @NO,
+                                 kEAGLDrawablePropertyColorFormat : kEAGLColorFormatRGBA8};
+  }
+  auto & f = GetFramework();
+  f.SetGraphicsContextInitializationHandler([self]() {
+    self.graphicContextInitialized = YES;
+  });
+}
 
-  m_factory = make_unique_dp<dp::ThreadSafeFactory>(new iosOGLContextFactory(eaglLayer));
+- (void)createDrapeEngine
+{
+  CGSize const objcSize = [self pixelSize];
+  m2::PointU const s = m2::PointU(static_cast<uint32_t>(objcSize.width), static_cast<uint32_t>(objcSize.height));
+  
+  if (m_apiVersion == dp::ApiVersion::Metal)
+  {
+#ifdef OMIM_METAL_AVAILABLE
+    m_factory = make_unique_dp<MetalContextFactory>((CAMetalLayer *)self.layer, s);
+#endif
+  }
+  else
+  {
+    m_factory = make_unique_dp<dp::ThreadSafeFactory>(
+      new iosOGLContextFactory((CAEAGLLayer *)self.layer, m_apiVersion, m_presentAvailable));
+  }
+  [self createDrapeEngineWithWidth:s.x height:s.y];
 }
 
 - (void)createDrapeEngineWithWidth:(int)width height:(int)height
 {
-  LOG(LINFO, ("EAGLView createDrapeEngine Started"));
+  LOG(LINFO, ("CreateDrapeEngine Started", width, height, m_apiVersion));
+  CHECK(m_factory != nullptr, ());
   
   Framework::DrapeCreationParams p;
+  p.m_apiVersion = m_apiVersion;
   p.m_surfaceWidth = width;
   p.m_surfaceHeight = height;
   p.m_visualScale = dp::VisualScale(getExactDPI(self.contentScaleFactor));
-  p.m_isFirstLaunch = [Alohalytics isFirstSession];
+  p.m_hints.m_isFirstLaunch = [Alohalytics isFirstSession];
+  p.m_hints.m_isLaunchByDeepLink = self.isLaunchByDeepLink;
 
   [self.widgetsManager setupWidgets:p];
-  GetFramework().CreateDrapeEngine(make_ref(m_factory), move(p));
+  GetFramework().CreateDrapeEngine(make_ref(m_factory), std::move(p));
 
-  LOG(LINFO, ("EAGLView createDrapeEngine Ended"));
+  self->_drapeEngineCreated = YES;
+  LOG(LINFO, ("CreateDrapeEngine Finished"));
 }
 
-- (void)addSubview:(UIView *)view
+- (CGSize)pixelSize
 {
-  [super addSubview:view];
-  for (UIView * v in self.subviews)
-  {
-    if ([v isKindOfClass:[MWMDirectionView class]])
-    {
-      [self bringSubviewToFront:v];
-      break;
-    }
-  }
-}
-
-- (void)applyOnSize:(int)width withHeight:(int)height
-{
-  dispatch_async(dispatch_get_main_queue(), ^
-  {
-    GetFramework().OnSize(width, height);
-    // TODO: Temporary realization of visible viewport, this code must be removed later.
-    GetFramework().SetVisibleViewport(m2::RectD(0.0, 0.0, width, height));
-    [self.widgetsManager resize:CGSizeMake(width, height)];
-    self->_drapeEngineCreated = YES;
-  });
-}
-
-- (void)onSize:(int)width withHeight:(int)height
-{
-  int w = width * self.contentScaleFactor;
-  int h = height * self.contentScaleFactor;
-
-  if (GetFramework().GetDrapeEngine() == nullptr)
-    [self createDrapeEngineWithWidth:w height:h];
-
-  [self applyOnSize:w withHeight:h];
+  CGSize const s = self.bounds.size;
+  
+  CGFloat const w = s.width * self.contentScaleFactor;
+  CGFloat const h = s.height * self.contentScaleFactor;
+  return CGSizeMake(w, h);
 }
 
 - (void)layoutSubviews
 {
-  if (!CGRectEqualToRect(lastViewSize, self.frame))
+  if (!CGRectEqualToRect(m_lastViewSize, self.frame))
   {
-    lastViewSize = self.frame;
-    CGSize const s = self.bounds.size;
-    [self onSize:s.width withHeight:s.height];
+    m_lastViewSize = self.frame;
+    CGSize const objcSize = [self pixelSize];
+    m2::PointU const s = m2::PointU(static_cast<uint32_t>(objcSize.width), static_cast<uint32_t>(objcSize.height));
+    GetFramework().OnSize(s.x, s.y);
+    [self.widgetsManager resize:objcSize];
   }
   [super layoutSubviews];
 }
@@ -145,23 +212,11 @@ double getExactDPI(double contentScaleFactor)
   m_factory.reset();
 }
 
-- (CGPoint)viewPoint2GlobalPoint:(CGPoint)pt
-{
-  CGFloat const scaleFactor = self.contentScaleFactor;
-  m2::PointD const ptG = GetFramework().PtoG(m2::PointD(pt.x * scaleFactor, pt.y * scaleFactor));
-  return CGPointMake(ptG.x, ptG.y);
-}
-
-- (CGPoint)globalPoint2ViewPoint:(CGPoint)pt
-{
-  CGFloat const scaleFactor = self.contentScaleFactor;
-  m2::PointD const ptP = GetFramework().GtoP(m2::PointD(pt.x, pt.y));
-  return CGPointMake(ptP.x / scaleFactor, ptP.y / scaleFactor);
-}
-
 - (void)setPresentAvailable:(BOOL)available
 {
-  m_factory->CastFactory<iosOGLContextFactory>()->setPresentAvailable(available);
+  m_presentAvailable = available;
+  if (m_factory != nullptr)
+    m_factory->SetPresentAvailable(m_presentAvailable);
 }
 
 - (MWMMapWidgets *)widgetsManager
@@ -169,6 +224,15 @@ double getExactDPI(double contentScaleFactor)
   if (!_widgetsManager)
     _widgetsManager = [[MWMMapWidgets alloc] init];
   return _widgetsManager;
+}
+
+- (void)updateVisualScaleTo:(CGFloat)visualScale {
+  main_visualScale = df::VisualParams::Instance().GetVisualScale();
+  GetFramework().UpdateVisualScale(visualScale);
+}
+
+- (void)updateVisualScaleToMain {
+  GetFramework().UpdateVisualScale(main_visualScale);
 }
 
 @end

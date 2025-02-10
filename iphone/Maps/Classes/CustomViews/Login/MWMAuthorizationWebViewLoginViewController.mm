@@ -1,5 +1,4 @@
 #import "MWMAuthorizationWebViewLoginViewController.h"
-#import "Common.h"
 #import "MWMAlertViewController.h"
 #import "MWMAuthorizationCommon.h"
 #import "MWMCircularProgress.h"
@@ -48,7 +47,7 @@ NSString * getVerifier(NSString * urlString)
 
 @implementation MWMAuthorizationWebViewLoginViewController
 {
-  TRequestToken m_requestToken;
+  RequestToken m_requestToken;
 }
 
 - (void)viewDidLoad
@@ -77,7 +76,7 @@ NSString * getVerifier(NSString * urlString)
     OsmOAuth const auth = OsmOAuth::ServerAuth();
     try
     {
-      OsmOAuth::TUrlRequestToken urt;
+      OsmOAuth::UrlRequestToken urt;
       switch (self.authType)
       {
       case MWMWebViewAuthorizationTypeGoogle: urt = auth.GetGoogleOAuthURL(); break;
@@ -92,11 +91,11 @@ NSString * getVerifier(NSString * urlString)
         [self.webView loadRequest:request];
       });
     }
-    catch (exception const & ex)
+    catch (std::exception const & ex)
     {
       dispatch_async(dispatch_get_main_queue(), ^{
         [self stopSpinner];
-        [self.alertController presentInternalErrorAlert];
+        [[MWMAlertViewController activeAlertController] presentInternalErrorAlert];
       });
       LOG(LWARNING, ("Can't loadAuthorizationPage", ex.what()));
     }
@@ -133,19 +132,19 @@ NSString * getVerifier(NSString * urlString)
   [self startSpinner];
   dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
     OsmOAuth const auth = OsmOAuth::ServerAuth();
-    TKeySecret ks;
+    KeySecret ks;
     try
     {
       ks = auth.FinishAuthorization(self->m_requestToken, verifier.UTF8String);
     }
-    catch (exception const & ex)
+    catch (std::exception const & ex)
     {
       LOG(LWARNING, ("checkAuthorization error", ex.what()));
       [Statistics logEvent:@"Editor_Auth_request_result"
             withParameters:@{
               kStatIsSuccess : kStatNo,
               kStatErrorData : @(ex.what()),
-              kStatType : self.authTypeAsString
+              kStatType : [self authTypeAsString]
             }];
     }
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -154,7 +153,7 @@ NSString * getVerifier(NSString * urlString)
       {
         osm_auth_ios::AuthorizationStoreCredentials(ks);
         [Statistics logEvent:@"Editor_Auth_request_result"
-              withParameters:@{kStatIsSuccess : kStatYes, kStatType : self.authTypeAsString}];
+              withParameters:@{kStatIsSuccess : kStatYes, kStatType : [self authTypeAsString]}];
         UIViewController * svc = nil;
         for (UIViewController * vc in self.navigationController.viewControllers)
         {
@@ -205,7 +204,7 @@ NSString * getVerifier(NSString * urlString)
 
 - (void)webView:(UIWebView *)webView didFailLoadWithError:(NSError *)error
 {
-  [self.alertController presentInternalErrorAlert];
+  [[MWMAlertViewController activeAlertController] presentInternalErrorAlert];
 }
 
 @end

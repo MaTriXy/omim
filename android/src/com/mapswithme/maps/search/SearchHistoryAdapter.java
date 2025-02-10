@@ -1,6 +1,6 @@
 package com.mapswithme.maps.search;
 
-import android.support.v7.widget.RecyclerView;
+import androidx.recyclerview.widget.RecyclerView;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
@@ -35,6 +35,7 @@ class SearchHistoryAdapter extends RecyclerView.Adapter<SearchHistoryAdapter.Vie
 
   public SearchHistoryAdapter(SearchToolbarController searchToolbarController)
   {
+    SearchRecents.refresh();
     mSearchToolbarController = searchToolbarController;
     mShowMyPosition = (RoutingController.get().isWaitingPoiPick() &&
                        LocationHelper.INSTANCE.getMyPosition() != null);

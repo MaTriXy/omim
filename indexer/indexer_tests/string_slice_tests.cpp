@@ -4,7 +4,11 @@
 
 #include "base/string_utils.hpp"
 
+#include <iterator>
+#include <vector>
+
 using namespace search;
+using namespace std;
 using namespace strings;
 
 namespace

@@ -7,7 +7,9 @@
 #include "coding/reader_streambuf.hpp"
 
 #include "base/logging.hpp"
-#include "base/stl_add.hpp"
+#include "base/stl_helpers.hpp"
+
+using namespace std;
 
 namespace
 {
@@ -17,23 +19,9 @@ enum State
   EParseLanguages
 };
 
-void ProcessSynonym(CategoriesHolder::Category::Name const & name,
-                    deque<CategoriesHolder::Category::Name> & synonyms)
-{
-  if (name.m_name[0] != '^')
-  {
-    synonyms.push_back(name);
-    return;
-  }
-
-  // Name which starts with '^' is readable name for UI and it should be in the beginning.
-  synonyms.push_front(name);
-  synonyms.front().m_name = name.m_name.substr(1);
-}
-
-void GroupTranslationsToSynonyms(vector<string> const & groups,
-                                 CategoriesHolder::GroupTranslations const & translations,
-                                 deque<CategoriesHolder::Category::Name> & synonyms)
+void AddGroupTranslationsToSynonyms(vector<string> const & groups,
+                                    CategoriesHolder::GroupTranslations const & translations,
+                                    vector<CategoriesHolder::Category::Name> & synonyms)
 {
   for (string const & group : groups)
   {
@@ -41,19 +29,7 @@ void GroupTranslationsToSynonyms(vector<string> const & groups,
     if (it == translations.end())
       continue;
     for (auto & synonym : it->second)
-      ProcessSynonym(synonym, synonyms);
-  }
-}
-
-void TrimGroupTranslations(CategoriesHolder::GroupTranslations & translations)
-{
-  for (auto & translation : translations)
-  {
-    for (auto & synonym : translation.second)
-    {
-      if (synonym.m_name[0] == '^')
-        synonym.m_name = synonym.m_name.substr(1);
-    }
+      synonyms.push_back(synonym);
   }
 }
 
@@ -69,7 +45,7 @@ bool ParseEmoji(CategoriesHolder::Category::Name & name)
     return false;
   }
 
-  name.m_name = ToUtf8(UniString(1, static_cast<UniChar>(c)));
+  name.m_name = ToUtf8(UniString(1 /* numChars */, static_cast<UniChar>(c)));
 
   if (IsASCIIString(ToUtf8(search::NormalizeAndSimplifyString(name.m_name))))
   {
@@ -95,7 +71,7 @@ void FillPrefixLengthToSuggest(CategoriesHolder::Category::Name & name)
 
 void ProcessName(CategoriesHolder::Category::Name name, vector<string> const & groups,
                  vector<uint32_t> const & types, CategoriesHolder::GroupTranslations & translations,
-                 deque<CategoriesHolder::Category::Name> & synonyms)
+                 vector<CategoriesHolder::Category::Name> & synonyms)
 {
   if (name.m_name.empty())
   {
@@ -109,9 +85,14 @@ void ProcessName(CategoriesHolder::Category::Name name, vector<string> const & g
     return;
 
   if (groups.size() == 1 && types.empty())
-    translations[groups[0]].push_back(name);  // not a translation, but a category group definition
+  {
+    // Not a translation, but a category group definition.
+    translations[groups[0]].push_back(name);
+  }
   else
-    ProcessSynonym(name, synonyms);
+  {
+    synonyms.push_back(name);
+  }
 }
 
 void ProcessCategory(string const & line, vector<string> & groups, vector<uint32_t> & types)
@@ -126,13 +107,13 @@ void ProcessCategory(string const & line, vector<string> & groups, vector<uint32
 
   // Split category to subcategories for classificator.
   vector<string> v;
-  strings::Tokenize(line, "-", MakeBackInsertFunctor(v));
+  strings::Tokenize(line, "-", base::MakeBackInsertFunctor(v));
 
   // Get classificator type.
   uint32_t const type = classif().GetTypeByPathSafe(v);
   if (type == 0)
   {
-    LOG(LWARNING, ("Invalid type:", v, "; during parcing the line:", line));
+    LOG(LWARNING, ("Invalid type:", v, "; during parsing the line:", line));
     return;
   }
 
@@ -141,8 +122,9 @@ void ProcessCategory(string const & line, vector<string> & groups, vector<uint32
 }  // namespace
 
 // static
-int8_t const CategoriesHolder::kEnglishCode = 1;
-int8_t const CategoriesHolder::kUnsupportedLocaleCode = -1;
+int8_t constexpr CategoriesHolder::kEnglishCode;
+int8_t constexpr CategoriesHolder::kUnsupportedLocaleCode;
+uint8_t constexpr CategoriesHolder::kMaxSupportedLocaleIndex;
 
 // *NOTE* These constants should be updated when adding new
 // translation to categories.txt. When editing, keep in mind to check
@@ -178,7 +160,8 @@ vector<CategoriesHolder::Mapping> const CategoriesHolder::kLocaleMapping = {{"en
                                                                             {"fi", 27},
                                                                             {"el", 28},
                                                                             {"he", 29},
-                                                                            {"sw", 30}};
+                                                                            {"sw", 30},
+                                                                            {"fa", 31}};
 vector<string> CategoriesHolder::kDisabledLanguages = {"el", "he", "sw"};
 
 CategoriesHolder::CategoriesHolder(unique_ptr<Reader> && reader)
@@ -186,6 +169,11 @@ CategoriesHolder::CategoriesHolder(unique_ptr<Reader> && reader)
   ReaderStreamBuf buffer(move(reader));
   istream s(&buffer);
   LoadFromStream(s);
+
+#if defined(DEBUG)
+  for (auto const & entry : kLocaleMapping)
+    ASSERT_LESS_OR_EQUAL(entry.m_code, kMaxSupportedLocaleIndex, ());
+#endif
 }
 
 void CategoriesHolder::AddCategory(Category & cat, vector<uint32_t> & types)
@@ -195,23 +183,28 @@ void CategoriesHolder::AddCategory(Category & cat, vector<uint32_t> & types)
     shared_ptr<Category> p(new Category());
     p->Swap(cat);
 
-    for (size_t i = 0; i < types.size(); ++i)
-      m_type2cat.insert(make_pair(types[i], p));
+    for (uint32_t const t : types)
+      m_type2cat.insert(make_pair(t, p));
 
-    for (size_t i = 0; i < p->m_synonyms.size(); ++i)
+    for (auto const & synonym : p->m_synonyms)
     {
-      ASSERT(p->m_synonyms[i].m_locale != kUnsupportedLocaleCode, ());
+      auto const locale = synonym.m_locale;
+      ASSERT_NOT_EQUAL(locale, kUnsupportedLocaleCode, ());
 
-      StringT const uniName = search::NormalizeAndSimplifyString(p->m_synonyms[i].m_name);
+      auto const localePrefix = strings::UniString(1, static_cast<strings::UniChar>(locale));
 
-      vector<StringT> tokens;
-      SplitUniString(uniName, MakeBackInsertFunctor(tokens), search::Delimiters());
+      auto const uniName = search::NormalizeAndSimplifyString(synonym.m_name);
 
-      for (size_t j = 0; j < tokens.size(); ++j)
-        for (size_t k = 0; k < types.size(); ++k)
-          if (ValidKeyToken(tokens[j]))
-            m_name2type.insert(
-                make_pair(make_pair(p->m_synonyms[i].m_locale, tokens[j]), types[k]));
+      vector<strings::UniString> tokens;
+      SplitUniString(uniName, base::MakeBackInsertFunctor(tokens), search::Delimiters());
+
+      for (auto const & token : tokens)
+      {
+        if (!ValidKeyToken(token))
+          continue;
+        for (uint32_t const t : types)
+          m_name2type.Add(localePrefix + token, t);
+      }
     }
   }
 
@@ -219,15 +212,17 @@ void CategoriesHolder::AddCategory(Category & cat, vector<uint32_t> & types)
   types.clear();
 }
 
-bool CategoriesHolder::ValidKeyToken(StringT const & s)
+bool CategoriesHolder::ValidKeyToken(strings::UniString const & s)
 {
   if (s.size() > 2)
     return true;
 
   /// @todo We need to have global stop words array for the most used languages.
-  for (char const * token : {"a", "z", "s", "d", "di", "de", "le", "wi", "fi", "ra", "ao"})
+  for (char const * token : {"a", "z", "s", "d", "di", "de", "le", "ra", "ao"})
+  {
     if (s.IsEqualAscii(token))
       return false;
+  }
 
   return true;
 }
@@ -235,7 +230,7 @@ bool CategoriesHolder::ValidKeyToken(StringT const & s)
 void CategoriesHolder::LoadFromStream(istream & s)
 {
   m_type2cat.clear();
-  m_name2type.clear();
+  m_name2type.Clear();
   m_groupTranslations.clear();
 
   State state = EParseTypes;
@@ -269,10 +264,8 @@ void CategoriesHolder::LoadFromStream(istream & s)
 
       if (!types.empty() || currentGroups.size() == 1)
       {
-        // Add translations into synonyms first, it will allow to override
-        // translations for UI by concrete category translation.
-        GroupTranslationsToSynonyms(currentGroups, m_groupTranslations, cat.m_synonyms);
         state = EParseLanguages;
+        AddGroupTranslationsToSynonyms(currentGroups, m_groupTranslations, cat.m_synonyms);
       }
     }
     else if (state == EParseLanguages)
@@ -297,29 +290,35 @@ void CategoriesHolder::LoadFromStream(istream & s)
       }
     }
   }
-  // add last category
+  // Add the last category.
   AddCategory(cat, types);
-  TrimGroupTranslations(m_groupTranslations);
 }
 
 bool CategoriesHolder::GetNameByType(uint32_t type, int8_t locale, string & name) const
 {
-  pair<IteratorT, IteratorT> const range = m_type2cat.equal_range(type);
+  auto const range = m_type2cat.equal_range(type);
 
-  for (IteratorT i = range.first; i != range.second; ++i)
+  string enName;
+  for (auto it = range.first; it != range.second; ++it)
   {
-    Category const & cat = *i->second;
-    for (size_t j = 0; j < cat.m_synonyms.size(); ++j)
-      if (cat.m_synonyms[j].m_locale == locale)
+    Category const & cat = *it->second;
+    for (auto const & synonym : cat.m_synonyms)
+    {
+      if (synonym.m_locale == locale)
       {
-        name = cat.m_synonyms[j].m_name;
+        name = synonym.m_name;
         return true;
       }
+      else if (enName.empty() && (synonym.m_locale == kEnglishCode))
+      {
+        enName = synonym.m_name;
+      }
+    }
   }
 
-  if (range.first != range.second)
+  if (!enName.empty())
   {
-    name = range.first->second->m_synonyms[0].m_name;
+    name = enName;
     return true;
   }
 
@@ -350,7 +349,7 @@ string CategoriesHolder::GetReadableFeatureType(uint32_t type, int8_t locale) co
 
 bool CategoriesHolder::IsTypeExist(uint32_t type) const
 {
-  pair<IteratorT, IteratorT> const range = m_type2cat.equal_range(type);
+  auto const range = m_type2cat.equal_range(type);
   return range.first != range.second;
 }
 
@@ -377,8 +376,10 @@ int8_t CategoriesHolder::MapLocaleToInteger(string const & locale)
     strings::AsciiToLower(lower);
 
     for (char const * s : {"hant", "tw", "hk", "mo"})
+    {
       if (lower.find(s) != string::npos)
         return 12;  // Traditional Chinese
+    }
 
     return 17;  // Simplified Chinese by default for all other cases
   }
@@ -389,7 +390,7 @@ int8_t CategoriesHolder::MapLocaleToInteger(string const & locale)
 // static
 string CategoriesHolder::MapIntegerToLocale(int8_t code)
 {
-  if (code <= 0 || code > kLocaleMapping.size())
+  if (code <= 0 || static_cast<size_t>(code) > kLocaleMapping.size())
     return string();
   return kLocaleMapping[code - 1].m_name;
 }

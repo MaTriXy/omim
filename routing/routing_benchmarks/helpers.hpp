@@ -1,27 +1,34 @@
 #pragma once
 
+#include "routing/index_router.hpp"
 #include "routing/road_graph.hpp"
+#include "routing/route.hpp"
 #include "routing/router.hpp"
-#include "routing/vehicle_model.hpp"
-#include "routing/road_graph_router.hpp"
+#include "routing/vehicle_mask.hpp"
 
-#include "indexer/index.hpp"
+#include "routing_common/maxspeed_conversion.hpp"
+#include "routing_common/num_mwm_id.hpp"
+#include "routing_common/vehicle_model.hpp"
 
 #include "storage/country_info_getter.hpp"
 
+#include "traffic/traffic_cache.hpp"
+
+#include "indexer/data_source.hpp"
+
 #include "geometry/point2d.hpp"
 
-#include "std/set.hpp"
-#include "std/shared_ptr.hpp"
-#include "std/string.hpp"
-#include "std/unique_ptr.hpp"
-#include "std/utility.hpp"
-#include "std/vector.hpp"
+#include <memory>
+#include <set>
+#include <string>
+#include <utility>
+#include <vector>
 
 class RoutingTest
 {
 public:
-  RoutingTest(routing::IRoadGraph::Mode mode, set<string> const & neededMaps);
+  RoutingTest(routing::IRoadGraph::Mode mode, routing::VehicleType type,
+              std::set<std::string> const & neededMaps);
 
   virtual ~RoutingTest() = default;
 
@@ -29,30 +36,27 @@ public:
   void TestTwoPointsOnFeature(m2::PointD const & startPos, m2::PointD const & finalPos);
 
 protected:
-  virtual unique_ptr<routing::IDirectionsEngine> CreateDirectionsEngine() = 0;
-  virtual unique_ptr<routing::IVehicleModelFactory> CreateModelFactory() = 0;
+  virtual std::unique_ptr<routing::DirectionsEngine> CreateDirectionsEngine(
+      std::shared_ptr<routing::NumMwmIds> numMwmIds) = 0;
+  virtual std::unique_ptr<routing::VehicleModelFactoryInterface> CreateModelFactory() = 0;
 
-  template <typename Algorithm>
-  unique_ptr<routing::IRouter> CreateRouter(string const & name)
-  {
-    auto getter = [&](m2::PointD const & pt) { return m_cig->GetRegionCountryId(pt); };
-    unique_ptr<routing::IRoutingAlgorithm> algorithm(new Algorithm());
-    unique_ptr<routing::IRouter> router(
-        new routing::RoadGraphRouter(name, m_index, getter, m_mode, CreateModelFactory(),
-                                     move(algorithm), CreateDirectionsEngine()));
-    return router;
-  }
-
+  std::unique_ptr<routing::IRouter> CreateRouter(std::string const & name);
   void GetNearestEdges(m2::PointD const & pt,
-                       vector<pair<routing::Edge, routing::Junction>> & edges);
+                       std::vector<std::pair<routing::Edge, geometry::PointWithAltitude>> & edges);
 
   routing::IRoadGraph::Mode const m_mode;
-  Index m_index;
-  unique_ptr<storage::CountryInfoGetter> m_cig;
+  routing::VehicleType m_type;
+  FrozenDataSource m_dataSource;
+  traffic::TrafficCache m_trafficCache;
+
+  std::vector<platform::LocalCountryFile> m_localFiles;
+  std::set<std::string> const & m_neededMaps;
+  std::shared_ptr<routing::NumMwmIds> m_numMwmIds;
+  std::unique_ptr<storage::CountryInfoGetter> m_cig;
 };
 
 template <typename Model>
-class SimplifiedModelFactory : public routing::IVehicleModelFactory
+class SimplifiedModelFactory : public routing::VehicleModelFactoryInterface
 {
 public:
   // Since for test purposes we compare routes lengths to check
@@ -61,32 +65,38 @@ public:
   class SimplifiedModel : public Model
   {
   public:
-    // IVehicleModel overrides:
+    // VehicleModelInterface overrides:
     //
     // SimplifiedModel::GetSpeed() filters features and returns zero
     // speed if feature is not allowed by the base model, or otherwise
     // some speed depending of road type (0 <= speed <= maxSpeed).  For
     // tests purposes for all allowed features speed must be the same as
     // max speed.
-    double GetSpeed(FeatureType const & f) const override
+    routing::SpeedKMpH GetSpeed(FeatureType & f,
+                                routing::SpeedParams const & speedParams) const override
     {
-      double const speed = Model::GetSpeed(f);
-      if (speed <= 0.0)
-        return 0.0;
-      return Model::GetMaxSpeed();
+      auto const speed = Model::GetSpeed(f, speedParams);
+      if (speed.m_weight <= 0.0)
+        return routing::SpeedKMpH();
+
+      // Note. Max weight speed is used for eta as well here. It's ok for test purposes.
+      return routing::SpeedKMpH(Model::GetMaxWeightSpeed());
     }
   };
 
-  SimplifiedModelFactory() : m_model(make_shared<SimplifiedModel>()) {}
+  SimplifiedModelFactory() : m_model(std::make_shared<SimplifiedModel>()) {}
 
-  // IVehicleModelFactory overrides:
-  shared_ptr<routing::IVehicleModel> GetVehicleModel() const override { return m_model; }
-  shared_ptr<routing::IVehicleModel> GetVehicleModelForCountry(
-      string const & /*country*/) const override
+  // VehicleModelFactoryInterface overrides:
+  std::shared_ptr<routing::VehicleModelInterface> GetVehicleModel() const override { return m_model; }
+  std::shared_ptr<routing::VehicleModelInterface> GetVehicleModelForCountry(
+      std::string const & /* country */) const override
   {
     return m_model;
   }
 
 private:
-  shared_ptr<SimplifiedModel> const m_model;
+  std::shared_ptr<SimplifiedModel> const m_model;
 };
+
+void TestRouter(routing::IRouter & router, m2::PointD const & startPos,
+                m2::PointD const & finalPos, routing::Route & route);

@@ -4,12 +4,14 @@
 
 #include "indexer/mwm_set.hpp"
 
-#include "std/shared_ptr.hpp"
-#include "std/string.hpp"
-#include "std/vector.hpp"
+#include <initializer_list>
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
 
 class FeatureType;
-class Index;
+class DataSource;
 
 namespace generator
 {
@@ -28,8 +30,8 @@ class MatchingRule
 public:
   virtual ~MatchingRule() = default;
 
-  virtual bool Matches(FeatureType const & feature) const = 0;
-  virtual string ToString() const = 0;
+  virtual bool Matches(FeatureType & feature) const = 0;
+  virtual std::string ToString() const = 0;
 };
 
 class ExactMatchingRule : public MatchingRule
@@ -39,8 +41,8 @@ public:
                     generator::tests_support::TestFeature const & feature);
 
   // MatchingRule overrides:
-  bool Matches(FeatureType const & feature) const override;
-  string ToString() const override;
+  bool Matches(FeatureType & feature) const override;
+  std::string ToString() const override;
 
 private:
   MwmSet::MwmId m_mwmId;
@@ -50,31 +52,38 @@ private:
 class AlternativesMatchingRule : public MatchingRule
 {
 public:
-  AlternativesMatchingRule(initializer_list<shared_ptr<MatchingRule>> rules);
+  AlternativesMatchingRule(std::vector<std::shared_ptr<MatchingRule>> && rules);
 
   // MatchingRule overrides:
-  bool Matches(FeatureType const & feature) const override;
-  string ToString() const override;
+  bool Matches(FeatureType & feature) const override;
+  std::string ToString() const override;
 
 private:
-  vector<shared_ptr<MatchingRule>> m_rules;
+  std::vector<std::shared_ptr<MatchingRule>> m_rules;
 };
 
-template <typename... TArgs>
-shared_ptr<MatchingRule> ExactMatch(TArgs &&... args)
+template <typename... Args>
+std::shared_ptr<MatchingRule> ExactMatch(Args &&... args)
 {
-  return make_shared<ExactMatchingRule>(forward<TArgs>(args)...);
+  return std::make_shared<ExactMatchingRule>(std::forward<Args>(args)...);
 }
 
-template <typename... TArgs>
-shared_ptr<MatchingRule> AlternativesMatch(TArgs &&... args)
+inline std::shared_ptr<MatchingRule> AlternativesMatch(
+    std::vector<std::shared_ptr<MatchingRule>> && rules)
 {
-  return make_shared<AlternativesMatchingRule>(forward<TArgs>(args)...);
+  return std::make_shared<AlternativesMatchingRule>(std::move(rules));
 }
 
-bool MatchResults(Index const & index, vector<shared_ptr<MatchingRule>> rules,
-                  vector<search::Result> const & actual);
+bool MatchResults(DataSource const & dataSource, std::vector<std::shared_ptr<MatchingRule>> rules,
+                  std::vector<search::Result> const & actual);
+bool MatchResults(DataSource const & dataSource, std::vector<std::shared_ptr<MatchingRule>> rules,
+                  search::Results const & actual);
+bool ResultMatches(DataSource const & dataSource, std::shared_ptr<MatchingRule> rule,
+                   search::Result const & result);
+bool AlternativeMatch(DataSource const & dataSource,
+                      std::vector<std::vector<std::shared_ptr<MatchingRule>>> rules,
+                      std::vector<search::Result> const & results);
 
-string DebugPrint(MatchingRule const & rule);
+std::string DebugPrint(MatchingRule const & rule);
 }  // namespace tests_support
 }  // namespace search

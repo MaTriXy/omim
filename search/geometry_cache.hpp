@@ -8,14 +8,13 @@
 
 #include "base/assert.hpp"
 
-#include "std/algorithm.hpp"
-#include "std/cstdint.hpp"
-#include "std/deque.hpp"
-#include "std/map.hpp"
-#include "std/unique_ptr.hpp"
-#include "std/utility.hpp"
+#include <algorithm>
+#include <cstdint>
+#include <deque>
+#include <map>
+#include <utility>
 
-namespace my
+namespace base
 {
 class Cancellable;
 };
@@ -49,18 +48,18 @@ protected:
 
   // |maxNumEntries| denotes the maximum number of rectangles that
   // will be cached for each mwm individually.
-  GeometryCache(size_t maxNumEntries, my::Cancellable const & cancellable);
+  GeometryCache(size_t maxNumEntries, base::Cancellable const & cancellable);
 
-  template <typename TPred>
-  pair<Entry &, bool> FindOrCreateEntry(MwmSet::MwmId const & id, TPred && pred)
+  template <typename Pred>
+  std::pair<Entry &, bool> FindOrCreateEntry(MwmSet::MwmId const & id, Pred && pred)
   {
     auto & entries = m_entries[id];
-    auto it = find_if(entries.begin(), entries.end(), forward<TPred>(pred));
+    auto it = std::find_if(entries.begin(), entries.end(), std::forward<Pred>(pred));
     if (it != entries.end())
     {
       if (it != entries.begin())
         iter_swap(entries.begin(), it);
-      return pair<Entry &, bool>(entries.front(), false);
+      return std::pair<Entry &, bool>(entries.front(), false);
     }
 
     entries.emplace_front();
@@ -69,20 +68,20 @@ protected:
 
     ASSERT_LESS_OR_EQUAL(entries.size(), m_maxNumEntries, ());
     ASSERT(!entries.empty(), ());
-    return pair<Entry &, bool>(entries.front(), true);
+    return std::pair<Entry &, bool>(entries.front(), true);
   }
 
   void InitEntry(MwmContext const & context, m2::RectD const & rect, int scale, Entry & entry);
 
-  map<MwmSet::MwmId, deque<Entry>> m_entries;
+  std::map<MwmSet::MwmId, std::deque<Entry>> m_entries;
   size_t const m_maxNumEntries;
-  my::Cancellable const & m_cancellable;
+  base::Cancellable const & m_cancellable;
 };
 
 class PivotRectsCache : public GeometryCache
 {
 public:
-  PivotRectsCache(size_t maxNumEntries, my::Cancellable const & cancellable,
+  PivotRectsCache(size_t maxNumEntries, base::Cancellable const & cancellable,
                   double maxRadiusMeters);
 
   // GeometryCache overrides:
@@ -95,10 +94,9 @@ private:
 class LocalityRectsCache : public GeometryCache
 {
 public:
-  LocalityRectsCache(size_t maxNumEntries, my::Cancellable const & cancellable);
+  LocalityRectsCache(size_t maxNumEntries, base::Cancellable const & cancellable);
 
   // GeometryCache overrides:
   CBV Get(MwmContext const & context, m2::RectD const & rect, int scale) override;
 };
-
 }  // namespace search

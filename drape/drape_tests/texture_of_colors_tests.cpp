@@ -1,13 +1,14 @@
 #include "testing/testing.hpp"
 
-#include "drape/drape_tests/memory_comparer.hpp"
 #include "drape/drape_tests/dummy_texture.hpp"
+#include "drape/drape_tests/memory_comparer.hpp"
+#include "drape/drape_tests/testing_graphics_context.hpp"
 
-#include "drape/glconstants.hpp"
+#include "drape/gl_constants.hpp"
 #include "drape/texture_of_colors.hpp"
 #include "drape/texture.hpp"
 
-#include "drape/drape_tests/glmock_functions.hpp"
+#include "drape/drape_tests/gl_mock_functions.hpp"
 
 #include <gmock/gmock.h>
 
@@ -48,7 +49,7 @@ class DummyColorPallete : public ColorPalette
 {
   typedef ColorPalette TBase;
 public:
-  DummyColorPallete(m2::PointU const & size)
+  explicit DummyColorPallete(m2::PointU const & size)
     : TBase(size)
   {
   }
@@ -66,9 +67,9 @@ UNIT_TEST(ColorPalleteMappingTests)
 {
   DummyColorPallete cp(m2::PointU(32, 16));
 
-  ref_ptr<Texture::ResourceInfo> info1 = cp.MapResource(dp::Color(0, 0, 0, 0));
-  ref_ptr<Texture::ResourceInfo> info2 = cp.MapResource(dp::Color(1, 1, 1, 1));
-  ref_ptr<Texture::ResourceInfo> info3 = cp.MapResource(dp::Color(0, 0, 0, 0));
+  ref_ptr<Texture::ResourceInfo> info1 = cp.MapResource(dp::ColorKey(dp::Color(0, 0, 0, 0)));
+  ref_ptr<Texture::ResourceInfo> info2 = cp.MapResource(dp::ColorKey(dp::Color(1, 1, 1, 1)));
+  ref_ptr<Texture::ResourceInfo> info3 = cp.MapResource(dp::ColorKey(dp::Color(0, 0, 0, 0)));
 
   TEST_NOT_EQUAL(info1, info2, ());
   TEST_EQUAL(info1, info3, ());
@@ -81,10 +82,10 @@ UNIT_TEST(ColorPalleteMappingTests)
                                            1.0f / 32.0f, 1.0f / 16));
 
   for (int i = 2; i < 100; ++i)
-    cp.MapResource(dp::Color(i, i, i, i));
+    cp.MapResource(dp::ColorKey(dp::Color(i, i, i, i)));
 
-  TestRects(cp.MapResource(dp::Color(54, 54, 54, 54))->GetTexRect(), m2::RectF(13.0f / 32.0f, 7.0f / 16.0f,
-                                                                               13.0f / 32.0f, 7.0f / 16.0f));
+  TestRects(cp.MapResource(dp::ColorKey(dp::Color(54, 54, 54, 54)))->GetTexRect(),
+                           m2::RectF(13.0f / 32.0f, 7.0f / 16.0f, 13.0f / 32.0f, 7.0f / 16.0f));
 }
 
 UNIT_TEST(ColorPalleteUploadingSingleRow)
@@ -93,23 +94,24 @@ UNIT_TEST(ColorPalleteUploadingSingleRow)
   int const height = 16;
   InitOpenGLTextures(width, height);
 
+  TestingGraphicsContext context;
   Texture::Params p;
-  p.m_allocator = GetDefaultAllocator();
-  p.m_format = dp::RGBA8;
+  p.m_allocator = GetDefaultAllocator(make_ref(&context));
+  p.m_format = dp::TextureFormat::RGBA8;
   p.m_width = width;
   p.m_height = height;
 
   DummyTexture texture;
-  texture.Create(p);
+  texture.Create(make_ref(&context), p);
   DummyColorPallete cp(m2::PointU(width, height));
-  cp.UploadResources(make_ref(&texture));
+  cp.UploadResources(make_ref(&context), make_ref(&texture));
 
   {
-    cp.MapResource(dp::Color(0xFF, 0, 0, 0));
-    cp.MapResource(dp::Color(0, 0xFF, 0, 0));
-    cp.MapResource(dp::Color(0, 0, 0xFF, 0));
-    cp.MapResource(dp::Color(0, 0, 0, 0xFF));
-    cp.MapResource(dp::Color(0xAA, 0xBB, 0xCC, 0xDD));
+    cp.MapResource(dp::ColorKey(dp::Color(0xFF, 0, 0, 0)));
+    cp.MapResource(dp::ColorKey(dp::Color(0, 0xFF, 0, 0)));
+    cp.MapResource(dp::ColorKey(dp::Color(0, 0, 0xFF, 0)));
+    cp.MapResource(dp::ColorKey(dp::Color(0, 0, 0, 0xFF)));
+    cp.MapResource(dp::ColorKey(dp::Color(0xAA, 0xBB, 0xCC, 0xDD)));
 
     uint8_t memoryEtalon[] =
     {
@@ -140,15 +142,15 @@ UNIT_TEST(ColorPalleteUploadingSingleRow)
     EXPECTGL(glTexSubImage2D(0, 0, 10, 2, AnyOf(gl_const::GLRGBA, gl_const::GLRGBA8), gl_const::GL8BitOnChannel, _))
         .WillOnce(Invoke(&cmp, &MemoryComparer::cmpSubImage));
 
-    cp.UploadResources(make_ref(&texture));
+    cp.UploadResources(make_ref(&context), make_ref(&texture));
   }
 
   {
-    cp.MapResource(dp::Color(0xFF, 0xAA, 0, 0));
-    cp.MapResource(dp::Color(0xAA, 0xFF, 0, 0));
-    cp.MapResource(dp::Color(0xAA, 0, 0xFF, 0));
-    cp.MapResource(dp::Color(0xAA, 0, 0, 0xFF));
-    cp.MapResource(dp::Color(0x00, 0xBB, 0xCC, 0xDD));
+    cp.MapResource(dp::ColorKey(dp::Color(0xFF, 0xAA, 0, 0)));
+    cp.MapResource(dp::ColorKey(dp::Color(0xAA, 0xFF, 0, 0)));
+    cp.MapResource(dp::ColorKey(dp::Color(0xAA, 0, 0xFF, 0)));
+    cp.MapResource(dp::ColorKey(dp::Color(0xAA, 0, 0, 0xFF)));
+    cp.MapResource(dp::ColorKey(dp::Color(0x00, 0xBB, 0xCC, 0xDD)));
 
     uint8_t memoryEtalon[] =
     {
@@ -179,7 +181,7 @@ UNIT_TEST(ColorPalleteUploadingSingleRow)
     EXPECTGL(glTexSubImage2D(10, 0, 10, 2, AnyOf(gl_const::GLRGBA, gl_const::GLRGBA8), gl_const::GL8BitOnChannel, _))
         .WillOnce(Invoke(&cmp, &MemoryComparer::cmpSubImage));
 
-    cp.UploadResources(make_ref(&texture));
+    cp.UploadResources(make_ref(&context), make_ref(&texture));
   }
 
   EXPECTGL(glDeleteTexture(1));
@@ -191,20 +193,21 @@ UNIT_TEST(ColorPalleteUploadingPartialyRow)
   int const height = 8;
   InitOpenGLTextures(width, height);
 
+  TestingGraphicsContext context;
   Texture::Params p;
-  p.m_allocator = GetDefaultAllocator();
-  p.m_format = dp::RGBA8;
+  p.m_allocator = GetDefaultAllocator(make_ref(&context));
+  p.m_format = dp::TextureFormat::RGBA8;
   p.m_width = width;
   p.m_height = height;
 
   DummyTexture texture;
-  texture.Create(p);
+  texture.Create(make_ref(&context), p);
 
   DummyColorPallete cp(m2::PointU(width, height));
 
   {
-    cp.MapResource(dp::Color(0xFF, 0, 0, 0));
-    cp.MapResource(dp::Color(0xFF, 0xFF, 0, 0));
+    cp.MapResource(dp::ColorKey(dp::Color(0xFF, 0, 0, 0)));
+    cp.MapResource(dp::ColorKey(dp::Color(0xFF, 0xFF, 0, 0)));
 
     uint8_t memoryEtalon[] =
     {
@@ -223,14 +226,14 @@ UNIT_TEST(ColorPalleteUploadingPartialyRow)
     EXPECTGL(glTexSubImage2D(0, 0, 4, 2, AnyOf(gl_const::GLRGBA, gl_const::GLRGBA8), gl_const::GL8BitOnChannel, _))
         .WillOnce(Invoke(&cmp, &MemoryComparer::cmpSubImage));
 
-    cp.UploadResources(make_ref(&texture));
+    cp.UploadResources(make_ref(&context), make_ref(&texture));
   }
 
   {
-    cp.MapResource(dp::Color(0xAA, 0, 0, 0));
-    cp.MapResource(dp::Color(0xAA, 0xAA, 0, 0));
-    cp.MapResource(dp::Color(0xAA, 0xAA, 0xAA, 0));
-    cp.MapResource(dp::Color(0xAA, 0xAA, 0xAA, 0xAA));
+    cp.MapResource(dp::ColorKey(dp::Color(0xAA, 0, 0, 0)));
+    cp.MapResource(dp::ColorKey(dp::Color(0xAA, 0xAA, 0, 0)));
+    cp.MapResource(dp::ColorKey(dp::Color(0xAA, 0xAA, 0xAA, 0)));
+    cp.MapResource(dp::ColorKey(dp::Color(0xAA, 0xAA, 0xAA, 0xAA)));
 
     uint8_t memoryEtalon1[] =
     {
@@ -266,7 +269,7 @@ UNIT_TEST(ColorPalleteUploadingPartialyRow)
     EXPECTGL(glTexSubImage2D(0, 2, 4, 2, AnyOf(gl_const::GLRGBA, gl_const::GLRGBA8), gl_const::GL8BitOnChannel, _))
         .WillOnce(Invoke(&cmp2, &MemoryComparer::cmpSubImage));
 
-    cp.UploadResources(make_ref(&texture));
+    cp.UploadResources(make_ref(&context), make_ref(&texture));
   }
 
 
@@ -279,21 +282,22 @@ UNIT_TEST(ColorPalleteUploadingMultiplyRow)
   int const height = 8;
   InitOpenGLTextures(width, height);
 
+  TestingGraphicsContext context;
   Texture::Params p;
-  p.m_allocator = GetDefaultAllocator();
-  p.m_format = dp::RGBA8;
+  p.m_allocator = GetDefaultAllocator(make_ref(&context));
+  p.m_format = dp::TextureFormat::RGBA8;
   p.m_width = width;
   p.m_height = height;
 
   DummyTexture texture;
-  texture.Create(p);
+  texture.Create(make_ref(&context), p);
 
   DummyColorPallete cp(m2::PointU(width, height));
   cp.SetIsDebug(true);
 
   {
-    cp.MapResource(dp::Color(0xFF, 0, 0, 0));
-    cp.MapResource(dp::Color(0xAA, 0, 0, 0));
+    cp.MapResource(dp::ColorKey(dp::Color(0xFF, 0, 0, 0)));
+    cp.MapResource(dp::ColorKey(dp::Color(0xAA, 0, 0, 0)));
 
     uint8_t memoryEtalon[] =
     {
@@ -312,14 +316,14 @@ UNIT_TEST(ColorPalleteUploadingMultiplyRow)
     EXPECTGL(glTexSubImage2D(0, 0, 4, 2, AnyOf(gl_const::GLRGBA, gl_const::GLRGBA8), gl_const::GL8BitOnChannel, _))
         .WillOnce(Invoke(&cmp, &MemoryComparer::cmpSubImage));
 
-    cp.UploadResources(make_ref(&texture));
+    cp.UploadResources(make_ref(&context), make_ref(&texture));
   }
 
   {
-    cp.MapResource(dp::Color(0xCC, 0, 0, 0));
-    cp.MapResource(dp::Color(0xFF, 0xFF, 0, 0));
-    cp.MapResource(dp::Color(0xFF, 0xFF, 0xFF, 0));
-    cp.MapResource(dp::Color(0xFF, 0xFF, 0xFF, 0xFF));
+    cp.MapResource(dp::ColorKey(dp::Color(0xCC, 0, 0, 0)));
+    cp.MapResource(dp::ColorKey(dp::Color(0xFF, 0xFF, 0, 0)));
+    cp.MapResource(dp::ColorKey(dp::Color(0xFF, 0xFF, 0xFF, 0)));
+    cp.MapResource(dp::ColorKey(dp::Color(0xFF, 0xFF, 0xFF, 0xFF)));
 
     uint8_t memoryEtalon1[] =
     {
@@ -348,7 +352,7 @@ UNIT_TEST(ColorPalleteUploadingMultiplyRow)
     EXPECTGL(glTexSubImage2D(0, 2, 4, 4, AnyOf(gl_const::GLRGBA, gl_const::GLRGBA8), gl_const::GL8BitOnChannel, _))
         .WillOnce(Invoke(&cmp1, &MemoryComparer::cmpSubImage));
 
-    cp.UploadResources(make_ref(&texture));
+    cp.UploadResources(make_ref(&context), make_ref(&texture));
   }
 
   EXPECTGL(glDeleteTexture(1));

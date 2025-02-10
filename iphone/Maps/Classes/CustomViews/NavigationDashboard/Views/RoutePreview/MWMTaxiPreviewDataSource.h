@@ -1,4 +1,6 @@
-class MWMRoutePoint;
+#import "MWMRoutePreviewTaxiCellType.h"
+
+@class MWMRoutePoint;
 
 @interface MWMTaxiCollectionView : UICollectionView
 
@@ -9,14 +11,16 @@ class MWMRoutePoint;
 
 @interface MWMTaxiPreviewDataSource : NSObject
 
+@property(nonatomic, readonly) MWMRoutePreviewTaxiCellType type;
+
 - (instancetype)initWithCollectionView:(MWMTaxiCollectionView *)collectionView;
 
-- (void)requestTaxiFrom:(MWMRoutePoint const &)from
-                         to:(MWMRoutePoint const &)to
-                          completion:(TMWMVoidBlock)completion
-                             failure:(MWMStringBlock)failure;
+- (void)requestTaxiFrom:(MWMRoutePoint *)from
+                     to:(MWMRoutePoint *)to
+             completion:(MWMVoidBlock)completion
+                failure:(MWMStringBlock)failure;
 
-- (NSURL *)taxiURL;
+- (void)taxiURL:(MWMURLBlock)block;
 - (BOOL)isTaxiInstalled;
 
 @end

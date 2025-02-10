@@ -1,5 +1,5 @@
 #include "Platform.hpp"
-#include "../core/jni_helper.hpp"
+#include "com/mapswithme/core/jni_helper.hpp"
 
 #include "base/logging.hpp"
 #include "platform/http_thread_callback.hpp"
@@ -10,12 +10,12 @@ private:
   jobject m_self;
 
 public:
-  HttpThread(string const & url,
+  HttpThread(std::string const & url,
              downloader::IHttpThreadCallback & cb,
              int64_t beg,
              int64_t end,
              int64_t expectedFileSize,
-             string const & pb)
+             std::string const & pb)
   {
     JNIEnv * env = jni::GetEnv();
 
@@ -26,10 +26,10 @@ public:
     static jmethodID const startMethodId = env->GetMethodID(klass, "start", "()V");
 
     // User id is always the same, so do not waste time on every chunk call
-    static string const uniqueUserId = GetPlatform().UniqueClientId();
+    static std::string const uniqueUserId = GetPlatform().UniqueClientId();
 
     jni::TScopedLocalByteArrayRef postBody(env, nullptr);
-    size_t const postBodySize = pb.size();
+    jsize const postBodySize = static_cast<jsize>(pb.size());
     if (postBodySize)
     {
       postBody.reset(env->NewByteArray(postBodySize));
@@ -64,12 +64,12 @@ public:
 
 namespace downloader
 {
-  HttpThread * CreateNativeHttpThread(string const & url,
+  HttpThread * CreateNativeHttpThread(std::string const & url,
                                       downloader::IHttpThreadCallback & cb,
                                       int64_t beg,
                                       int64_t end,
                                       int64_t size,
-                                      string const & pb)
+                                      std::string const & pb)
   {
     return new HttpThread(url, cb, beg, end, size, pb);
   }
@@ -93,9 +93,9 @@ Java_com_mapswithme_maps_downloader_ChunkTask_nativeOnWrite(JNIEnv * env, jclass
   bool ret = false;
   try
   {
-    ret = cb->OnWrite(beg, buf, size);
+    ret = cb->OnWrite(beg, buf, static_cast<jsize>(size));
   }
-  catch (exception const & ex)
+  catch (std::exception const & ex)
   {
     LOG(LERROR, ("Failed to write chunk:", ex.what()));
   }
@@ -108,6 +108,6 @@ JNIEXPORT void JNICALL
 Java_com_mapswithme_maps_downloader_ChunkTask_nativeOnFinish(JNIEnv * env, jclass clazz, jlong httpCallbackID, jlong httpCode, jlong beg, jlong end)
 {
   downloader::IHttpThreadCallback * cb = reinterpret_cast<downloader::IHttpThreadCallback*>(httpCallbackID);
-  cb->OnFinish(httpCode, beg, end);
+  cb->OnFinish(static_cast<long>(httpCode), beg, end);
 }
 } // extern "C"

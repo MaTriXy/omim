@@ -7,6 +7,8 @@ import android.view.View;
 
 import com.mapswithme.maps.R;
 import com.mapswithme.maps.widget.SearchToolbarController;
+import com.mapswithme.util.UiUtils;
+import com.mapswithme.util.statistics.Statistics;
 
 class DownloaderToolbarController extends SearchToolbarController
 {
@@ -22,7 +24,7 @@ class DownloaderToolbarController extends SearchToolbarController
   @Override
   public void onUpClick()
   {
-    mActivity.onBackPressed();
+    requireActivity().onBackPressed();
   }
 
   @Override
@@ -42,7 +44,11 @@ class DownloaderToolbarController extends SearchToolbarController
     boolean showSearch = mFragment.shouldShowSearch();
     String title = (showSearch ? "" : mFragment.getAdapter().getCurrentRootName());
 
-    showControls(showSearch);
+    showSearchControls(showSearch);
+    if (!showSearch)
+      UiUtils.setupHomeUpButtonAsNavigationIcon(getToolbar(), mNavigationClickListener);
+    else
+      UiUtils.clearHomeUpButton(getToolbar());
     setTitle(title);
   }
 
@@ -56,6 +62,18 @@ class DownloaderToolbarController extends SearchToolbarController
   protected void startVoiceRecognition(Intent intent, int code)
   {
     mFragment.startActivityForResult(intent, code);
+  }
+
+  @Override
+  protected void onQueryClick(String query)
+  {
+    super.onQueryClick(query);
+    boolean isDownloadNewMapsMode = mFragment.getAdapter().canGoUpwards();
+    Statistics.ParameterBuilder params = Statistics
+        .params().add(Statistics.EventParam.SCREEN, isDownloadNewMapsMode
+                                                    ? Statistics.ParamValue.DOWNLOAD
+                                                    : Statistics.ParamValue.PLUS);
+    Statistics.INSTANCE.trackEvent(Statistics.EventName.DOWNLOADER_SEARCH_CLICK, params);
   }
 
   @Override

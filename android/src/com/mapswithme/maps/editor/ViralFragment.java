@@ -1,8 +1,11 @@
 package com.mapswithme.maps.editor;
 
-import android.annotation.SuppressLint;
+import android.content.Context;
+import android.content.DialogInterface;
 import android.os.Bundle;
-import android.support.annotation.Nullable;
+
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
@@ -21,16 +24,14 @@ public class ViralFragment extends BaseMwmDialogFragment
 {
   private static final String EXTRA_CONGRATS_SHOWN = "CongratsShown";
 
-  private String mViralText;
+  @Nullable
+  private Runnable mDismissListener;
 
-  private final String viralChangesMsg = MwmApplication.get().getString(R.string.editor_done_dialog_1);
-  private final String viralRatingMsg = MwmApplication.get().getString(R.string.editor_done_dialog_2, getUserEditorRank());
-
-  public static boolean shouldDisplay()
+  public static boolean shouldDisplay(@NonNull Context context)
   {
-    return !MwmApplication.prefs().contains(EXTRA_CONGRATS_SHOWN) &&
+    return !MwmApplication.prefs(context).contains(EXTRA_CONGRATS_SHOWN) &&
            Editor.nativeGetStats()[0] == 2 &&
-           ConnectionState.isConnected();
+           ConnectionState.INSTANCE.isConnected();
   }
 
   @Override
@@ -43,44 +44,57 @@ public class ViralFragment extends BaseMwmDialogFragment
   @Override
   public View onCreateView(LayoutInflater inflater, @Nullable ViewGroup container, @Nullable Bundle savedInstanceState)
   {
-    MwmApplication.prefs().edit().putBoolean(EXTRA_CONGRATS_SHOWN, true).apply();
+    MwmApplication.prefs(requireContext()).edit().putBoolean(EXTRA_CONGRATS_SHOWN, true).apply();
+    return inflater.inflate(R.layout.fragment_editor_viral, null);
+  }
 
-    @SuppressLint("InflateParams")
-    final View root = inflater.inflate(R.layout.fragment_editor_viral, null);
-    TextView viralText = (TextView) root.findViewById(R.id.viral);
-    initViralText();
-    viralText.setText(mViralText);
-    root.findViewById(R.id.tell_friend).setOnClickListener(new View.OnClickListener()
-    {
-      @Override
-      public void onClick(View v)
-      {
-        share();
-        dismiss();
-        Statistics.INSTANCE.trackEvent(Statistics.EventName.EDITOR_SHARE_CLICK);
-      }
+  @Override
+  public void onViewCreated(@NonNull View view, @Nullable Bundle savedInstanceState)
+  {
+    super.onViewCreated(view, savedInstanceState);
+    TextView viralTextView = (TextView) view.findViewById(R.id.viral);
+    Context context = requireContext();
+
+    String viralChangesMsg = context.getString(R.string.editor_done_dialog_1);
+    String viralRatingMsg = context.getString(R.string.editor_done_dialog_2, getUserEditorRank());
+    String viralText = new Random().nextBoolean() ? viralChangesMsg : viralRatingMsg;
+    viralTextView.setText(viralText);
+
+    view.findViewById(R.id.tell_friend).setOnClickListener(v -> {
+      share();
+      dismiss();
+      if (mDismissListener != null)
+        mDismissListener.run();
+      Statistics.INSTANCE.trackEvent(Statistics.EventName.EDITOR_SHARE_CLICK);
     });
-    root.findViewById(R.id.close).setOnClickListener(new View.OnClickListener()
-    {
-      @Override
-      public void onClick(View v)
-      {
-        dismiss();
-      }
+
+    view.findViewById(R.id.close).setOnClickListener(v -> {
+      dismiss();
+      if (mDismissListener != null)
+        mDismissListener.run();
     });
+
     Statistics.INSTANCE.trackEvent(Statistics.EventName.EDITOR_SHARE_SHOW,
-                                   Statistics.params().add("showed", mViralText.equals(viralChangesMsg) ? "change" : "rating"));
-    return root;
+                                   Statistics.params()
+                                             .add("showed", viralText.equals(viralChangesMsg) ? "change" : "rating"));
+  }
+
+  @Override
+  public void onCancel(@NonNull DialogInterface dialog)
+  {
+    super.onCancel(dialog);
+    if (mDismissListener != null)
+      mDismissListener.run();
+  }
+
+  public void onDismissListener(@Nullable Runnable onDismissListener)
+  {
+    mDismissListener = onDismissListener;
   }
 
   private void share()
   {
     SharingHelper.shareViralEditor(getActivity(), R.drawable.img_sharing_editor, R.string.editor_sharing_title, R.string.whatsnew_editor_message_1);
-  }
-
-  private void initViralText()
-  {
-    mViralText = new Random().nextBoolean() ? viralChangesMsg : viralRatingMsg;
   }
 
   // Counts fake rank in the rating of editors.

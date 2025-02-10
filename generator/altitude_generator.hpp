@@ -1,17 +1,18 @@
 #pragma once
 
 #include "geometry/point2d.hpp"
+#include "geometry/point_with_altitude.hpp"
 
 #include "indexer/feature_altitude.hpp"
 
-#include "std/string.hpp"
+#include <string>
 
 namespace routing
 {
 class AltitudeGetter
 {
 public:
-  virtual feature::TAltitude GetAltitude(m2::PointD const & p) = 0;
+  virtual geometry::Altitude GetAltitude(m2::PointD const & p) = 0;
 };
 
 /// \brief Adds altitude section to mwm. It has the following format:
@@ -24,6 +25,6 @@ public:
 /// 16                  altitude availability feat. table offset - 16
 /// feat. table offset  feature table         alt. info offset - feat. table offset
 /// alt. info offset    altitude info         end of section - alt. info offset
-void BuildRoadAltitudes(string const & mwmPath, AltitudeGetter & altitudeGetter);
-void BuildRoadAltitudes(string const & mwmPath, string const & srtmDir);
+void BuildRoadAltitudes(std::string const & mwmPath, AltitudeGetter & altitudeGetter);
+void BuildRoadAltitudes(std::string const & mwmPath, std::string const & srtmDir);
 }  // namespace routing

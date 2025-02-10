@@ -1,16 +1,16 @@
 package com.mapswithme.maps.editor;
 
-import android.support.annotation.NonNull;
-import android.support.v7.widget.RecyclerView;
+import androidx.annotation.NonNull;
 
 import com.mapswithme.maps.base.BaseMwmRecyclerFragment;
 
-public class CuisineFragment extends BaseMwmRecyclerFragment
+public class CuisineFragment extends BaseMwmRecyclerFragment<CuisineAdapter>
 {
   private CuisineAdapter mAdapter;
 
+  @NonNull
   @Override
-  protected RecyclerView.Adapter createAdapter()
+  protected CuisineAdapter createAdapter()
   {
     mAdapter = new CuisineAdapter();
     return mAdapter;

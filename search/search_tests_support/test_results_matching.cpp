@@ -2,11 +2,13 @@
 
 #include "generator/generator_tests_support/test_feature.hpp"
 
+#include "indexer/data_source.hpp"
 #include "indexer/feature_decl.hpp"
-#include "indexer/index.hpp"
 
-#include "std/sstream.hpp"
+#include <algorithm>
+#include <sstream>
 
+using namespace std;
 using namespace generator::tests_support;
 
 namespace search
@@ -18,7 +20,7 @@ ExactMatchingRule::ExactMatchingRule(MwmSet::MwmId const & mwmId, TestFeature co
 {
 }
 
-bool ExactMatchingRule::Matches(FeatureType const & feature) const
+bool ExactMatchingRule::Matches(FeatureType & feature) const
 {
   if (m_mwmId != feature.GetID().m_mwmId)
     return false;
@@ -32,12 +34,12 @@ string ExactMatchingRule::ToString() const
   return os.str();
 }
 
-AlternativesMatchingRule::AlternativesMatchingRule(initializer_list<shared_ptr<MatchingRule>> rules)
+AlternativesMatchingRule::AlternativesMatchingRule(vector<shared_ptr<MatchingRule>> && rules)
   : m_rules(move(rules))
 {
 }
 
-bool AlternativesMatchingRule::Matches(FeatureType const & feature) const
+bool AlternativesMatchingRule::Matches(FeatureType & feature) const
 {
   for (auto const & rule : m_rules)
   {
@@ -61,7 +63,7 @@ string AlternativesMatchingRule::ToString() const
   return os.str();
 }
 
-bool MatchResults(Index const & index, vector<shared_ptr<MatchingRule>> rules,
+bool MatchResults(DataSource const & dataSource, vector<shared_ptr<MatchingRule>> rules,
                   vector<search::Result> const & actual)
 {
   vector<FeatureID> resultIds;
@@ -70,8 +72,7 @@ bool MatchResults(Index const & index, vector<shared_ptr<MatchingRule>> rules,
   sort(resultIds.begin(), resultIds.end());
 
   vector<string> unexpected;
-  auto removeMatched = [&rules, &unexpected](FeatureType const & feature)
-  {
+  auto removeMatched = [&rules, &unexpected](FeatureType & feature) {
     for (auto it = rules.begin(); it != rules.end(); ++it)
     {
       if ((*it)->Matches(feature))
@@ -80,9 +81,10 @@ bool MatchResults(Index const & index, vector<shared_ptr<MatchingRule>> rules,
         return;
       }
     }
-    unexpected.push_back(DebugPrint(feature) + " from " + DebugPrint(feature.GetID().m_mwmId));
+    unexpected.push_back(feature.DebugString(FeatureType::BEST_GEOMETRY) + " from " +
+                         DebugPrint(feature.GetID().m_mwmId));
   };
-  index.ReadFeatures(removeMatched, resultIds);
+  dataSource.ReadFeatures(removeMatched, resultIds);
 
   if (rules.empty() && unexpected.empty())
     return true;
@@ -97,6 +99,32 @@ bool MatchResults(Index const & index, vector<shared_ptr<MatchingRule>> rules,
 
   LOG(LWARNING, (os.str()));
   return false;
+}
+
+bool MatchResults(DataSource const & dataSource, vector<shared_ptr<MatchingRule>> rules,
+                  search::Results const & actual)
+{
+  vector<search::Result> const results(actual.begin(), actual.end());
+  return MatchResults(dataSource, rules, results);
+}
+
+bool ResultMatches(DataSource const & dataSource, shared_ptr<MatchingRule> rule,
+                   search::Result const & result)
+{
+  bool matches = false;
+  dataSource.ReadFeature([&](FeatureType & ft) { matches = rule->Matches(ft); },
+                         result.GetFeatureID());
+  return matches;
+}
+
+bool AlternativeMatch(DataSource const & dataSource,
+                      vector<vector<shared_ptr<MatchingRule>>> rulesList,
+                      std::vector<search::Result> const & results)
+{
+  return any_of(rulesList.begin(), rulesList.end(),
+                [&](vector<shared_ptr<MatchingRule>> const & rules) {
+                  return MatchResults(dataSource, rules, results);
+                });
 }
 
 string DebugPrint(MatchingRule const & rule) { return rule.ToString(); }

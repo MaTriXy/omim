@@ -1,8 +1,10 @@
 #include "testing/testing.hpp"
 
-#include "indexer/data_header.hpp"
-#include "indexer/index.hpp"
+#include "generator/generator_tests_support/test_with_classificator.hpp"
+
 #include "indexer/classificator_loader.hpp"
+#include "indexer/data_header.hpp"
+#include "indexer/data_source.hpp"
 
 #include "search/categories_cache.hpp"
 #include "search/locality_finder.hpp"
@@ -14,46 +16,47 @@
 
 #include "base/cancellable.hpp"
 
+#include <string>
+#include <vector>
+
 namespace
 {
-struct TestWithClassificator
-{
-  TestWithClassificator() { classificator::Load(); }
-};
-
-class LocalityFinderTest : public TestWithClassificator
+class LocalityFinderTest : public generator::tests_support::TestWithClassificator
 {
   platform::LocalCountryFile m_worldFile;
 
-  Index m_index;
+  FrozenDataSource m_dataSource;
 
-  my::Cancellable m_cancellable;
+  base::Cancellable m_cancellable;
   search::VillagesCache m_villagesCache;
+  search::CitiesBoundariesTable m_boundariesTable;
 
   search::LocalityFinder m_finder;
   m2::RectD m_worldRect;
 
 public:
-  LocalityFinderTest() : m_villagesCache(m_cancellable), m_finder(m_index, m_villagesCache)
+  LocalityFinderTest()
+    : m_villagesCache(m_cancellable)
+    , m_boundariesTable(m_dataSource)
+    , m_finder(m_dataSource, m_boundariesTable, m_villagesCache)
   {
     m_worldFile = platform::LocalCountryFile::MakeForTesting("World");
 
     try
     {
-      auto const p = m_index.Register(m_worldFile);
+      auto const p = m_dataSource.Register(m_worldFile);
       TEST_EQUAL(MwmSet::RegResult::Success, p.second, ());
 
       MwmSet::MwmId const & id = p.first;
       TEST(id.IsAlive(), ());
 
-      m_worldRect = id.GetInfo()->m_limitRect;
+      m_worldRect = id.GetInfo()->m_bordersRect;
+      m_boundariesTable.Load();
     }
     catch (RootException const & ex)
     {
       LOG(LERROR, ("Read World.mwm error:", ex.Msg()));
     }
-
-    m_finder.SetLanguage(StringUtf8Multilang::kEnglishCode);
   }
 
   ~LocalityFinderTest()
@@ -61,12 +64,15 @@ public:
     platform::CountryIndexes::DeleteFromDisk(m_worldFile);
   }
 
-  void RunTests(vector<ms::LatLon> const & input, char const * results[])
+  void RunTests(std::vector<ms::LatLon> const & input, char const * results[])
   {
     for (size_t i = 0; i < input.size(); ++i)
     {
-      string result;
-      m_finder.GetLocality(MercatorBounds::FromLatLon(input[i]), result);
+      std::string result;
+      m_finder.GetLocality(
+          mercator::FromLatLon(input[i]), [&](search::LocalityItem const & item) {
+            item.GetSpecifiedOrDefaultName(StringUtf8Multilang::kEnglishCode, result);
+          });
       TEST_EQUAL(result, results[i], ());
     }
   }
@@ -75,12 +81,11 @@ public:
 
   void ClearCaches() { m_finder.ClearCache(); }
 };
-
 } // namespace
 
 UNIT_CLASS_TEST(LocalityFinderTest, Smoke)
 {
-  vector<ms::LatLon> input;
+  std::vector<ms::LatLon> input;
   input.emplace_back(53.8993094, 27.5433964);   // Minsk
   input.emplace_back(48.856517, 2.3521);        // Paris
   input.emplace_back(52.5193859, 13.3908289);   // Berlin
@@ -103,7 +108,7 @@ UNIT_CLASS_TEST(LocalityFinderTest, Smoke)
   input.emplace_back(53.883931, 27.69341);     // Parking Minsk (near MKAD)
   input.emplace_back(53.917306, 27.707875);    // Lipki airport (Minsk)
   input.emplace_back(42.285901, 18.834407);    // Budva (Montenegro)
-  input.emplace_back(41.903479, 12.452854);    // Vaticano (Rome)
+  input.emplace_back(43.9363996, 12.4466991);  // City of San Marino
   input.emplace_back(47.3345002, 8.531262);    // Zurich
 
   char const * results3[] =
@@ -114,7 +119,7 @@ UNIT_CLASS_TEST(LocalityFinderTest, Smoke)
     "Minsk",
     "Minsk",
     "Budva",
-    "Rome",
+    "City of San Marino",
     "Zurich"
   };
 
@@ -123,7 +128,7 @@ UNIT_CLASS_TEST(LocalityFinderTest, Smoke)
 
 UNIT_CLASS_TEST(LocalityFinderTest, Moscow)
 {
-  vector<ms::LatLon> input;
+  std::vector<ms::LatLon> input;
   input.emplace_back(55.80166, 37.54066);   // Krasnoarmeyskaya 30
 
   char const * results[] =

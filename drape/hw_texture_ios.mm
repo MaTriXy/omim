@@ -1,8 +1,8 @@
-#include "hw_texture_ios.hpp"
+#include "drape/hw_texture_ios.hpp"
+#include "drape/gl_functions.hpp"
+#include "drape/gl_includes.hpp"
 
 #include "base/logging.hpp"
-
-#include "drape/glfunctions.hpp"
 
 #import <QuartzCore/CAEAGLLayer.h>
 
@@ -10,6 +10,7 @@
 #import <Foundation/NSValue.h>
 
 #include <boost/integer_traits.hpp>
+
 #include <boost/gil/algorithm.hpp>
 #include <boost/gil/typedefs.hpp>
 
@@ -27,7 +28,6 @@ using boost::gil::copy_pixels;
 
 namespace dp
 {
-
 HWTextureAllocatorApple::HWTextureAllocatorApple()
 {
   CVReturn cvRetval = CVOpenGLESTextureCacheCreate(kCFAllocatorDefault, nullptr,
@@ -42,7 +42,8 @@ HWTextureAllocatorApple::~HWTextureAllocatorApple()
   CFRelease(m_textureCache);
 }
 
-CVPixelBufferRef HWTextureAllocatorApple::CVCreatePixelBuffer(uint32_t width, uint32_t height, int format)
+CVPixelBufferRef HWTextureAllocatorApple::CVCreatePixelBuffer(uint32_t width, uint32_t height,
+                                                              dp::TextureFormat format)
 {
   NSDictionary * attrs = [NSDictionary dictionaryWithObjectsAndKeys:
                             [NSDictionary dictionary], kCVPixelBufferIOSurfacePropertiesKey,
@@ -52,14 +53,15 @@ CVPixelBufferRef HWTextureAllocatorApple::CVCreatePixelBuffer(uint32_t width, ui
 
   CFDictionaryRef attrsRef = (__bridge CFDictionaryRef)attrs;
 
-  CVPixelBufferRef result;
-  CVReturn cvRetval;
+  CVPixelBufferRef result = nullptr;
+  CVReturn cvRetval = 0;
   switch (format)
   {
-  case dp::RGBA8:
-    cvRetval = CVPixelBufferCreate(kCFAllocatorDefault, width, height, kCVPixelFormatType_32BGRA, attrsRef, &result);
+  case dp::TextureFormat::RGBA8:
+    cvRetval = CVPixelBufferCreate(kCFAllocatorDefault, width, height, kCVPixelFormatType_32BGRA,
+                                   attrsRef, &result);
     break;
-  case dp::ALPHA:
+  case dp::TextureFormat::Alpha:
     cvRetval = CVPixelBufferCreate(kCFAllocatorDefault, width, height, kCVPixelFormatType_OneComponent8,
                                    attrsRef, &result);
     break;
@@ -101,8 +103,9 @@ void HWTextureAllocatorApple::RiseFlushFlag()
   m_needFlush = true;
 }
 
-drape_ptr<HWTexture> HWTextureAllocatorApple::CreateTexture()
+drape_ptr<HWTexture> HWTextureAllocatorApple::CreateTexture(ref_ptr<dp::GraphicsContext> context)
 {
+  UNUSED_VALUE(context);
   return make_unique_dp<HWTextureApple>(make_ref<HWTextureAllocatorApple>(this));
 }
 
@@ -132,41 +135,44 @@ HWTextureApple::~HWTextureApple()
   }
 }
 
-void HWTextureApple::Create(Params const & params, ref_ptr<void> data)
+void HWTextureApple::Create(ref_ptr<dp::GraphicsContext> context, Params const & params, ref_ptr<void> data)
 {
-  TBase::Create(params, data);
+  TBase::Create(context, params, data);
 
-  m_allocator = params.m_allocator.downcast<HWTextureAllocatorApple>();
-  m_directBuffer = m_allocator->CVCreatePixelBuffer(params.m_width, params.m_height, params.m_format);
+  m_allocator = m_params.m_allocator.downcast<HWTextureAllocatorApple>();
+  m_directBuffer = m_allocator->CVCreatePixelBuffer(m_params.m_width, m_params.m_height, params.m_format);
 
   glConst layout, pixelType;
-  UnpackFormat(params.m_format, layout, pixelType);
+  UnpackFormat(context, params.m_format, layout, pixelType);
   m_texture = m_allocator->CVCreateTexture(m_directBuffer, params.m_width, params.m_height,
                                          layout, pixelType);
 
   m_textureID = CVOpenGLESTextureGetName(m_texture);
   GLFunctions::glBindTexture(m_textureID);
-  GLFunctions::glTexParameter(gl_const::GLMinFilter, params.m_filter);
-  GLFunctions::glTexParameter(gl_const::GLMagFilter, params.m_filter);
-  GLFunctions::glTexParameter(gl_const::GLWrapS, params.m_wrapSMode);
-  GLFunctions::glTexParameter(gl_const::GLWrapT, params.m_wrapTMode);
+  auto const f = DecodeTextureFilter(m_params.m_filter);
+  GLFunctions::glTexParameter(gl_const::GLMinFilter, f);
+  GLFunctions::glTexParameter(gl_const::GLMagFilter, f);
+  GLFunctions::glTexParameter(gl_const::GLWrapS, DecodeTextureWrapping(m_params.m_wrapSMode));
+  GLFunctions::glTexParameter(gl_const::GLWrapT, DecodeTextureWrapping(m_params.m_wrapTMode));
 
   if (data == nullptr)
     return;
 
   Lock();
-  memcpy(m_directPointer, data.get(), m_width * m_height * GetBytesPerPixel(m_format));
+  memcpy(m_directPointer, data.get(), m_params.m_width * m_params.m_height * GetBytesPerPixel(m_params.m_format));
   Unlock();
 }
 
-void HWTextureApple::UploadData(uint32_t x, uint32_t y, uint32_t width, uint32_t height, ref_ptr<void> data)
+void HWTextureApple::UploadData(ref_ptr<dp::GraphicsContext> context, uint32_t x, uint32_t y,
+                                uint32_t width, uint32_t height, ref_ptr<void> data)
 {
   uint8_t bytesPerPixel = GetBytesPerPixel(GetFormat());
   Lock();
   if (bytesPerPixel == 1)
   {
     gray8c_view_t srcView = interleaved_view(width, height, (gray8c_pixel_t *)data.get(), width);
-    gray8_view_t dstView = interleaved_view(m_width, m_height, (gray8_pixel_t *)m_directPointer, m_width);
+    gray8_view_t dstView = interleaved_view(m_params.m_width, m_params.m_height,
+                                            (gray8_pixel_t *)m_directPointer, m_params.m_width);
     gray8_view_t subDstView = subimage_view(dstView, x, y, width, height);
     copy_pixels(srcView, subDstView);
   }
@@ -175,22 +181,48 @@ void HWTextureApple::UploadData(uint32_t x, uint32_t y, uint32_t width, uint32_t
     rgba8c_view_t srcView = interleaved_view(width, height,
                                              (rgba8c_pixel_t *)data.get(),
                                              width * bytesPerPixel);
-    rgba8_view_t dstView = interleaved_view(m_width, m_height,
+    rgba8_view_t dstView = interleaved_view(m_params.m_width, m_params.m_height,
                                             (rgba8_pixel_t *)m_directPointer,
-                                            m_width * bytesPerPixel);
+                                            m_params.m_width * bytesPerPixel);
     rgba8_view_t subDstView = subimage_view(dstView, x, y, width, height);
     copy_pixels(srcView, subDstView);
   }
   Unlock();
 }
 
+void HWTextureApple::Bind(ref_ptr<dp::GraphicsContext> context) const
+{
+  UNUSED_VALUE(context);
+  ASSERT(Validate(), ());
+  if (m_textureID != 0)
+    GLFunctions::glBindTexture(GetID());
+}
+  
+void HWTextureApple::SetFilter(TextureFilter filter)
+{
+  ASSERT(Validate(), ());
+  if (m_params.m_filter != filter)
+  {
+    m_params.m_filter = filter;
+    auto const f = DecodeTextureFilter(m_params.m_filter);
+    GLFunctions::glTexParameter(gl_const::GLMinFilter, f);
+    GLFunctions::glTexParameter(gl_const::GLMagFilter, f);
+  }
+}
+  
+bool HWTextureApple::Validate() const
+{
+  return GetID() != 0;
+}
+  
 void HWTextureApple::Lock()
 {
   ASSERT(m_directPointer == nullptr, ());
 
   CHECK_EQUAL(CVPixelBufferLockBaseAddress(m_directBuffer, 0), kCVReturnSuccess, ());
 
-  ASSERT_EQUAL(CVPixelBufferGetBytesPerRow(m_directBuffer), m_width * GetBytesPerPixel(m_format), ());
+  ASSERT_EQUAL(CVPixelBufferGetBytesPerRow(m_directBuffer),
+               m_params.m_width * GetBytesPerPixel(m_params.m_format), ());
   m_directPointer = CVPixelBufferGetBaseAddress(m_directBuffer);
 }
 
@@ -201,5 +233,4 @@ void HWTextureApple::Unlock()
   CHECK_EQUAL(CVPixelBufferUnlockBaseAddress(m_directBuffer, 0), kCVReturnSuccess, ());
   m_allocator->RiseFlushFlag();
 }
-
-}
+}  // namespace dp

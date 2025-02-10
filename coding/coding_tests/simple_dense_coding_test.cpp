@@ -8,11 +8,14 @@
 #include "base/logging.hpp"
 #include "base/scope_guard.hpp"
 
-#include "std/limits.hpp"
-#include "std/string.hpp"
-#include "std/vector.hpp"
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <string>
+#include <vector>
 
 using namespace coding;
+using namespace std;
 
 namespace
 {
@@ -32,7 +35,7 @@ UNIT_TEST(SimpleDenseCoding_Smoke)
     data[i] = i;
 
   string const kTestFile = "test.tmp";
-  MY_SCOPE_GUARD(cleanup, bind(&FileWriter::DeleteFileX, kTestFile));
+  SCOPE_GUARD(cleanup, bind(&FileWriter::DeleteFileX, kTestFile));
 
   {
     SimpleDenseCoding coding(data);

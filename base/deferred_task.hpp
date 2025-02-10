@@ -2,37 +2,39 @@
 
 #include "base/thread.hpp"
 
-#include "std/chrono.hpp"
-#include "std/condition_variable.hpp"
-#include "std/function.hpp"
-#include "std/mutex.hpp"
+#include <chrono>
+#include <condition_variable>
+#include <functional>
+#include <mutex>
 
-namespace my
+namespace base
 {
 class DeferredTask
 {
-  using TDuration = duration<double>;
-  threads::SimpleThread m_thread;
-  mutex m_mutex;
-  condition_variable m_cv;
-  function<void()> m_fn;
-  TDuration m_duration;
-  bool m_terminate = false;
-
 public:
-  DeferredTask(TDuration const & duration);
+  using Duration = std::chrono::duration<double>;
+
+  DeferredTask(Duration const & duration);
   ~DeferredTask();
 
   void Drop();
 
-  template <typename TFn>
-  void RestartWith(TFn const && fn)
+  template <typename Fn>
+  void RestartWith(Fn const && fn)
   {
     {
-      unique_lock<mutex> l(m_mutex);
+      std::unique_lock<std::mutex> l(m_mutex);
       m_fn = fn;
     }
     m_cv.notify_one();
   }
+
+private:
+  ::threads::SimpleThread m_thread;
+  std::mutex m_mutex;
+  std::condition_variable m_cv;
+  std::function<void()> m_fn;
+  Duration m_duration;
+  bool m_terminate = false;
 };
-}  // namespace my
+}  // namespace base

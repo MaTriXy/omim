@@ -4,7 +4,9 @@
 
 #include "drape/pointers.hpp"
 
-#include "std/deque.hpp"
+#include <deque>
+#include <map>
+#include <string>
 
 namespace df
 {
@@ -13,22 +15,28 @@ class SequenceAnimation : public Animation
 {
 public:
   SequenceAnimation();
-  Animation::Type GetType() const override { return Animation::Sequence; }
-  TAnimObjects const & GetObjects() const override;
-  bool HasObject(TObject object) const override;
-  TObjectProperties const & GetProperties(TObject object) const override;
-  bool HasProperty(TObject object, TProperty property) const override;
-  bool HasTargetProperty(TObject object, TProperty property) const override;
 
-  string GetCustomType() const override;
-  void SetCustomType(string const & type);
+  void Init(ScreenBase const & screen, TPropertyCache const & properties) override;
+
+  Animation::Type GetType() const override { return Animation::Type::Sequence; }
+  TAnimObjects const & GetObjects() const override;
+  bool HasObject(Object object) const override;
+  TObjectProperties const & GetProperties(Object object) const override;
+  bool HasProperty(Object object, ObjectProperty property) const override;
+  bool HasTargetProperty(Object object, ObjectProperty property) const override;
+
+  std::string GetCustomType() const override;
+  void SetCustomType(std::string const & type);
 
   void SetMaxDuration(double maxDuration) override;
+  void SetMinDuration(double minDuration) override;
   double GetDuration() const override;
+  double GetMaxDuration() const override;
+  double GetMinDuration() const override;
   bool IsFinished() const override;
 
-  bool GetProperty(TObject object, TProperty property, PropertyValue &value) const override;
-  bool GetTargetProperty(TObject object, TProperty property, PropertyValue &value) const override;
+  bool GetProperty(Object object, ObjectProperty property, PropertyValue &value) const override;
+  bool GetTargetProperty(Object object, ObjectProperty property, PropertyValue &value) const override;
 
   void AddAnimation(drape_ptr<Animation> && animation);
 
@@ -41,11 +49,11 @@ public:
 private:
   void ObtainObjectProperties();
 
-  deque<drape_ptr<Animation>> m_animations;
+  std::deque<drape_ptr<Animation>> m_animations;
   TAnimObjects m_objects;
-  map<TObject, TObjectProperties> m_properties;
+  std::map<Object, TObjectProperties> m_properties;
 
-  string m_customType;
+  std::string m_customType;
 };
 
 } // namespace df

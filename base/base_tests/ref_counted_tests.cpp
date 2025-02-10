@@ -2,13 +2,13 @@
 
 #include "base/ref_counted.hpp"
 
-using namespace my;
+using namespace base;
 
 namespace
 {
 struct Resource : public RefCounted
 {
-  Resource(bool & destroyed) : m_destroyed(destroyed) { m_destroyed = false; }
+  explicit Resource(bool & destroyed) : m_destroyed(destroyed) { m_destroyed = false; }
 
   ~Resource() override { m_destroyed = true; }
 
@@ -58,7 +58,7 @@ UNIT_TEST(RefCounted_Smoke)
       TEST_EQUAL(2, a->NumRefs(), ());
       TEST(!destroyed, ());
 
-      RefCountPtr<Resource> d(move(b));
+      RefCountPtr<Resource> d(std::move(b));
       TEST(b.Get() == nullptr, ());
       TEST(a.Get() == d.Get(), ());
       TEST_EQUAL(2, a->NumRefs(), ());

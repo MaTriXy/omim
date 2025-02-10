@@ -1,10 +1,7 @@
 #include "opening_hours_ui.hpp"
 
-#include "std/algorithm.hpp"
-#include "std/numeric.hpp"
-#include "std/stack.hpp"
-#include "std/tuple.hpp"
-#include "std/type_traits.hpp"
+#include <algorithm>
+#include <iterator>
 
 #include "base/assert.hpp"
 
@@ -49,20 +46,20 @@ bool FixTimeSpans(osmoh::Timespan openingTime, osmoh::TTimespans & spans)
       span.GetEnd().GetHourMinutes().AddDuration(24_h);
   }
 
-  sort(begin(spans), end(spans), [](osmoh::Timespan const & s1, osmoh::Timespan const s2)
-       {
-         auto const start1 = s1.GetStart().GetHourMinutes();
-         auto const start2 = s2.GetStart().GetHourMinutes();
+  std::sort(std::begin(spans), std::end(spans),
+            [](osmoh::Timespan const & s1, osmoh::Timespan const s2) {
+              auto const start1 = s1.GetStart().GetHourMinutes();
+              auto const start2 = s2.GetStart().GetHourMinutes();
 
-         // If two spans start at the same point the longest span should be leftmost.
-         if (start1 == start2)
-           return SpanLength(s1) > SpanLength(s2);
+              // If two spans start at the same point the longest span should be leftmost.
+              if (start1 == start2)
+                return SpanLength(s1) > SpanLength(s2);
 
-         return start1 < start2;
-       });
+              return start1 < start2;
+            });
 
   osmoh::TTimespans result{spans.front()};
-  for (auto i = 1, j = 0; i < spans.size(); ++i)
+  for (size_t i = 1, j = 0; i < spans.size(); ++i)
   {
     auto const start2 = spans[i].GetStart().GetHourMinutes().GetDuration();
     auto const end1 = spans[j].GetEnd().GetHourMinutes().GetDuration();
@@ -110,7 +107,7 @@ osmoh::Timespan GetLongetsOpenSpan(osmoh::Timespan const & openingTime,
     return openingTime;
 
   osmoh::Timespan longestSpan{openingTime.GetStart(), excludeTime.front().GetStart()};
-  for (auto i = 0; i < excludeTime.size() - 1; ++i)
+  for (size_t i = 0; i + 1 < excludeTime.size(); ++i)
   {
     osmoh::Timespan nextOpenSpan{excludeTime[i].GetEnd(), excludeTime[i + 1].GetStart()};
     longestSpan = SpanLength(longestSpan) > SpanLength(nextOpenSpan) ? longestSpan : nextOpenSpan;
@@ -147,7 +144,7 @@ TimeTable TimeTable::GetPredefinedTimeTable()
   return tt;
 }
 
-bool TimeTable::SetOpeningDays(TOpeningDays const & days)
+bool TimeTable::SetOpeningDays(OpeningDays const & days)
 {
   if (days.empty())
     return false;
@@ -252,27 +249,38 @@ bool TimeTable::IsValid() const
 osmoh::Timespan TimeTable::GetPredefinedOpeningTime() const
 {
   using osmoh::operator""_h;
-  return {10_h, 22_h};
+  return {9_h, 18_h};
 }
 
 osmoh::Timespan TimeTable::GetPredefinedExcludeTime() const
 {
   using osmoh::operator""_h;
   using osmoh::operator""_min;
+  using osmoh::HourMinutes;
+
   auto longestOpenSpan = GetLongetsOpenSpan(GetOpeningTime(), GetExcludeTime());
 
-  auto const longestOpenSpanLength = SpanLength(longestOpenSpan);
-  auto offset = longestOpenSpanLength / 4;
+  auto const startTime = longestOpenSpan.GetStart().GetHourMinutes().GetDuration();
+  auto const endTime = longestOpenSpan.GetEnd().GetHourMinutes().GetDuration();
+  // We do not support exclude time spans in extended working intervals.
+  if (endTime < startTime)
+    return {};
 
-  auto const remainder = offset % 10;
-  if (remainder && remainder != 5)
-    offset -= remainder;
+  auto const startHours = longestOpenSpan.GetStart().GetHourMinutes().GetHours();
+  auto const endHours = longestOpenSpan.GetEnd().GetHourMinutes().GetHours();
 
-  longestOpenSpan.GetStart().GetHourMinutes().AddDuration(osmoh::HourMinutes::TMinutes(offset));
-  longestOpenSpan.GetEnd().GetHourMinutes().AddDuration(-osmoh::HourMinutes::TMinutes(offset));
+  auto const period = endHours - startHours;
 
-  if (SpanLength(longestOpenSpan) < (30_min).count())
-    return osmoh::Timespan{};
+  // Cannot calculate exclude time when working time is less than 3 hours.
+  if (period < 3_h)
+    return {};
+
+  auto excludeTimeStart = startHours + HourMinutes::THours(period.count() / 2);
+
+  CHECK(excludeTimeStart < 24_h, ());
+
+  longestOpenSpan.SetStart(HourMinutes(excludeTimeStart));
+  longestOpenSpan.SetEnd(HourMinutes(excludeTimeStart + 1_h));
 
   return longestOpenSpan;
 }
@@ -284,9 +292,9 @@ TimeTableSet::TimeTableSet()
   m_table.push_back(TimeTable::GetPredefinedTimeTable());
 }
 
-TOpeningDays TimeTableSet::GetUnhandledDays() const
+OpeningDays TimeTableSet::GetUnhandledDays() const
 {
-  TOpeningDays days = {
+  OpeningDays days = {
     osmoh::Weekday::Sunday,
     osmoh::Weekday::Monday,
     osmoh::Weekday::Tuesday,
@@ -296,7 +304,7 @@ TOpeningDays TimeTableSet::GetUnhandledDays() const
     osmoh::Weekday::Saturday
   };
 
-  for (auto const tt : *this)
+  for (auto const & tt : *this)
     for (auto const day : tt.GetOpeningDays())
       days.erase(day);
 
@@ -318,10 +326,8 @@ TimeTable TimeTableSet::GetComplementTimeTable() const
 bool TimeTableSet::IsTwentyFourPerSeven() const
 {
   return GetUnhandledDays().empty() &&
-         all_of(::begin(m_table), ::end(m_table), [](TimeTable const & tt)
-                {
-                  return tt.IsTwentyFourHours();
-                });
+         std::all_of(std::begin(m_table), std::end(m_table),
+                     [](TimeTable const & tt) { return tt.IsTwentyFourHours(); });
 }
 
 bool TimeTableSet::Append(TimeTable const & tt)
@@ -368,17 +374,17 @@ bool TimeTableSet::UpdateByIndex(TimeTableSet & ttSet, size_t const index)
   if (index >= ttSet.Size() || !updated.IsValid())
     return false;
 
-  for (auto i = 0; i < ttSet.Size(); ++i)
+  for (size_t i = 0; i < ttSet.Size(); ++i)
   {
     if (i == index)
       continue;
 
     auto && tt = ttSet.m_table[i];
     // Remove all days of updated timetable from all other timetables.
-    TOpeningDays days;
-    set_difference(std::begin(tt.GetOpeningDays()), std::end(tt.GetOpeningDays()),
-                   std::begin(updated.GetOpeningDays()), std::end(updated.GetOpeningDays()),
-                   inserter(days, std::end(days)));
+    OpeningDays days;
+    std::set_difference(std::begin(tt.GetOpeningDays()), std::end(tt.GetOpeningDays()),
+                        std::begin(updated.GetOpeningDays()), std::end(updated.GetOpeningDays()),
+                        inserter(days, std::end(days)));
 
     if (!tt.SetOpeningDays(days))
       return false;

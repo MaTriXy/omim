@@ -1,10 +1,9 @@
 #include "drape/texture_of_colors.hpp"
 
 #include "base/shared_buffer_manager.hpp"
-#include "base/stl_add.hpp"
+#include "base/stl_helpers.hpp"
 
-#include "std/cstring.hpp"
-
+#include <cstring>
 
 namespace  dp
 {
@@ -22,7 +21,7 @@ ColorPalette::ColorPalette(m2::PointU const & canvasSize)
 
 ref_ptr<Texture::ResourceInfo> ColorPalette::ReserveResource(bool predefined, ColorKey const & key, bool & newResource)
 {
-  lock_guard<mutex> lock(m_mappingLock);
+  std::lock_guard<std::mutex> lock(m_mappingLock);
 
   TPalette & palette = predefined ? m_predefinedPalette : m_palette;
   TPalette::iterator itm = palette.find(key.m_color);
@@ -34,7 +33,7 @@ ref_ptr<Texture::ResourceInfo> ColorPalette::ReserveResource(bool predefined, Co
     pendingColor.m_rect = m2::RectU(m_cursor.x, m_cursor.y,
                                     m_cursor.x + kResourceSize, m_cursor.y + kResourceSize);
     {
-      lock_guard<mutex> g(m_lock);
+      std::lock_guard<std::mutex> g(m_lock);
       m_pendingNodes.push_back(pendingColor);
     }
 
@@ -71,23 +70,42 @@ ref_ptr<Texture::ResourceInfo> ColorPalette::MapResource(ColorKey const & key, b
   return ReserveResource(false /* predefined */, key, newResource);
 }
 
-void ColorPalette::UploadResources(ref_ptr<Texture> texture)
+void ColorPalette::UploadResources(ref_ptr<dp::GraphicsContext> context, ref_ptr<Texture> texture)
 {
-  ASSERT(texture->GetFormat() == dp::RGBA8, ());
-  if (m_pendingNodes.empty())
-    return;
-
+  ASSERT(texture->GetFormat() == dp::TextureFormat::RGBA8, ());
   buffer_vector<PendingColor, 16> pendingNodes;
   {
-    lock_guard<mutex> g(m_lock);
-    m_pendingNodes.swap(pendingNodes);
+    std::lock_guard<std::mutex> g(m_lock);
+    if (m_pendingNodes.empty())
+      return;
+    if (context->HasPartialTextureUpdates())
+    {
+      pendingNodes.swap(m_pendingNodes);
+    }
+    else
+    {
+      m_nodes.insert(m_nodes.end(), m_pendingNodes.begin(), m_pendingNodes.end());
+      m_pendingNodes.clear();
+      pendingNodes = m_nodes;
+    }
+  }
+
+  if (!context->HasPartialTextureUpdates())
+  {
+    PendingColor lastPendingColor = pendingNodes.back();
+    lastPendingColor.m_color = Color::Transparent();
+    while (lastPendingColor.m_rect.maxX() < m_textureSize.x)
+    {
+      lastPendingColor.m_rect.Offset(kResourceSize, 0);
+      pendingNodes.push_back(lastPendingColor);
+    }
   }
 
   buffer_vector<size_t, 3> ranges;
   ranges.push_back(0);
 
   uint32_t minX = pendingNodes[0].m_rect.minX();
-  for (size_t i = 0; i < pendingNodes.size(); ++i)
+  for (size_t i = 1; i < pendingNodes.size(); ++i)
   {
     m2::RectU const & currentRect = pendingNodes[i].m_rect;
     if (minX > currentRect.minX())
@@ -96,6 +114,8 @@ void ColorPalette::UploadResources(ref_ptr<Texture> texture)
       minX = currentRect.minX();
     }
   }
+
+  ASSERT(context->HasPartialTextureUpdates() || ranges.size() == 1, ());
 
   ranges.push_back(pendingNodes.size());
 
@@ -121,7 +141,7 @@ void ColorPalette::UploadResources(ref_ptr<Texture> texture)
 
     size_t const pixelStride = uploadRect.SizeX();
     size_t const byteCount = kBytesPerPixel * uploadRect.SizeX() * uploadRect.SizeY();
-    size_t const bufferSize = my::NextPowOf2(byteCount);
+    size_t const bufferSize = static_cast<size_t>(base::NextPowOf2(static_cast<uint32_t>(byteCount)));
 
     SharedBufferManager::shared_buffer_ptr_t buffer = SharedBufferManager::instance().reserveSharedBuffer(bufferSize);
     uint8_t * pointer = SharedBufferManager::GetRawPointer(buffer);
@@ -139,11 +159,11 @@ void ColorPalette::UploadResources(ref_ptr<Texture> texture)
         currentY = c.m_rect.minY();
       }
 
-      uint32_t const byteStride = pixelStride * kBytesPerPixel;
+      uint32_t const byteStride = static_cast<uint32_t>(pixelStride * kBytesPerPixel);
       uint8_t const red = c.m_color.GetRed();
       uint8_t const green = c.m_color.GetGreen();
       uint8_t const blue = c.m_color.GetBlue();
-      uint8_t const alpha = c.m_color.GetAlfa();
+      uint8_t const alpha = c.m_color.GetAlpha();
 
       for (size_t row = 0; row < kResourceSize; row++)
       {
@@ -161,7 +181,7 @@ void ColorPalette::UploadResources(ref_ptr<Texture> texture)
     }
 
     pointer = SharedBufferManager::GetRawPointer(buffer);
-    texture->UploadData(uploadRect.minX(), uploadRect.minY(),
+    texture->UploadData(context, uploadRect.minX(), uploadRect.minY(),
                         uploadRect.SizeX(), uploadRect.SizeY(), make_ref(pointer));
   }
 }

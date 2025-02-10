@@ -2,10 +2,9 @@
 
 #include "indexer/ftypes_matcher.hpp"
 
-#include "std/string.hpp"
-#include "std/vector.hpp"
-
 #include "base/macros.hpp"
+
+#include <string>
 
 class FeatureType;
 
@@ -22,41 +21,46 @@ public:
 // This class is used to map feature types to a restricted set of
 // different search classes (do not confuse these classes with search
 // categories - they are completely different things).
-class SearchModel
+class Model
 {
 public:
-  enum SearchType
+  // WARNING: after modifications to the enum below, re-check all methods in the class.
+  enum Type
   {
-    // Low-level features such as amenities, offices, shops, buildings
-    // without house number, etc.
-    SEARCH_TYPE_POI,
+    // Low-level features such as amenities, offices, shops, buildings without house number, etc.
+    // Can be stand-alone or located inside COMPLEX_POIs. E.g. cafes/shops inside
+    // airports/universities/museums.
+    TYPE_SUBPOI,
+
+    // Big pois which can contain SUBPOIs. E.g. airports, train stations, malls, parks.
+    TYPE_COMPLEX_POI,
 
     // All features with set house number.
-    SEARCH_TYPE_BUILDING,
+    TYPE_BUILDING,
 
-    SEARCH_TYPE_STREET,
+    TYPE_STREET,
+    TYPE_SUBURB,
 
     // All low-level features except POI, BUILDING and STREET.
-    SEARCH_TYPE_UNCLASSIFIED,
+    TYPE_UNCLASSIFIED,
 
-    SEARCH_TYPE_VILLAGE,
-    SEARCH_TYPE_CITY,
-    SEARCH_TYPE_STATE,  // US or Canadian states
-    SEARCH_TYPE_COUNTRY,
+    TYPE_VILLAGE,
+    TYPE_CITY,
+    TYPE_STATE,  // US or Canadian states
+    TYPE_COUNTRY,
 
-    SEARCH_TYPE_COUNT
+    TYPE_COUNT
   };
 
-  static SearchModel const & Instance();
+  static bool IsLocalityType(Type const type)
+  {
+    return type >= TYPE_VILLAGE && type <= TYPE_COUNTRY;
+  }
 
-  SearchType GetSearchType(FeatureType const & feature) const;
+  static bool IsPoi(Type const type) { return type == TYPE_SUBPOI || type == TYPE_COMPLEX_POI; }
 
-private:
-  SearchModel() = default;
-
-  DISALLOW_COPY_AND_MOVE(SearchModel);
+  Type GetType(FeatureType & feature) const;
 };
 
-string DebugPrint(SearchModel::SearchType type);
-
+std::string DebugPrint(Model::Type type);
 }  // namespace search

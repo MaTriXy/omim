@@ -4,15 +4,20 @@
 
 #include "platform/platform.hpp"
 
-#include "coding/file_name_utils.hpp"
 #include "coding/file_writer.hpp"
 
 #include "geometry/latlon.hpp"
 
+#include "base/file_name_utils.hpp"
 #include "base/logging.hpp"
 #include "base/scope_guard.hpp"
 
-#include "std/chrono.hpp"
+#include <chrono>
+#include <string>
+#include <vector>
+
+using namespace std;
+using namespace std::chrono;
 
 namespace
 {
@@ -21,16 +26,16 @@ location::GpsInfo Make(double timestamp, ms::LatLon const & ll, double speed)
 {
   location::GpsInfo info;
   info.m_timestamp = timestamp;
-  info.m_speed = speed;
-  info.m_latitude = ll.lat;
-  info.m_longitude = ll.lon;
+  info.m_speedMpS = speed;
+  info.m_latitude = ll.m_lat;
+  info.m_longitude = ll.m_lon;
   info.m_source = location::EAndroidNative;
   return info;
 }
 
 inline string GetGpsTrackFilePath()
 {
-  return my::JoinFoldersToPath(GetPlatform().WritableDir(), "gpstrack_test.bin");
+  return base::JoinPath(GetPlatform().WritableDir(), "gpstrack_test.bin");
 }
 
 } // namespace
@@ -42,7 +47,7 @@ UNIT_TEST(GpsTrackStorage_WriteReadWithoutTrunc)
   LOG(LINFO, ("Timestamp", ctime(&t), timestamp));
 
   string const filePath = GetGpsTrackFilePath();
-  MY_SCOPE_GUARD(gpsTestFileDeleter, bind(FileWriter::DeleteFileX, filePath));
+  SCOPE_GUARD(gpsTestFileDeleter, bind(FileWriter::DeleteFileX, filePath));
   FileWriter::DeleteFileX(filePath);
 
   size_t const fileMaxItemCount = 100000;
@@ -64,7 +69,7 @@ UNIT_TEST(GpsTrackStorage_WriteReadWithoutTrunc)
       TEST_EQUAL(point.m_latitude, points[i].m_latitude, ());
       TEST_EQUAL(point.m_longitude, points[i].m_longitude, ());
       TEST_EQUAL(point.m_timestamp, points[i].m_timestamp, ());
-      TEST_EQUAL(point.m_speed, points[i].m_speed, ());
+      TEST_EQUAL(point.m_speed, points[i].m_speedMpS, ());
       ++i;
       return true;
     });
@@ -81,7 +86,7 @@ UNIT_TEST(GpsTrackStorage_WriteReadWithoutTrunc)
       TEST_EQUAL(point.m_latitude, points[i].m_latitude, ());
       TEST_EQUAL(point.m_longitude, points[i].m_longitude, ());
       TEST_EQUAL(point.m_timestamp, points[i].m_timestamp, ());
-      TEST_EQUAL(point.m_speed, points[i].m_speed, ());
+      TEST_EQUAL(point.m_speed, points[i].m_speedMpS, ());
       ++i;
       return true;
     });
@@ -108,7 +113,7 @@ UNIT_TEST(GpsTrackStorage_WriteReadWithTrunc)
   LOG(LINFO, ("Timestamp", ctime(&t), timestamp));
 
   string const filePath = GetGpsTrackFilePath();
-  MY_SCOPE_GUARD(gpsTestFileDeleter, bind(FileWriter::DeleteFileX, filePath));
+  SCOPE_GUARD(gpsTestFileDeleter, bind(FileWriter::DeleteFileX, filePath));
   FileWriter::DeleteFileX(filePath);
 
   size_t const fileMaxItemCount = 100000;
@@ -157,14 +162,14 @@ UNIT_TEST(GpsTrackStorage_WriteReadWithTrunc)
         TEST_EQUAL(point.m_latitude, points2[fileMaxItemCount/2 + i].m_latitude, ());
         TEST_EQUAL(point.m_longitude, points2[fileMaxItemCount/2 + i].m_longitude, ());
         TEST_EQUAL(point.m_timestamp, points2[fileMaxItemCount/2 + i].m_timestamp, ());
-        TEST_EQUAL(point.m_speed, points2[fileMaxItemCount/2 + i].m_speed, ());
+        TEST_EQUAL(point.m_speedMpS, points2[fileMaxItemCount/2 + i].m_speedMpS, ());
       }
       else
       {
         TEST_EQUAL(point.m_latitude, points3[i - fileMaxItemCount/2].m_latitude, ());
         TEST_EQUAL(point.m_longitude, points3[i - fileMaxItemCount/2].m_longitude, ());
         TEST_EQUAL(point.m_timestamp, points3[i - fileMaxItemCount/2].m_timestamp, ());
-        TEST_EQUAL(point.m_speed, points3[i - fileMaxItemCount/2].m_speed, ());
+        TEST_EQUAL(point.m_speedMpS, points3[i - fileMaxItemCount/2].m_speedMpS, ());
       }
       ++i;
       return true;

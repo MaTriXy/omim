@@ -1,19 +1,23 @@
 #import "MWMMapWidgets.h"
-#import "Common.h"
-#import "MWMNavigationDashboardManager.h"
-
-#include "drape_frontend/gui/skin.hpp"
-#include "std/unique_ptr.hpp"
+#import "EAGLView.h"
+#import "MapViewController.h"
+#import "SwiftBridge.h"
 
 @interface MWMMapWidgets ()
 
 @property(nonatomic) float visualScale;
+@property(nonatomic) CGRect availableArea;
 
 @end
 
 @implementation MWMMapWidgets
 {
-  unique_ptr<gui::Skin> m_skin;
+  std::unique_ptr<gui::Skin> m_skin;
+}
+
++ (MWMMapWidgets *)widgetsManager
+{
+  return [MapViewController sharedController].mapView.widgetsManager;
 }
 
 - (void)setupWidgets:(Framework::DrapeCreationParams &)p
@@ -23,76 +27,69 @@
   m_skin->Resize(p.m_surfaceWidth, p.m_surfaceHeight);
   m_skin->ForEach(
       [&p](gui::EWidget widget, gui::Position const & pos) { p.m_widgetsInitInfo[widget] = pos; });
-#ifdef DEBUG
-  p.m_widgetsInitInfo[gui::WIDGET_SCALE_LABEL] = gui::Position(dp::LeftBottom);
-#endif
+  p.m_widgetsInitInfo[gui::WIDGET_SCALE_FPS_LABEL] = gui::Position(dp::LeftBottom);
 }
 
 - (void)resize:(CGSize)size
 {
-  m_skin->Resize(size.width, size.height);
-  [self layoutWidgets];
+  if (m_skin != nullptr)
+    m_skin->Resize(size.width, size.height);
+  dispatch_async(dispatch_get_main_queue(), ^{
+    if (@available(iOS 12.0, *)) {
+      if ([MWMCarPlayService shared].isCarplayActivated) {
+        CGRect bounds = [MapViewController sharedController].mapView.bounds;
+        [self updateLayout: bounds];
+        return;
+      }
+    }
+    [self updateLayoutForAvailableArea];
+  });
 }
 
-- (void)layoutWidgets
+- (void)updateAvailableArea:(CGRect)frame
+{
+  if (CGRectEqualToRect(self.availableArea, frame))
+    return;
+  self.availableArea = frame;
+  if (@available(iOS 12.0, *)) {
+    if ([MWMCarPlayService shared].isCarplayActivated) {
+      return;
+    }
+  }
+  [self updateLayout:frame];
+}
+
+- (void)updateLayoutForAvailableArea
+{
+  [self updateLayout:self.availableArea];
+}
+
+- (void)updateLayout:(CGRect)frame
 {
   if (m_skin == nullptr)
     return;
   gui::TWidgetsLayoutInfo layout;
-  if (self.fullScreen)
-  {
-    layout[gui::WIDGET_RULER] = m_skin->ResolvePosition(gui::WIDGET_RULER).m_pixelPivot;
-    layout[gui::WIDGET_COMPASS] = m_skin->ResolvePosition(gui::WIDGET_COMPASS).m_pixelPivot;
-  }
-  else
-  {
-    m_skin->ForEach([&layout, &self](gui::EWidget w, gui::Position const & pos) {
-      m2::PointF pivot = pos.m_pixelPivot;
-      switch (w)
-      {
+  auto const vs = self.visualScale;
+  auto const viewHeight = [MapViewController sharedController].mapView.height;
+  auto const viewWidth = [MapViewController sharedController].mapView.width;
+  auto const rulerOffset =
+    m2::PointF(frame.origin.x * vs, (frame.origin.y + frame.size.height - viewHeight) * vs);
+  auto const compassOffset =
+    m2::PointF((frame.origin.x + frame.size.width - viewWidth) * vs, frame.origin.y * vs);
+  m_skin->ForEach([&](gui::EWidget w, gui::Position const & pos) {
+    m2::PointF pivot = pos.m_pixelPivot;
+    switch (w)
+    {
       case gui::WIDGET_RULER:
-      case gui::WIDGET_COPYRIGHT:
-        pivot -= m2::PointF(0.0, self.bottomBound * self.visualScale);
-        break;
-      case gui::WIDGET_COMPASS:
-      {
-        CGFloat const compassBottomBound =
-            self.bottomBound + [MWMNavigationDashboardManager manager].extraCompassBottomOffset;
-        pivot += m2::PointF(self.leftBound, -compassBottomBound) * self.visualScale;
-        break;
-      }
-      case gui::WIDGET_SCALE_LABEL:
+      case gui::WIDGET_WATERMARK:
+      case gui::WIDGET_COPYRIGHT: pivot += rulerOffset; break;
+      case gui::WIDGET_COMPASS: pivot += compassOffset; break;
+      case gui::WIDGET_SCALE_FPS_LABEL:
       case gui::WIDGET_CHOOSE_POSITION_MARK: break;
-      }
-      layout[w] = pivot;
-    });
-  }
+    }
+    layout[w] = pivot;
+  });
   GetFramework().SetWidgetLayout(move(layout));
-}
-
-#pragma mark - Properties
-
-- (void)setFullScreen:(BOOL)fullScreen
-{
-  _fullScreen = fullScreen;
-  [self layoutWidgets];
-}
-
-- (void)setLeftBound:(CGFloat)leftBound
-{
-  CGFloat const newLeftBound = MAX(leftBound, 0.0);
-  if (equalScreenDimensions(_leftBound, newLeftBound))
-    return;
-  _leftBound = newLeftBound;
-  [self layoutWidgets];
-}
-
-- (void)setBottomBound:(CGFloat)bottomBound
-{
-  if (equalScreenDimensions(_bottomBound, bottomBound))
-    return;
-  _bottomBound = bottomBound;
-  [self layoutWidgets];
 }
 
 @end

@@ -1,394 +1,618 @@
-#include "indexer/classificator.hpp"
 #include "indexer/feature.hpp"
 
+#include "indexer/classificator.hpp"
 #include "indexer/feature_algo.hpp"
 #include "indexer/feature_impl.hpp"
-#include "indexer/feature_loader_base.hpp"
 #include "indexer/feature_utils.hpp"
 #include "indexer/feature_visibility.hpp"
-#include "indexer/osm_editor.hpp"
+#include "indexer/map_object.hpp"
+#include "indexer/postcodes.hpp"
+#include "indexer/scales.hpp"
+#include "indexer/shared_load_info.hpp"
 
-#include "geometry/distance.hpp"
+#include "platform/preferred_languages.hpp"
+
+#include "geometry/parametrized_segment.hpp"
 #include "geometry/robust_orientation.hpp"
 
+#include "coding/byte_stream.hpp"
+#include "coding/dd_vector.hpp"
+
+#include "base/assert.hpp"
+#include "base/logging.hpp"
 #include "base/range_iterator.hpp"
 #include "base/stl_helpers.hpp"
 
-#include "std/algorithm.hpp"
+#include <algorithm>
+#include <exception>
+#include <limits>
+
+#include "defines.hpp"
 
 using namespace feature;
+using namespace std;
 
-///////////////////////////////////////////////////////////////////////////////////////////////////
-// FeatureBase implementation
-///////////////////////////////////////////////////////////////////////////////////////////////////
-
-void FeatureBase::Deserialize(feature::LoaderBase * pLoader, TBuffer buffer)
+namespace
 {
-  m_pLoader = pLoader;
-  m_pLoader->Init(buffer);
+uint32_t constexpr kInvalidOffset = numeric_limits<uint32_t>::max();
 
-  m_limitRect = m2::RectD::GetEmptyRect();
-  m_typesParsed = m_commonParsed = false;
-  m_header = m_pLoader->GetHeader();
+// Get the index for geometry serialization.
+// @param[in]  scale:
+// -1 : index for the best geometry
+// -2 : index for the worst geometry
+// default : needed geometry
+int GetScaleIndex(SharedLoadInfo const & loadInfo, int scale)
+{
+  int const count = loadInfo.GetScalesCount();
+
+  // In case of WorldCoasts we should get correct last geometry.
+  int const lastScale = loadInfo.GetLastScale();
+  if (scale > lastScale)
+    scale = lastScale;
+
+  switch (scale)
+  {
+  case FeatureType::WORST_GEOMETRY: return 0;
+  case FeatureType::BEST_GEOMETRY: return count - 1;
+  default:
+    for (int i = 0; i < count; ++i)
+    {
+      if (scale <= loadInfo.GetScale(i))
+        return i;
+    }
+    return -1;
+  }
 }
 
-void FeatureType::ApplyPatch(editor::XMLFeature const & xml)
+int GetScaleIndex(SharedLoadInfo const & loadInfo, int scale,
+                  FeatureType::GeometryOffsets const & offsets)
 {
-  xml.ForEachName([this](string const & lang, string const & name)
-                  {
-                    m_params.name.AddString(lang, name);
-                  });
+  int ind = -1;
+  int const count = static_cast<int>(offsets.size());
 
-  string const house = xml.GetHouse();
-  if (!house.empty())
-    m_params.house.Set(house);
+  // In case of WorldCoasts we should get correct last geometry.
+  int const lastScale = loadInfo.GetLastScale();
+  if (scale > lastScale)
+    scale = lastScale;
 
-  // TODO(mgsergio):
-  // m_params.ref =
-  // m_params.layer =
-  // m_params.rank =
-  m_commonParsed = true;
-
-  xml.ForEachTag([this](string const & k, string const & v)
+  switch (scale)
   {
-    Metadata::EType mdType;
-    if (Metadata::TypeFromString(k, mdType))
-      m_metadata.Set(mdType, v);
-    else
-      LOG(LWARNING, ("Patching feature has unknown tags"));
-  });
-  m_metadataParsed = true;
+  case FeatureType::BEST_GEOMETRY:
+    // Choose the best existing geometry for the last visible scale.
+    ind = count - 1;
+    while (ind >= 0 && offsets[ind] == kInvalidOffset)
+      --ind;
+    break;
 
-  // If types count are changed here, in ApplyPatch, new number of types should be passed
-  // instead of GetTypesCount().
-  m_header = CalculateHeader(GetTypesCount(), Header() & HEADER_GEOTYPE_MASK, m_params);
-  m_header2Parsed = true;
+  case FeatureType::WORST_GEOMETRY:
+    // Choose the worst existing geometry for the first visible scale.
+    ind = 0;
+    while (ind < count && offsets[ind] == kInvalidOffset)
+      ++ind;
+    break;
+
+  default:
+  {
+    int const n = loadInfo.GetScalesCount();
+    for (int i = 0; i < n; ++i)
+    {
+      if (scale <= loadInfo.GetScale(i))
+        return (offsets[i] != kInvalidOffset ? i : -1);
+    }
+  }
+  }
+
+  if (ind >= 0 && ind < count)
+    return ind;
+
+  ASSERT(false, ("Feature should have any geometry ..."));
+  return -1;
 }
 
-void FeatureType::ReplaceBy(osm::EditableMapObject const & emo)
+uint32_t CalcOffset(ArrayByteSource const & source, uint8_t const * start)
 {
-  uint8_t geoType;
-  if (emo.IsPointType())
+  ASSERT_GREATER_OR_EQUAL(source.PtrUint8(), start, ());
+  return static_cast<uint32_t>(distance(start, source.PtrUint8()));
+}
+
+uint8_t Header(vector<uint8_t> const & data)
+{
+ CHECK(!data.empty(), ());
+ return data[0];
+}
+
+void ReadOffsets(SharedLoadInfo const & loadInfo, ArrayByteSource & src, uint8_t mask,
+                 FeatureType::GeometryOffsets & offsets)
+{
+  ASSERT(offsets.empty(), ());
+  ASSERT_GREATER(mask, 0, ());
+
+  offsets.resize(loadInfo.GetScalesCount(), kInvalidOffset);
+  size_t ind = 0;
+
+  while (mask > 0)
   {
-    // We are here for existing point features and for newly created point features.
+    if (mask & 0x01)
+      offsets[ind] = ReadVarUint<uint32_t>(src);
+
+    ++ind;
+    mask = mask >> 1;
+  }
+}
+
+class BitSource
+{
+  uint8_t const * m_ptr;
+  uint8_t m_pos;
+
+public:
+  explicit BitSource(uint8_t const * p) : m_ptr(p), m_pos(0) {}
+
+  uint8_t Read(uint8_t count)
+  {
+    ASSERT_LESS(count, 9, ());
+
+    uint8_t v = *m_ptr;
+    v >>= m_pos;
+    v &= ((1 << count) - 1);
+
+    m_pos += count;
+    if (m_pos >= 8)
+    {
+      ASSERT_EQUAL(m_pos, 8, ());
+      ++m_ptr;
+      m_pos = 0;
+    }
+
+    return v;
+  }
+
+  uint8_t const * RoundPtr()
+  {
+    if (m_pos > 0)
+    {
+      ++m_ptr;
+      m_pos = 0;
+    }
+    return m_ptr;
+  }
+};
+
+template <class TSource>
+uint8_t ReadByte(TSource & src)
+{
+  return ReadPrimitiveFromSource<uint8_t>(src);
+}
+}  // namespace
+
+FeatureType::FeatureType(SharedLoadInfo const * loadInfo, vector<uint8_t> && buffer,
+                         MetadataIndex const * metadataIndex,
+                         indexer::MetadataDeserializer * metadataDeserializer)
+  : m_loadInfo(loadInfo)
+  , m_data(buffer)
+  , m_metadataIndex(metadataIndex)
+  , m_metadataDeserializer(metadataDeserializer)
+{
+  CHECK(loadInfo, ());
+
+  ASSERT(m_loadInfo->GetMWMFormat() < version::Format::v10 ||
+             m_loadInfo->GetMWMFormat() == version::Format::v10 && m_metadataIndex ||
+             m_loadInfo->GetMWMFormat() > version::Format::v10 && m_metadataDeserializer,
+         (m_loadInfo->GetMWMFormat()));
+
+  m_header = Header(m_data);
+}
+
+FeatureType::FeatureType(osm::MapObject const & emo)
+{
+  HeaderGeomType headerGeomType = HeaderGeomType::Point;
+  m_limitRect.MakeEmpty();
+
+  switch (emo.GetGeomType())
+  {
+  case feature::GeomType::Undefined:
+    // It is not possible because of FeatureType::GetGeomType() never returns GeomType::Undefined.
+    UNREACHABLE();
+  case feature::GeomType::Point:
+    headerGeomType = HeaderGeomType::Point;
     m_center = emo.GetMercator();
-    m_limitRect.MakeEmpty();
     m_limitRect.Add(m_center);
-    m_pointsParsed = m_trianglesParsed = true;
-    geoType = feature::GEOM_POINT;
-  }
-  else
-  {
-    geoType = Header() & HEADER_GEOTYPE_MASK;
+    break;
+  case feature::GeomType::Line:
+    headerGeomType = HeaderGeomType::Line;
+    m_points = Points(emo.GetPoints().begin(), emo.GetPoints().end());
+    for (auto const & p : m_points)
+      m_limitRect.Add(p);
+    break;
+  case feature::GeomType::Area:
+    headerGeomType = HeaderGeomType::Area;
+    m_triangles = Points(emo.GetTriangesAsPoints().begin(), emo.GetTriangesAsPoints().end());
+    for (auto const & p : m_triangles)
+      m_limitRect.Add(p);
+    break;
   }
 
-  m_params.name = emo.GetName();
+  m_parsed.m_points = m_parsed.m_triangles = true;
+
+  m_params.name = emo.GetNameMultilang();
   string const & house = emo.GetHouseNumber();
   if (house.empty())
     m_params.house.Clear();
   else
     m_params.house.Set(house);
-  m_commonParsed = true;
+  m_parsed.m_common = true;
 
   m_metadata = emo.GetMetadata();
-  m_metadataParsed = true;
+  m_parsed.m_metadata = true;
+  m_parsed.m_metaIds = true;
 
-  uint32_t typesCount = 0;
-  for (uint32_t const type : emo.GetTypes())
-    m_types[typesCount++] = type;
-  m_typesParsed = true;
-  m_header = CalculateHeader(typesCount, geoType, m_params);
-  m_header2Parsed = true;
+  CHECK_LESS_OR_EQUAL(emo.GetTypes().Size(), feature::kMaxTypesCount, ());
+  copy(emo.GetTypes().begin(), emo.GetTypes().end(), m_types.begin());
+
+  m_parsed.m_types = true;
+  m_header = CalculateHeader(emo.GetTypes().Size(), headerGeomType, m_params);
+  m_parsed.m_header2 = true;
 
   m_id = emo.GetID();
 }
 
-editor::XMLFeature FeatureType::ToXML(bool serializeType) const
+feature::GeomType FeatureType::GetGeomType() const
 {
-  editor::XMLFeature feature(GetFeatureType() == feature::GEOM_POINT
-                                 ? editor::XMLFeature::Type::Node
-                                 : editor::XMLFeature::Type::Way);
-
-  if (GetFeatureType() == feature::GEOM_POINT)
+  // FeatureType::FeatureType(osm::MapObject const & emo) expects
+  // that GeomType::Undefined is never returned.
+  auto const headerGeomType = static_cast<HeaderGeomType>(m_header & HEADER_MASK_GEOMTYPE);
+  switch (headerGeomType)
   {
-    feature.SetCenter(GetCenter());
+  case HeaderGeomType::Line: return GeomType::Line;
+  case HeaderGeomType::Area: return GeomType::Area;
+  default: return GeomType::Point;
   }
-  else
-  {
-    ParseTriangles(BEST_GEOMETRY);
-    vector<m2::PointD> geometry(begin(m_triangles), end(m_triangles));
-    // Remove duplicates.
-    my::SortUnique(geometry);
-    feature.SetGeometry(geometry);
-  }
-
-  ForEachName([&feature](uint8_t const & lang, string const & name)
-              {
-                feature.SetName(lang, name);
-                return true;
-              });
-
-  string const house = GetHouseNumber();
-  if (!house.empty())
-    feature.SetHouse(house);
-
-  // TODO(mgsergio):
-  // feature.m_params.ref =
-  // feature.m_params.layer =
-  // feature.m_params.rank =
-
-  if (serializeType)
-  {
-    feature::TypesHolder th(*this);
-    // TODO(mgsergio): Use correct sorting instead of SortBySpec based on the config.
-    th.SortBySpec();
-    // TODO(mgsergio): Either improve "OSM"-compatible serialization for more complex types,
-    // or save all our types directly, to restore and reuse them in migration of modified features.
-    for (uint32_t const type : th)
-    {
-      string const strType = classif().GetReadableObjectName(type);
-      strings::SimpleTokenizer iter(strType, "-");
-      string const k = *iter;
-      if (++iter)
-      {
-        // First (main) type is always stored as "k=amenity v=restaurant".
-        // Any other "k=amenity v=atm" is replaced by "k=atm v=yes".
-        if (feature.GetTagValue(k).empty())
-          feature.SetTagValue(k, *iter);
-        else
-          feature.SetTagValue(*iter, "yes");
-      }
-      else
-      {
-        // We're editing building, generic craft, shop, office, amenity etc.
-        // Skip it's serialization.
-        // TODO(mgsergio): Correcly serialize all types back and forth.
-        LOG(LDEBUG, ("Skipping type serialization:", k));
-      }
-    }
-  }
-
-  for (auto const type : m_metadata.GetPresentTypes())
-  {
-    auto const attributeName = DebugPrint(static_cast<Metadata::EType>(type));
-    feature.SetTagValue(attributeName, m_metadata.Get(type));
-  }
-
-  return feature;
 }
 
-bool FeatureType::FromXML(editor::XMLFeature const & xml)
+void FeatureType::ParseTypes()
 {
-  ASSERT_EQUAL(editor::XMLFeature::Type::Node, xml.GetType(),
-               ("At the moment only new nodes (points) can can be created."));
-  m_center = xml.GetMercatorCenter();
-  m_limitRect.Add(m_center);
-  m_pointsParsed = m_trianglesParsed = true;
+  if (m_parsed.m_types)
+    return;
 
-  xml.ForEachName([this](string const & lang, string const & name)
+  auto const typesOffset = sizeof(m_header);
+  Classificator & c = classif();
+  ArrayByteSource source(m_data.data() + typesOffset);
+
+  size_t const count = GetTypesCount();
+  uint32_t index = 0;
+  try
   {
-    m_params.name.AddString(lang, name);
-  });
-
-  string const house = xml.GetHouse();
-  if (!house.empty())
-    m_params.house.Set(house);
-
-  // TODO(mgsergio):
-  // m_params.ref =
-  // m_params.layer =
-  // m_params.rank =
-  m_commonParsed = true;
-
-  uint32_t typesCount = 0;
-  xml.ForEachTag([this, &typesCount](string const & k, string const & v)
-  {
-    Metadata::EType mdType;
-    if (Metadata::TypeFromString(k, mdType))
+    for (size_t i = 0; i < count; ++i)
     {
-      m_metadata.Set(mdType, v);
+      index = ReadVarUint<uint32_t>(source);
+      m_types[i] = c.GetTypeForIndex(index);
+    }
+  }
+  catch (std::out_of_range const & ex)
+  {
+    LOG(LERROR, ("Incorrect type index for feature.FeatureID:", m_id, ". Incorrect index:", index,
+                 ". Loaded feature types:", m_types, ". Total count of types:", count,
+                 ". Header:", m_header));
+    throw;
+  }
+
+  m_offsets.m_common = CalcOffset(source, m_data.data());
+  m_parsed.m_types = true;
+}
+
+void FeatureType::ParseCommon()
+{
+  if (m_parsed.m_common)
+    return;
+
+  CHECK(m_loadInfo, ());
+  ParseTypes();
+
+  ArrayByteSource source(m_data.data() + m_offsets.m_common);
+  uint8_t const h = Header(m_data);
+  m_params.Read(source, h);
+
+  if (GetGeomType() == GeomType::Point)
+  {
+    m_center = serial::LoadPoint(source, m_loadInfo->GetDefGeometryCodingParams());
+    m_limitRect.Add(m_center);
+  }
+
+  m_offsets.m_header2 = CalcOffset(source, m_data.data());
+  m_parsed.m_common = true;
+}
+
+m2::PointD FeatureType::GetCenter()
+{
+  ASSERT_EQUAL(GetGeomType(), feature::GeomType::Point, ());
+  ParseCommon();
+  return m_center;
+}
+
+int8_t FeatureType::GetLayer()
+{
+  if ((m_header & feature::HEADER_MASK_HAS_LAYER) == 0)
+    return 0;
+
+  ParseCommon();
+  return m_params.layer;
+}
+
+void FeatureType::ParseHeader2()
+{
+  if (m_parsed.m_header2)
+    return;
+
+  CHECK(m_loadInfo, ());
+  ParseCommon();
+
+  uint8_t ptsCount = 0, ptsMask = 0, trgCount = 0, trgMask = 0;
+  BitSource bitSource(m_data.data() + m_offsets.m_header2);
+  auto const headerGeomType = static_cast<HeaderGeomType>(Header(m_data) & HEADER_MASK_GEOMTYPE);
+
+  if (headerGeomType == HeaderGeomType::Line)
+  {
+    ptsCount = bitSource.Read(4);
+    if (ptsCount == 0)
+      ptsMask = bitSource.Read(4);
+    else
+      ASSERT_GREATER(ptsCount, 1, ());
+  }
+  else if (headerGeomType == HeaderGeomType::Area)
+  {
+    trgCount = bitSource.Read(4);
+    if (trgCount == 0)
+      trgMask = bitSource.Read(4);
+  }
+
+  ArrayByteSource src(bitSource.RoundPtr());
+  serial::GeometryCodingParams const & cp = m_loadInfo->GetDefGeometryCodingParams();
+
+  if (headerGeomType == HeaderGeomType::Line)
+  {
+    if (ptsCount > 0)
+    {
+      int const count = ((ptsCount - 2) + 4 - 1) / 4;
+      ASSERT_LESS(count, 4, ());
+
+      for (int i = 0; i < count; ++i)
+      {
+        uint32_t mask = ReadByte(src);
+        m_ptsSimpMask += (mask << (i << 3));
+      }
+
+      auto const * start = src.PtrUint8();
+      src = ArrayByteSource(serial::LoadInnerPath(start, ptsCount, cp, m_points));
+      m_innerStats.m_points = static_cast<uint32_t>(src.PtrUint8() - start);
     }
     else
     {
-      // Simple heuristics. It works if all our supported types for new features at data/editor.config
-      // are of one or two levels nesting (currently it's true).
-      Classificator & cl = classif();
-      uint32_t type = cl.GetTypeByPathSafe({k, v});
-      if (type == 0)
-        type = cl.GetTypeByPathSafe({k});  // building etc.
-      if (type == 0)
-        type = cl.GetTypeByPathSafe({"amenity", k});  // atm=yes, toilet=yes etc.
-
-      if (type)
-        m_types[typesCount++] = type;
-      else
-        LOG(LWARNING, ("Can't load/parse type:", k, v));
+      m_points.emplace_back(serial::LoadPoint(src, cp));
+      ReadOffsets(*m_loadInfo, src, ptsMask, m_offsets.m_pts);
     }
-  });
-  m_metadataParsed = true;
-  m_typesParsed = true;
-
-  EHeaderTypeMask const geomType = house.empty() && !m_params.ref.empty() ? HEADER_GEOM_POINT : HEADER_GEOM_POINT_EX;
-  m_header = CalculateHeader(typesCount, geomType, m_params);
-  m_header2Parsed = true;
-
-  return typesCount > 0;
-}
-
-void FeatureBase::ParseTypes() const
-{
-  if (!m_typesParsed)
-  {
-    m_pLoader->ParseTypes();
-    m_typesParsed = true;
   }
-}
-
-void FeatureBase::ParseCommon() const
-{
-  if (!m_commonParsed)
+  else if (headerGeomType == HeaderGeomType::Area)
   {
-    ParseTypes();
+    if (trgCount > 0)
+    {
+      trgCount += 2;
 
-    m_pLoader->ParseCommon();
-    m_commonParsed = true;
+      auto const * start = src.PtrUint8();
+      src = ArrayByteSource(serial::LoadInnerTriangles(start, trgCount, cp, m_triangles));
+      m_innerStats.m_strips = CalcOffset(src, start);
+    }
+    else
+    {
+      ReadOffsets(*m_loadInfo, src, trgMask, m_offsets.m_trg);
+    }
   }
+  m_innerStats.m_size = CalcOffset(src, m_data.data());
+  m_parsed.m_header2 = true;
 }
 
-feature::EGeomType FeatureBase::GetFeatureType() const
+void FeatureType::ResetGeometry()
 {
-  switch (Header() & HEADER_GEOTYPE_MASK)
-  {
-  case HEADER_GEOM_LINE: return GEOM_LINE;
-  case HEADER_GEOM_AREA: return GEOM_AREA;
-  default: return GEOM_POINT;
-  }
-}
+  // Do not reset geometry for features created from MapObjects.
+  if (!m_loadInfo)
+    return;
 
-string FeatureBase::DebugString() const
-{
-  ParseCommon();
-
-  Classificator const & c = classif();
-
-  string res = "Types";
-  for (size_t i = 0; i < GetTypesCount(); ++i)
-    res += (" : " + c.GetReadableObjectName(m_types[i]));
-  res += "\n";
-
-  return (res + m_params.DebugString());
-}
-
-
-///////////////////////////////////////////////////////////////////////////////////////////////////
-// FeatureType implementation
-///////////////////////////////////////////////////////////////////////////////////////////////////
-
-void FeatureType::Deserialize(feature::LoaderBase * pLoader, TBuffer buffer)
-{
-  base_type::Deserialize(pLoader, buffer);
-
-  m_pLoader->InitFeature(this);
-
-  m_header2Parsed = m_pointsParsed = m_trianglesParsed = m_metadataParsed = false;
-
-  m_innerStats.MakeZero();
-}
-
-void FeatureType::ParseEverything() const
-{
-  // Also calls ParseCommon() and ParseTypes().
-  ParseHeader2();
-  ParseGeometry(FeatureType::BEST_GEOMETRY);
-  ParseTriangles(FeatureType::BEST_GEOMETRY);
-  ParseMetadata();
-}
-
-void FeatureType::ParseHeader2() const
-{
-  if (!m_header2Parsed)
-  {
-    ParseCommon();
-
-    m_pLoader->ParseHeader2();
-    m_header2Parsed = true;
-  }
-}
-
-void FeatureType::ResetGeometry() const
-{
   m_points.clear();
   m_triangles.clear();
 
-  if (GetFeatureType() != GEOM_POINT)
+  if (GetGeomType() != GeomType::Point)
     m_limitRect = m2::RectD();
 
-  m_header2Parsed = m_pointsParsed = m_trianglesParsed = false;
-
-  m_pLoader->ResetGeometry();
+  m_parsed.m_header2 = m_parsed.m_points = m_parsed.m_triangles = false;
+  m_offsets.m_pts.clear();
+  m_offsets.m_trg.clear();
+  m_ptsSimpMask = 0;
 }
 
-uint32_t FeatureType::ParseGeometry(int scale) const
+uint32_t FeatureType::ParseGeometry(int scale)
 {
   uint32_t sz = 0;
-  if (!m_pointsParsed)
+  if (!m_parsed.m_points)
   {
+    CHECK(m_loadInfo, ());
     ParseHeader2();
 
-    sz = m_pLoader->ParseGeometry(scale);
-    m_pointsParsed = true;
+    auto const headerGeomType = static_cast<HeaderGeomType>(Header(m_data) & HEADER_MASK_GEOMTYPE);
+    if (headerGeomType == HeaderGeomType::Line)
+    {
+      size_t const count = m_points.size();
+      if (count < 2)
+      {
+        ASSERT_EQUAL(count, 1, ());
+
+        // outer geometry
+        int const ind = GetScaleIndex(*m_loadInfo, scale, m_offsets.m_pts);
+        if (ind != -1)
+        {
+          ReaderSource<FilesContainerR::TReader> src(m_loadInfo->GetGeometryReader(ind));
+          src.Skip(m_offsets.m_pts[ind]);
+
+          serial::GeometryCodingParams cp = m_loadInfo->GetGeometryCodingParams(ind);
+          cp.SetBasePoint(m_points[0]);
+          serial::LoadOuterPath(src, cp, m_points);
+
+          sz = static_cast<uint32_t>(src.Pos() - m_offsets.m_pts[ind]);
+        }
+      }
+      else
+      {
+        // filter inner geometry
+
+        FeatureType::Points points;
+        points.reserve(count);
+
+        int const scaleIndex = GetScaleIndex(*m_loadInfo, scale);
+        ASSERT_LESS(scaleIndex, m_loadInfo->GetScalesCount(), ());
+
+        points.emplace_back(m_points.front());
+        for (size_t i = 1; i + 1 < count; ++i)
+        {
+          // check for point visibility in needed scaleIndex
+          if (static_cast<int>((m_ptsSimpMask >> (2 * (i - 1))) & 0x3) <= scaleIndex)
+            points.emplace_back(m_points[i]);
+        }
+        points.emplace_back(m_points.back());
+
+        m_points.swap(points);
+      }
+
+      CalcRect(m_points, m_limitRect);
+    }
+    m_parsed.m_points = true;
   }
   return sz;
 }
 
-uint32_t FeatureType::ParseTriangles(int scale) const
+uint32_t FeatureType::ParseTriangles(int scale)
 {
   uint32_t sz = 0;
-  if (!m_trianglesParsed)
+  if (!m_parsed.m_triangles)
   {
+    CHECK(m_loadInfo, ());
     ParseHeader2();
 
-    sz = m_pLoader->ParseTriangles(scale);
-    m_trianglesParsed = true;
+    auto const headerGeomType = static_cast<HeaderGeomType>(Header(m_data) & HEADER_MASK_GEOMTYPE);
+    if (headerGeomType == HeaderGeomType::Area)
+    {
+      if (m_triangles.empty())
+      {
+        auto const ind = GetScaleIndex(*m_loadInfo, scale, m_offsets.m_trg);
+        if (ind != -1)
+        {
+          ReaderSource<FilesContainerR::TReader> src(m_loadInfo->GetTrianglesReader(ind));
+          src.Skip(m_offsets.m_trg[ind]);
+          serial::LoadOuterTriangles(src, m_loadInfo->GetGeometryCodingParams(ind), m_triangles);
+
+          sz = static_cast<uint32_t>(src.Pos() - m_offsets.m_trg[ind]);
+        }
+      }
+
+      CalcRect(m_triangles, m_limitRect);
+    }
+    m_parsed.m_triangles = true;
   }
   return sz;
 }
 
-void FeatureType::ParseMetadata() const
+void FeatureType::ParseMetadata()
 {
-  if (m_metadataParsed) return;
+  if (m_parsed.m_metadata)
+    return;
 
-  m_pLoader->ParseMetadata();
+  CHECK(m_loadInfo, ());
+  try
+  {
+    auto const format = m_loadInfo->GetMWMFormat();
+    if (format >= version::Format::v11)
+    {
+      UNUSED_VALUE(m_metadataDeserializer->Get(m_id.m_index, m_metadata));
+    }
+    else if (format == version::Format::v10)
+    {
+      uint32_t offset;
+      CHECK(m_metadataIndex, ("metadata index should be set for mwm format >= v10"));
+      if (m_metadataIndex->Get(m_id.m_index, offset))
+      {
+        ReaderSource<FilesContainerR::TReader> src(m_loadInfo->GetMetadataReader());
+        src.Skip(offset);
+        // Before v11 we used the same metadata serialization for mwm and mwm.tmp
+        m_metadata.DeserializeFromMwmTmp(src);
+      }
+    }
+    else
+    {
+      struct MetadataIndexEntry
+      {
+        uint32_t key;
+        uint32_t value;
+      };
+      DDVector<MetadataIndexEntry, FilesContainerR::TReader> idx(
+          m_loadInfo->GetMetadataIndexReader());
 
-  m_metadataParsed = true;
+      auto it = lower_bound(idx.begin(), idx.end(), m_id.m_index,
+                            [](auto const & idx, auto val) { return idx.key < val; });
+
+      if (it != idx.end() && m_id.m_index == it->key)
+      {
+        ReaderSource<FilesContainerR::TReader> src(m_loadInfo->GetMetadataReader());
+        src.Skip(it->value);
+        CHECK_GREATER_OR_EQUAL(m_loadInfo->GetMWMFormat(), version::Format::v8,
+                               ("Unsupported mwm format"));
+        // Before v11 we used the same metadata serialization for mwm and mwm.tmp
+        m_metadata.DeserializeFromMwmTmp(src);
+      }
+    }
+    // December 19 - September 20 mwm compatibility
+    auto postcodesReader = m_loadInfo->GetPostcodesReader();
+    if (postcodesReader)
+    {
+      auto postcodes = indexer::Postcodes::Load(*postcodesReader->GetPtr());
+      CHECK(postcodes, ());
+      string postcode;
+      auto const havePostcode = postcodes->Get(m_id.m_index, postcode);
+      CHECK(!havePostcode || !postcode.empty(), (havePostcode, postcode));
+      if (havePostcode)
+        m_metadata.Set(feature::Metadata::FMD_POSTCODE, postcode);
+    }
+  }
+  catch (Reader::OpenException const &)
+  {
+    // now ignore exception because not all mwm have needed sections
+  }
+
+  m_parsed.m_metadata = true;
 }
 
-StringUtf8Multilang const & FeatureType::GetNames() const
+void FeatureType::ParseMetaIds()
 {
+  if (m_parsed.m_metaIds)
+    return;
+
+  CHECK(m_loadInfo, ());
+  try
+  {
+    auto const format = m_loadInfo->GetMWMFormat();
+    if (format >= version::Format::v11)
+      UNUSED_VALUE(m_metadataDeserializer->GetIds(m_id.m_index, m_metaIds));
+    else
+      ParseMetadata();
+  }
+  catch (Reader::OpenException const &)
+  {
+    // now ignore exception because not all mwm have needed sections
+  }
+
+  m_parsed.m_metaIds = true;
+}
+
+StringUtf8Multilang const & FeatureType::GetNames()
+{
+  ParseCommon();
   return m_params.name;
-}
-
-void FeatureType::SetNames(StringUtf8Multilang const & newNames)
-{
-  m_params.name.Clear();
-  // Validate passed string to clean up empty names (if any).
-  newNames.ForEach([this](int8_t langCode, string const & name) -> bool
-  {
-    if (!name.empty())
-      m_params.name.AddString(langCode, name);
-    return true;
-  });
-
-  if (m_params.name.IsEmpty())
-    SetHeader(~feature::HEADER_HAS_NAME & Header());
-  else
-    SetHeader(feature::HEADER_HAS_NAME | Header());
-}
-
-void FeatureType::SetMetadata(feature::Metadata const & newMetadata)
-{
-  m_metadataParsed = true;
-  m_metadata = newMetadata;
 }
 
 namespace
@@ -401,58 +625,47 @@ namespace
   }
 }
 
-string FeatureType::DebugString(int scale) const
+string FeatureType::DebugString(int scale)
 {
+  ParseCommon();
+
+  Classificator const & c = classif();
+
+  string res = "Types";
+  for (size_t i = 0; i < GetTypesCount(); ++i)
+    res += (" : " + c.GetReadableObjectName(m_types[i]));
+  res += "\n";
+
+  res += m_params.DebugString();
+
   ParseGeometryAndTriangles(scale);
-
-  string s = base_type::DebugString();
-
-  switch (GetFeatureType())
+  switch (GetGeomType())
   {
-  case GEOM_POINT:
-    s += (" Center:" + DebugPrint(m_center));
+  case GeomType::Point: res += (" Center:" + DebugPrint(m_center)); break;
+
+  case GeomType::Line:
+    res += " Points:";
+    Points2String(res, m_points);
     break;
 
-  case GEOM_LINE:
-    s += " Points:";
-    Points2String(s, m_points);
+  case GeomType::Area:
+    res += " Triangles:";
+    Points2String(res, m_triangles);
     break;
 
-  case GEOM_AREA:
-    s += " Triangles:";
-    Points2String(s, m_triangles);
-    break;
-
-  case GEOM_UNDEFINED:
+  case GeomType::Undefined:
     ASSERT(false, ("Assume that we have valid feature always"));
     break;
   }
 
-  return s;
+  return res;
 }
 
-string DebugPrint(FeatureType const & ft)
-{
-  return ft.DebugString(FeatureType::BEST_GEOMETRY);
-}
-
-bool FeatureType::IsEmptyGeometry(int scale) const
+m2::RectD FeatureType::GetLimitRect(int scale)
 {
   ParseGeometryAndTriangles(scale);
 
-  switch (GetFeatureType())
-  {
-  case GEOM_AREA: return m_triangles.empty();
-  case GEOM_LINE: return m_points.empty();
-  default: return false;
-  }
-}
-
-m2::RectD FeatureType::GetLimitRect(int scale) const
-{
-  ParseGeometryAndTriangles(scale);
-
-  if (m_triangles.empty() && m_points.empty() && (GetFeatureType() != GEOM_POINT))
+  if (m_triangles.empty() && m_points.empty() && (GetGeomType() != GeomType::Point))
   {
     // This function is called during indexing, when we need
     // to check visibility according to feature sizes.
@@ -463,63 +676,134 @@ m2::RectD FeatureType::GetLimitRect(int scale) const
   return m_limitRect;
 }
 
-void FeatureType::ParseGeometryAndTriangles(int scale) const
+bool FeatureType::IsEmptyGeometry(int scale)
+{
+  ParseGeometryAndTriangles(scale);
+
+  switch (GetGeomType())
+  {
+  case GeomType::Area: return m_triangles.empty();
+  case GeomType::Line: return m_points.empty();
+  default: return false;
+  }
+}
+
+size_t FeatureType::GetPointsCount() const
+{
+  ASSERT(m_parsed.m_points, ());
+  return m_points.size();
+}
+
+m2::PointD const & FeatureType::GetPoint(size_t i) const
+{
+  ASSERT_LESS(i, m_points.size(), ());
+  ASSERT(m_parsed.m_points, ());
+  return m_points[i];
+}
+
+vector<m2::PointD> FeatureType::GetTrianglesAsPoints(int scale)
+{
+  ParseTriangles(scale);
+  return {m_triangles.begin(), m_triangles.end()};
+}
+
+void FeatureType::ParseGeometryAndTriangles(int scale)
 {
   ParseGeometry(scale);
   ParseTriangles(scale);
 }
 
-FeatureType::geom_stat_t FeatureType::GetGeometrySize(int scale) const
+FeatureType::GeomStat FeatureType::GetGeometrySize(int scale)
 {
   uint32_t sz = ParseGeometry(scale);
   if (sz == 0 && !m_points.empty())
     sz = m_innerStats.m_points;
 
-  return geom_stat_t(sz, m_points.size());
+  return GeomStat(sz, m_points.size());
 }
 
-FeatureType::geom_stat_t FeatureType::GetTrianglesSize(int scale) const
+FeatureType::GeomStat FeatureType::GetTrianglesSize(int scale)
 {
   uint32_t sz = ParseTriangles(scale);
   if (sz == 0 && !m_triangles.empty())
     sz = m_innerStats.m_strips;
 
-  return geom_stat_t(sz, m_triangles.size());
+  return GeomStat(sz, m_triangles.size());
 }
 
-void FeatureType::GetPreferredNames(string & defaultName, string & intName) const
+void FeatureType::GetPreferredNames(string & primary, string & secondary)
 {
   if (!HasName())
     return;
 
+  auto const mwmInfo = GetID().m_mwmId.GetInfo();
+
+  if (!mwmInfo)
+    return;
+
   ParseCommon();
-  ::GetPreferredNames(GetID(), GetNames(), defaultName, intName);
+
+  auto const deviceLang = StringUtf8Multilang::GetLangIndex(languages::GetCurrentNorm());
+  ::GetPreferredNames(mwmInfo->GetRegionData(), GetNames(), deviceLang, false /* allowTranslit */,
+                      primary, secondary);
 }
 
-void FeatureType::GetReadableName(string & name) const
+void FeatureType::GetPreferredNames(bool allowTranslit, int8_t deviceLang, string & primary,
+                                    string & secondary)
 {
   if (!HasName())
     return;
 
+  auto const mwmInfo = GetID().m_mwmId.GetInfo();
+
+  if (!mwmInfo)
+    return;
+
   ParseCommon();
-  ::GetReadableName(GetID(), GetNames(), name);
+
+  ::GetPreferredNames(mwmInfo->GetRegionData(), GetNames(), deviceLang, allowTranslit,
+                      primary, secondary);
 }
 
-string FeatureType::GetHouseNumber() const
+void FeatureType::GetReadableName(string & name)
+{
+  if (!HasName())
+    return;
+
+  auto const mwmInfo = GetID().m_mwmId.GetInfo();
+
+  if (!mwmInfo)
+    return;
+
+  ParseCommon();
+
+  auto const deviceLang = StringUtf8Multilang::GetLangIndex(languages::GetCurrentNorm());
+  ::GetReadableName(mwmInfo->GetRegionData(), GetNames(), deviceLang, false /* allowTranslit */,
+                    name);
+}
+
+void FeatureType::GetReadableName(bool allowTranslit, int8_t deviceLang, string & name)
+{
+  if (!HasName())
+    return;
+
+  auto const mwmInfo = GetID().m_mwmId.GetInfo();
+
+  if (!mwmInfo)
+    return;
+
+  ParseCommon();
+
+  ::GetReadableName(mwmInfo->GetRegionData(), GetNames(), deviceLang, allowTranslit, name);
+}
+
+string FeatureType::GetHouseNumber()
 {
   ParseCommon();
   return m_params.house.Get();
 }
 
-void FeatureType::SetHouseNumber(string const & number)
-{
-  if (number.empty())
-    m_params.house.Clear();
-  else
-    m_params.house.Set(number);
-}
-
-bool FeatureType::GetName(int8_t lang, string & name) const
+bool FeatureType::GetName(int8_t lang, string & name)
 {
   if (!HasName())
     return false;
@@ -528,31 +812,47 @@ bool FeatureType::GetName(int8_t lang, string & name) const
   return m_params.name.GetString(lang, name);
 }
 
-uint8_t FeatureType::GetRank() const
+uint8_t FeatureType::GetRank()
 {
   ParseCommon();
   return m_params.rank;
 }
 
-uint32_t FeatureType::GetPopulation() const
-{
-  return feature::RankToPopulation(GetRank());
-}
+uint64_t FeatureType::GetPopulation() { return feature::RankToPopulation(GetRank()); }
 
-string FeatureType::GetRoadNumber() const
+string FeatureType::GetRoadNumber()
 {
   ParseCommon();
   return m_params.ref;
 }
 
-void FeatureType::SwapGeometry(FeatureType & r)
+feature::Metadata const & FeatureType::GetMetadata()
 {
-  ASSERT_EQUAL(m_pointsParsed, r.m_pointsParsed, ());
-  ASSERT_EQUAL(m_trianglesParsed, r.m_trianglesParsed, ());
+  ParseMetadata();
+  return m_metadata;
+}
 
-  if (m_pointsParsed)
-    m_points.swap(r.m_points);
+std::string FeatureType::GetMetadata(feature::Metadata::EType type)
+{
+  ParseMetaIds();
+  if (m_metadata.Has(type))
+    return m_metadata.Get(type);
 
-  if (m_trianglesParsed)
-    m_triangles.swap(r.m_triangles);
+  auto const it = base::FindIf(m_metaIds, [&type](auto const & v) { return v.first == type; });
+  if (it == m_metaIds.end())
+    return {};
+
+  auto const value = m_metadataDeserializer->GetMetaById(it->second);
+  m_metadata.Set(type, value);
+  return value;
+}
+
+bool FeatureType::HasMetadata(feature::Metadata::EType type)
+{
+  ParseMetaIds();
+  if (m_metadata.Has(type))
+    return true;
+
+  return base::FindIf(m_metaIds, [&type](auto const & v) { return v.first == type; }) !=
+         m_metaIds.end();
 }

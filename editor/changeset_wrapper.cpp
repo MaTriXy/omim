@@ -1,5 +1,5 @@
 #include "editor/changeset_wrapper.hpp"
-#include "editor/osm_feature_matcher.hpp"
+#include "editor/feature_matcher.hpp"
 
 #include "indexer/feature.hpp"
 
@@ -8,11 +8,16 @@
 #include "base/logging.hpp"
 #include "base/macros.hpp"
 
-#include "std/algorithm.hpp"
-#include "std/random.hpp"
-#include "std/sstream.hpp"
+#include <algorithm>
+#include <cstdint>
+#include <exception>
+#include <random>
+#include <sstream>
+#include <utility>
 
 #include "private.h"
+
+using namespace std;
 
 using editor::XMLFeature;
 
@@ -23,8 +28,8 @@ m2::RectD GetBoundingRect(vector<m2::PointD> const & geometry)
   m2::RectD rect;
   for (auto const & p : geometry)
   {
-    auto const latLon = MercatorBounds::ToLatLon(p);
-    rect.Add({latLon.lon, latLon.lat});
+    auto const latLon = mercator::ToLatLon(p);
+    rect.Add({latLon.m_lon, latLon.m_lat});
   }
   return rect;
 }
@@ -72,7 +77,7 @@ vector<m2::PointD> NaiveSample(vector<m2::PointD> const & source, size_t count)
   indexes.reserve(count);
 
   minstd_rand engine;
-  uniform_int_distribution<> distrib(0, source.size());
+  uniform_int_distribution<size_t> distrib(0, source.size());
 
   while (count--)
   {
@@ -101,8 +106,8 @@ string DebugPrint(xml_document const & doc)
 
 namespace osm
 {
-ChangesetWrapper::ChangesetWrapper(TKeySecret const & keySecret,
-                                   ServerApi06::TKeyValueTags const & comments) noexcept
+ChangesetWrapper::ChangesetWrapper(KeySecret const & keySecret,
+                                   ServerApi06::KeyValueTags const & comments) noexcept
   : m_changesetComments(comments), m_api(OsmOAuth::ServerAuth(keySecret))
 {
 }
@@ -117,7 +122,7 @@ ChangesetWrapper::~ChangesetWrapper()
       m_api.UpdateChangeSet(m_changesetId, m_changesetComments);
       m_api.CloseChangeSet(m_changesetId);
     }
-    catch (std::exception const & ex)
+    catch (exception const & ex)
     {
       LOG(LWARNING, (ex.what()));
     }
@@ -127,7 +132,7 @@ ChangesetWrapper::~ChangesetWrapper()
 void ChangesetWrapper::LoadXmlFromOSM(ms::LatLon const & ll, pugi::xml_document & doc,
                                       double radiusInMeters)
 {
-  auto const response = m_api.GetXmlFeaturesAtLatLon(ll.lat, ll.lon, radiusInMeters);
+  auto const response = m_api.GetXmlFeaturesAtLatLon(ll.m_lat, ll.m_lon, radiusInMeters);
   if (response.first != OsmOAuth::HTTP::OK)
     MYTHROW(HttpErrorException, ("HTTP error", response, "with GetXmlFeaturesAtLatLon", ll));
 
@@ -140,7 +145,7 @@ void ChangesetWrapper::LoadXmlFromOSM(ms::LatLon const & ll, pugi::xml_document 
 void ChangesetWrapper::LoadXmlFromOSM(ms::LatLon const & min, ms::LatLon const & max,
                                       pugi::xml_document & doc)
 {
-  auto const response = m_api.GetXmlFeaturesInRect(min.lat, min.lon, max.lat, max.lon);
+  auto const response = m_api.GetXmlFeaturesInRect(min.m_lat, min.m_lon, max.m_lat, max.m_lon);
   if (response.first != OsmOAuth::HTTP::OK)
     MYTHROW(HttpErrorException, ("HTTP error", response, "with GetXmlFeaturesInRect", min, max));
 
@@ -152,12 +157,12 @@ void ChangesetWrapper::LoadXmlFromOSM(ms::LatLon const & min, ms::LatLon const &
 XMLFeature ChangesetWrapper::GetMatchingNodeFeatureFromOSM(m2::PointD const & center)
 {
   // Match with OSM node.
-  ms::LatLon const ll = MercatorBounds::ToLatLon(center);
+  ms::LatLon const ll = mercator::ToLatLon(center);
   pugi::xml_document doc;
   // Throws!
   LoadXmlFromOSM(ll, doc);
 
-  pugi::xml_node const bestNode = GetBestOsmNode(doc, ll);
+  pugi::xml_node const bestNode = matcher::GetBestOsmNode(doc, ll);
   if (bestNode.empty())
   {
     MYTHROW(OsmObjectWasDeletedException,
@@ -182,7 +187,7 @@ XMLFeature ChangesetWrapper::GetMatchingAreaFeatureFromOSM(vector<m2::PointD> co
   // Try several points in case of poor osm response.
   for (auto const & pt : NaiveSample(geometry, kSamplePointsCount))
   {
-    ms::LatLon const ll = MercatorBounds::ToLatLon(pt);
+    ms::LatLon const ll = mercator::ToLatLon(pt);
     pugi::xml_document doc;
     // Throws!
     LoadXmlFromOSM(ll, doc);
@@ -194,7 +199,7 @@ XMLFeature ChangesetWrapper::GetMatchingAreaFeatureFromOSM(vector<m2::PointD> co
       hasRelation = true;
     }
 
-    pugi::xml_node const bestWayOrRelation = GetBestOsmWayOrRelation(doc, geometry);
+    pugi::xml_node const bestWayOrRelation = matcher::GetBestOsmWayOrRelation(doc, geometry);
     if (!bestWayOrRelation)
     {
       if (hasRelation)
@@ -202,30 +207,15 @@ XMLFeature ChangesetWrapper::GetMatchingAreaFeatureFromOSM(vector<m2::PointD> co
       continue;
     }
 
-    if (strcmp(bestWayOrRelation.name(), "relation") == 0)
-    {
-      stringstream sstr;
-      bestWayOrRelation.print(sstr);
-      LOG(LDEBUG, ("Relation is the best match", sstr.str()));
-      MYTHROW(RelationFeatureAreNotSupportedException, ("Got relation as the best matching"));
-    }
-
     if (!OsmFeatureHasTags(bestWayOrRelation))
     {
       stringstream sstr;
       bestWayOrRelation.print(sstr);
-      LOG(LDEBUG, ("Way or relation has no tags", sstr.str()));
-      MYTHROW(EmptyFeatureException, ("Way or relation has no tags"));
+      LOG(LDEBUG, ("The matched object has no tags", sstr.str()));
+      MYTHROW(EmptyFeatureException, ("The matched object has no tags"));
     }
 
-    // TODO: rename to wayOrRelation when relations are handled.
-    XMLFeature const way(bestWayOrRelation);
-    ASSERT(way.IsArea(), ("Best way must be an area."));
-
-    // AlexZ: TODO: Check that this way is really match our feature.
-    // If we had some way to check it, why not to use it in selecting our feature?
-
-    return way;
+    return XMLFeature(bestWayOrRelation);
   }
   MYTHROW(OsmObjectWasDeletedException, ("OSM does not have any matching way for feature"));
 }
@@ -264,7 +254,7 @@ void ChangesetWrapper::Delete(XMLFeature node)
   m_deleted_types[GetTypeForFeature(node)]++;
 }
 
-string ChangesetWrapper::TypeCountToString(TTypeCount const & typeCount)
+string ChangesetWrapper::TypeCountToString(TypeCount const & typeCount)
 {
   if (typeCount.empty())
     return string();
@@ -281,8 +271,8 @@ string ChangesetWrapper::TypeCountToString(TTypeCount const & typeCount)
        });
 
   ostringstream ss;
-  auto const limit = min(size_t(3), items.size());
-  for (auto i = 0; i < limit; ++i)
+  size_t const limit = min(size_t(3), items.size());
+  for (size_t i = 0; i < limit; ++i)
   {
     if (i > 0)
     {
@@ -331,8 +321,8 @@ string ChangesetWrapper::TypeCountToString(TTypeCount const & typeCount)
         // "library" -> "libraries"
         else if (lastTwo.back() == 'y' && kVowels.find(lastTwo.front()) == string::npos)
         {
-          long const pos = ss.tellp();
-          ss.seekp(pos - 1);
+          auto const pos = static_cast<size_t>(ss.tellp());
+          ss.seekp(static_cast<typename ostringstream::pos_type>(pos - 1));
           ss << "ie";
         }
       }
@@ -361,5 +351,4 @@ string ChangesetWrapper::GetDescription() const
   }
   return result;
 }
-
 }  // namespace osm

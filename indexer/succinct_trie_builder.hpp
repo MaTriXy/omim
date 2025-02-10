@@ -8,11 +8,13 @@
 #include "coding/writer.hpp"
 
 #include "base/buffer_vector.hpp"
+#include "base/checked_cast.hpp"
 #include "base/scope_guard.hpp"
 #include "base/string_utils.hpp"
 
-#include "std/algorithm.hpp"
-#include "std/bind.hpp"
+#include <algorithm>
+#include <functional>
+#include <vector>
 
 // Trie format:
 //   -- Serialized Huffman encoding.
@@ -76,7 +78,7 @@ void DeleteTrie(TNode * root)
 }
 
 template <typename TNode>
-void WriteInLevelOrder(TNode * root, vector<TNode *> & levelOrder)
+void WriteInLevelOrder(TNode * root, std::vector<TNode *> & levelOrder)
 {
   ASSERT(root, ());
   levelOrder.push_back(root);
@@ -100,12 +102,12 @@ void BuildSuccinctTrie(TWriter & writer, TIter const beg, TIter const end)
   using TEntry = typename TIter::value_type;
 
   TNode * root = new TNode();
-  MY_SCOPE_GUARD(cleanup, bind(&DeleteTrie<TNode>, root));
+  SCOPE_GUARD(cleanup, std::bind(&DeleteTrie<TNode>, root));
   TTrieString prevKey;
   TEntry prevEntry;
 
-  vector<TEntry> entries;
-  vector<strings::UniString> entryStrings;
+  std::vector<TEntry> entries;
+  std::vector<strings::UniString> entryStrings;
   for (TIter it = beg; it != end; ++it)
   {
     TEntry entry = *it;
@@ -130,8 +132,8 @@ void BuildSuccinctTrie(TWriter & writer, TIter const beg, TIter const end)
     TEntry const & entry = entries[i];
     auto const & key = entryStrings[i];
 
-    vector<uint8_t> buf;
-    MemWriter<vector<uint8_t>> memWriter(buf);
+    std::vector<uint8_t> buf;
+    MemWriter<std::vector<uint8_t>> memWriter(buf);
     uint32_t numBits = huffman.EncodeAndWrite(memWriter, key);
 
     MemReader bitEncoding(&buf[0], buf.size());
@@ -141,7 +143,7 @@ void BuildSuccinctTrie(TWriter & writer, TIter const beg, TIter const end)
     cur->m_valueList.Append(entry.GetValue());
   }
 
-  vector<TNode *> levelOrder;
+  std::vector<TNode *> levelOrder;
   WriteInLevelOrder(root, levelOrder);
 
   {
@@ -156,17 +158,17 @@ void BuildSuccinctTrie(TWriter & writer, TIter const beg, TIter const end)
     }
   }
 
-  vector<uint32_t> finalNodeIds;
-  vector<uint32_t> offsetTable;
-  vector<uint8_t> valueBuf;
-  MemWriter<vector<uint8_t>> valueWriter(valueBuf);
+  std::vector<uint32_t> finalNodeIds;
+  std::vector<uint32_t> offsetTable;
+  std::vector<uint8_t> valueBuf;
+  MemWriter<std::vector<uint8_t>> valueWriter(valueBuf);
   for (size_t i = 0; i < levelOrder.size(); ++i)
   {
     TNode const * node = levelOrder[i];
     if (!node->m_isFinal)
       continue;
     finalNodeIds.push_back(static_cast<uint32_t>(i));
-    offsetTable.push_back(valueWriter.Pos());
+    offsetTable.push_back(base::asserted_cast<uint32_t>(valueWriter.Pos()));
     node->m_valueList.Dump(valueWriter);
   }
 

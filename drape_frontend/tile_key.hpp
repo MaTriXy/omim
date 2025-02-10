@@ -1,18 +1,21 @@
 #pragma once
 
+#include "drape_frontend/batcher_bucket.hpp"
+
 #include "geometry/rect2d.hpp"
 #include "geometry/screenbase.hpp"
 
 #include "base/matrix.hpp"
 
+#include <string>
+
 namespace df
 {
-
 struct TileKey
 {
   TileKey();
   TileKey(int x, int y, int zoomLevel);
-  TileKey(TileKey const & key, uint64_t generation);
+  TileKey(TileKey const & key, uint64_t generation, uint64_t userMarksGeneration);
 
   // Operators < and == do not consider parameter m_generation.
   // m_generation is used to determine a generation of geometry for this tile key.
@@ -29,11 +32,16 @@ struct TileKey
 
   math::Matrix<float, 4, 4> GetTileBasedModelView(ScreenBase const & screen) const;
 
+  m2::PointI GetTileCoords() const;
+
+  uint64_t GetHashValue(BatcherBucket bucket) const;
+
   int m_x;
   int m_y;
   int m_zoomLevel;
 
   uint64_t m_generation;
+  uint64_t m_userMarksGeneration;
 };
 
 struct TileKeyStrictComparator
@@ -44,6 +52,5 @@ struct TileKeyStrictComparator
   }
 };
 
-string DebugPrint(TileKey const & key);
-
-} // namespace df
+std::string DebugPrint(TileKey const & key);
+}  // namespace df

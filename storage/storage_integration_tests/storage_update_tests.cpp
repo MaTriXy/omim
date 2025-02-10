@@ -4,30 +4,36 @@
 
 #include "map/framework.hpp"
 
+#include "platform/downloader_defines.hpp"
 #include "platform/http_request.hpp"
 #include "platform/local_country_file_utils.hpp"
 #include "platform/platform.hpp"
 #include "platform/platform_tests_support/writable_dir_changer.hpp"
 
-#include "coding/file_name_utils.hpp"
 #include "coding/internal/file_data.hpp"
 
 #include "storage/storage.hpp"
 
-#include "std/unique_ptr.hpp"
+#include "base/file_name_utils.hpp"
+
+#include <memory>
+#include <string>
 
 using namespace platform;
+using namespace std;
 using namespace storage;
 
 namespace
 {
+static FrameworkParams const kFrameworkParams(false /* m_enableLocalAds */, false /* m_enableDiffs */);
+
 string const kCountriesTxtFile = COUNTRIES_FILE;
 
-string const kMwmVersion1 = "160316";
-size_t const kCountriesTxtFileSize1 = 353091;
+string const kMwmVersion1 = "190830";
+size_t const kCountriesTxtFileSize1 = 420632;
 
-string const kMwmVersion2 = "160317";
-size_t const kCountriesTxtFileSize2 = 348972;
+string const kMwmVersion2 = "190910";
+size_t const kCountriesTxtFileSize2 = 420634;
 
 string const kGroupCountryId = "Belarus";
 
@@ -37,14 +43,14 @@ bool DownloadFile(string const & url,
 {
   using namespace downloader;
 
-  HttpRequest::StatusT httpStatus;
+  DownloadStatus httpStatus;
   bool finished = false;
 
   unique_ptr<HttpRequest> request(HttpRequest::GetFile({url}, filePath, fileSize,
                                   [&](HttpRequest & request)
   {
-    HttpRequest::StatusT const s = request.Status();
-    if (s == HttpRequest::EFailed || s == HttpRequest::ECompleted)
+    DownloadStatus const s = request.GetStatus();
+    if (s != DownloadStatus::InProgress)
     {
       httpStatus = s;
       finished = true;
@@ -54,23 +60,22 @@ bool DownloadFile(string const & url,
 
   testing::RunEventLoop();
 
-  return httpStatus == HttpRequest::ECompleted;
+  return httpStatus == DownloadStatus::Completed;
 }
 
 string GetCountriesTxtWebUrl(string const version)
 {
-  return kTestWebServer + "/direct/" + version + "/" + kCountriesTxtFile;
+  return kTestWebServer + "direct/" + version + "/" + kCountriesTxtFile;
 }
 
 string GetCountriesTxtFilePath()
 {
-  return my::JoinFoldersToPath(GetPlatform().WritableDir(), kCountriesTxtFile);
+  return base::JoinPath(GetPlatform().WritableDir(), kCountriesTxtFile);
 }
 
-string GetMwmFilePath(string const & version, TCountryId const & countryId)
+string GetMwmFilePath(string const & version, CountryId const & countryId)
 {
-  return my::JoinFoldersToPath({GetPlatform().WritableDir(), version},
-                               countryId + DATA_FILE_EXTENSION);
+  return base::JoinPath(GetPlatform().WritableDir(), version, countryId + DATA_FILE_EXTENSION);
 }
 
 } // namespace
@@ -81,33 +86,31 @@ UNIT_TEST(SmallMwms_Update_Test)
 
   Platform & platform = GetPlatform();
 
-  auto onProgressFn = [&](TCountryId const & countryId, TLocalAndRemoteSize const & mapSize) {};
+  auto onProgressFn = [&](CountryId const &, downloader::Progress const &) {};
 
   // Download countries.txt for version 1
   TEST(DownloadFile(GetCountriesTxtWebUrl(kMwmVersion1), GetCountriesTxtFilePath(), kCountriesTxtFileSize1), ());
 
   {
-    Framework f;
+    Framework f(kFrameworkParams);
     auto & storage = f.GetStorage();
     string const version = strings::to_string(storage.GetCurrentDataVersion());
-    TEST(version::IsSingleMwm(storage.GetCurrentDataVersion()), ());
     TEST_EQUAL(version, kMwmVersion1, ());
-    auto onChangeCountryFn = [&](TCountryId const & countryId)
-    {
+    auto onChangeCountryFn = [&](CountryId const & countryId) {
       if (!storage.IsDownloadInProgress())
         testing::StopEventLoop();
     };
     storage.Subscribe(onChangeCountryFn, onProgressFn);
-    storage.SetDownloadingUrlsForTesting({kTestWebServer});
+    storage.SetDownloadingServersForTesting({kTestWebServer});
 
-    TCountriesVec children;
+    CountriesVec children;
     storage.GetChildren(kGroupCountryId, children);
 
     // Download group
     storage.DownloadNode(kGroupCountryId);
     testing::RunEventLoop();
 
-    // Check group node status is EOnDisk
+    // Check group node status is OnDisk
     NodeAttrs attrs;
     storage.GetNodeAttrs(kGroupCountryId, attrs);
     TEST_EQUAL(NodeStatus::OnDisk, attrs.m_status, ());
@@ -121,32 +124,30 @@ UNIT_TEST(SmallMwms_Update_Test)
   }
 
   // Replace countries.txt by version 2
-  TEST(my::DeleteFileX(GetCountriesTxtFilePath()), ());
+  TEST(base::DeleteFileX(GetCountriesTxtFilePath()), ());
   TEST(DownloadFile(GetCountriesTxtWebUrl(kMwmVersion2), GetCountriesTxtFilePath(), kCountriesTxtFileSize2), ());
 
   {
-    Framework f;
+    Framework f(kFrameworkParams);
     auto & storage = f.GetStorage();
     string const version = strings::to_string(storage.GetCurrentDataVersion());
-    TEST(version::IsSingleMwm(storage.GetCurrentDataVersion()), ());
     TEST_EQUAL(version, kMwmVersion2, ());
-    auto onChangeCountryFn = [&](TCountryId const & countryId)
-    {
+    auto onChangeCountryFn = [&](CountryId const & countryId) {
       if (!storage.IsDownloadInProgress())
         testing::StopEventLoop();
     };
     storage.Subscribe(onChangeCountryFn, onProgressFn);
-    storage.SetDownloadingUrlsForTesting({kTestWebServer});
+    storage.SetDownloadingServersForTesting({kTestWebServer});
 
-    TCountriesVec children;
+    CountriesVec children;
     storage.GetChildren(kGroupCountryId, children);
 
-    // Check group node status is EOnDiskOutOfDate
+    // Check group node status is OnDiskOutOfDate
     NodeAttrs attrs;
     storage.GetNodeAttrs(kGroupCountryId, attrs);
     TEST_EQUAL(NodeStatus::OnDiskOutOfDate, attrs.m_status, ());
 
-    // Check children node status is EOnDiskOutOfDate
+    // Check children node status is OnDiskOutOfDate
     for (auto const & child : children)
     {
       NodeAttrs attrs;
@@ -165,11 +166,11 @@ UNIT_TEST(SmallMwms_Update_Test)
     storage.DownloadNode(kGroupCountryId);
     testing::RunEventLoop();
 
-    // Check group node status is EOnDisk
+    // Check group node status is OnDisk
     storage.GetNodeAttrs(kGroupCountryId, attrs);
     TEST_EQUAL(NodeStatus::OnDisk, attrs.m_status, ());
 
-    // Check children node status is EOnDisk
+    // Check children node status is OnDisk
     for (auto const & child : children)
     {
       NodeAttrs attrs;

@@ -83,7 +83,7 @@ enum class DayEventType
 // This function was taken from source http://williams.best.vwh.net/sunrise_sunset_algorithm.htm.
 // Notation is kept to have source close to source.
 // Original article is // http://babel.hathitrust.org/cgi/pt?id=uiug.30112059294311;view=1up;seq=25
-pair<DayEventType, time_t> CalculateDayEventTime(time_t timeUtc,
+std::pair<DayEventType, time_t> CalculateDayEventTime(time_t timeUtc,
                                                  double latitude, double longitude,
                                                  bool sunrise)
 {
@@ -118,13 +118,13 @@ pair<DayEventType, time_t> CalculateDayEventTime(time_t timeUtc,
 
   // 4. calculate the Sun's true longitude
 
-  double L = M + (1.916 * sin(my::DegToRad(M))) + (0.020 * sin(2 * my::DegToRad(M))) + 282.634;
+  double L = M + (1.916 * sin(base::DegToRad(M))) + (0.020 * sin(2 * base::DegToRad(M))) + 282.634;
   // NOTE: L potentially needs to be adjusted into the range [0,360) by adding/subtracting 360
   L = NormalizeAngle(L);
 
   // 5a. calculate the Sun's right ascension
 
-  double RA = my::RadToDeg( atan(0.91764 * tan(my::DegToRad(L))) );
+  double RA = base::RadToDeg( atan(0.91764 * tan(base::DegToRad(L))) );
   // NOTE: RA potentially needs to be adjusted into the range [0,360) by adding/subtracting 360
   RA = NormalizeAngle(RA);
 
@@ -140,12 +140,12 @@ pair<DayEventType, time_t> CalculateDayEventTime(time_t timeUtc,
 
   // 6. calculate the Sun's declination
 
-  double sinDec = 0.39782 * sin(my::DegToRad(L));
+  double sinDec = 0.39782 * sin(base::DegToRad(L));
   double cosDec = cos(asin(sinDec));
 
   // 7a. calculate the Sun's local hour angle
 
-  double cosH = (cos(my::DegToRad(kZenith)) - (sinDec * sin(my::DegToRad(latitude)))) / (cosDec * cos(my::DegToRad(latitude)));
+  double cosH = (cos(base::DegToRad(kZenith)) - (sinDec * sin(base::DegToRad(latitude)))) / (cosDec * cos(base::DegToRad(latitude)));
 
   // if cosH > 1 then sun is never rises on this location on specified date (polar night)
   // if cosH < -1 then sun is never sets on this location on specified date (polar day)
@@ -155,7 +155,7 @@ pair<DayEventType, time_t> CalculateDayEventTime(time_t timeUtc,
     int const m = sunrise ? 0 : 59;
     int const s = sunrise ? 0 : 59;
 
-    return make_pair((cosH < -1) ? DayEventType::PolarDay : DayEventType::PolarNight,
+    return std::make_pair((cosH < -1) ? DayEventType::PolarDay : DayEventType::PolarNight,
                      base::TimeGM(year, month, day, h, m, s));
   }
 
@@ -163,9 +163,9 @@ pair<DayEventType, time_t> CalculateDayEventTime(time_t timeUtc,
 
   double H = 0;
   if (sunrise)
-    H = 360 - my::RadToDeg(acos(cosH));
+    H = 360 - base::RadToDeg(acos(cosH));
   else
-    H = my::RadToDeg(acos(cosH));
+    H = base::RadToDeg(acos(cosH));
 
   H = H / 15;
 
@@ -199,7 +199,7 @@ pair<DayEventType, time_t> CalculateDayEventTime(time_t timeUtc,
   int const m = floor((UT - h) * 60); // [0;60)
   int const s = fmod(floor(UT * 60 * 60) /* number of seconds from 0:0 to UT */, 60); // [0;60)
 
-  return make_pair(sunrise ? DayEventType::Sunrise : DayEventType::Sunset,
+  return std::make_pair(sunrise ? DayEventType::Sunrise : DayEventType::Sunset,
                    base::TimeGM(year, month, day, h, m, s));
 }
 
@@ -242,7 +242,7 @@ DayTimeType GetDayTime(time_t timeUtc, double latitude, double longitude)
   return DayTimeType::Day;
 }
 
-string DebugPrint(DayTimeType type)
+std::string DebugPrint(DayTimeType type)
 {
   switch (type)
   {
@@ -251,5 +251,5 @@ string DebugPrint(DayTimeType type)
   case DayTimeType::PolarDay: return "PolarDay";
   case DayTimeType::PolarNight: return "PolarNight";
   }
-  return string();
+  return std::string();
 }

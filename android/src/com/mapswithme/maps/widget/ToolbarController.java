@@ -1,47 +1,49 @@
 package com.mapswithme.maps.widget;
 
 import android.app.Activity;
-import android.support.annotation.IdRes;
-import android.support.annotation.StringRes;
-import android.support.v7.widget.Toolbar;
 import android.view.View;
 
+import androidx.annotation.IdRes;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import androidx.annotation.StringRes;
+import androidx.appcompat.app.ActionBar;
+import androidx.appcompat.app.AppCompatActivity;
+import androidx.appcompat.widget.Toolbar;
 import com.mapswithme.maps.R;
+import com.mapswithme.maps.base.Detachable;
 import com.mapswithme.util.UiUtils;
 import com.mapswithme.util.Utils;
 
-public class ToolbarController
+public class ToolbarController implements Detachable<Activity>
 {
-  protected final Activity mActivity;
-  protected final Toolbar mToolbar;
-  private final View.OnClickListener mNavigationClickListener = new View.OnClickListener()
-  {
-    @Override
-    public void onClick(View view)
-    {
-      onUpClick();
-    }
-  };
+  @Nullable
+  private  Activity mActivity;
+  @NonNull
+  private final Toolbar mToolbar;
+  @NonNull
+  protected final View.OnClickListener mNavigationClickListener = view -> onUpClick();
 
-  public ToolbarController(View root, Activity activity)
+  public ToolbarController(@NonNull View root, @NonNull Activity activity)
   {
     mActivity = activity;
-    mToolbar = (Toolbar) root.findViewById(getToolbarId());
-    setupNavigationListener();
+    mToolbar = root.findViewById(getToolbarId());
+
+    if (useExtendedToolbar())
+      UiUtils.extendViewWithStatusBar(getToolbar());
+    UiUtils.setupNavigationIcon(mToolbar, mNavigationClickListener);
+    setSupportActionBar(activity, mToolbar);
   }
 
-  private void setupNavigationListener()
+  private void setSupportActionBar(@NonNull Activity activity, @NonNull Toolbar toolbar)
   {
-    View customNavigationButton = mToolbar.findViewById(R.id.back);
-    if (customNavigationButton != null)
-    {
-      customNavigationButton.setOnClickListener(mNavigationClickListener);
-    }
-    else
-    {
-      UiUtils.showHomeUpButton(mToolbar);
-      mToolbar.setNavigationOnClickListener(mNavigationClickListener);
-    }
+    AppCompatActivity appCompatActivity = (AppCompatActivity) activity;
+    appCompatActivity.setSupportActionBar(toolbar);
+  }
+
+  protected boolean useExtendedToolbar()
+  {
+    return true;
   }
 
   @IdRes
@@ -52,28 +54,59 @@ public class ToolbarController
 
   public void onUpClick()
   {
-    Utils.navigateToParent(mActivity);
+    Utils.navigateToParent(requireActivity());
   }
 
   public ToolbarController setTitle(CharSequence title)
   {
-    mToolbar.setTitle(title);
+    getSupportActionBar().setTitle(title);
     return this;
   }
 
   public ToolbarController setTitle(@StringRes int title)
   {
-    mToolbar.setTitle(title);
+    getSupportActionBar().setTitle(title);
     return this;
   }
 
+  @SuppressWarnings("ConstantConditions")
+  @NonNull
+  private ActionBar getSupportActionBar()
+  {
+    AppCompatActivity appCompatActivity = (AppCompatActivity) mActivity;
+    return appCompatActivity.getSupportActionBar();
+  }
+
+  @Nullable
+  public Activity getActivity()
+  {
+    return mActivity;
+  }
+
+  @NonNull
+  public Activity requireActivity()
+  {
+    if (mActivity == null)
+      throw new AssertionError("Activity must be non-null!");
+
+    return mActivity;
+  }
+
+  @NonNull
   public Toolbar getToolbar()
   {
     return mToolbar;
   }
 
-  public View findViewById(@IdRes int res)
+  @Override
+  public void attach(@NonNull Activity activity)
   {
-    return mToolbar.findViewById(res);
+    mActivity = activity;
+  }
+
+  @Override
+  public void detach()
+  {
+    mActivity = null;
   }
 }

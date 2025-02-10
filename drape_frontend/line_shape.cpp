@@ -1,13 +1,13 @@
 #include "drape_frontend/line_shape.hpp"
 
 #include "drape_frontend/line_shape_helper.hpp"
-#include "drape_frontend/visual_params.hpp"
+
+#include "shaders/programs.hpp"
 
 #include "drape/attribute_provider.hpp"
 #include "drape/batcher.hpp"
 #include "drape/glsl_types.hpp"
 #include "drape/glsl_func.hpp"
-#include "drape/shader_def.hpp"
 #include "drape/support_manager.hpp"
 #include "drape/texture_manager.hpp"
 #include "drape/utils/vertex_decl.hpp"
@@ -16,16 +16,17 @@
 
 #include "base/logging.hpp"
 
+#include <algorithm>
+#include <vector>
+
 namespace df
 {
-
 namespace
 {
-
 class TextureCoordGenerator
 {
 public:
-  TextureCoordGenerator(dp::TextureManager::StippleRegion const & region)
+  explicit TextureCoordGenerator(dp::TextureManager::StippleRegion const & region)
     : m_region(region)
     , m_maskLength(static_cast<float>(m_region.GetMaskPixelLength()))
   {}
@@ -61,12 +62,14 @@ struct BaseBuilderParams
   dp::TextureManager::ColorRegion m_color;
   float m_pxHalfWidth;
   float m_depth;
+  bool m_depthTestEnabled;
+  DepthLayer m_depthLayer;
   dp::LineCap m_cap;
   dp::LineJoin m_join;
 };
 
 template <typename TVertex>
-class BaseLineBuilder : public ILineShapeInfo
+class BaseLineBuilder : public LineShapeInfo
 {
 public:
   BaseLineBuilder(BaseBuilderParams const & params, size_t geomsSize, size_t joinsSize)
@@ -87,9 +90,9 @@ public:
     return make_ref(m_geometry.data());
   }
 
-  size_t GetLineSize() override
+  uint32_t GetLineSize() override
   {
-    return m_geometry.size();
+    return static_cast<uint32_t>(m_geometry.size());
   }
 
   ref_ptr<void> GetJoinData() override
@@ -97,9 +100,9 @@ public:
     return make_ref(m_joinGeom.data());
   }
 
-  size_t GetJoinSize() override
+  uint32_t GetJoinSize() override
   {
-    return m_joinGeom.size();
+    return static_cast<uint32_t>(m_joinGeom.size());
   }
 
   float GetHalfWidth()
@@ -112,7 +115,7 @@ public:
     return GetBindingInfo();
   }
 
-  dp::GLState GetCapState() override
+  dp::RenderState GetCapState() override
   {
     return GetState();
   }
@@ -122,24 +125,22 @@ public:
     return ref_ptr<void>();
   }
 
-  size_t GetCapSize() override
+  uint32_t GetCapSize() override
   {
     return 0;
   }
 
   float GetSide(bool isLeft) const
   {
-    return isLeft ? 1.0 : -1.0;
+    return isLeft ? 1.0f : -1.0f;
   }
 
 protected:
   using V = TVertex;
-  using TGeometryBuffer = vector<V>;
+  using TGeometryBuffer = std::vector<V>;
 
   TGeometryBuffer m_geometry;
   TGeometryBuffer m_joinGeom;
-
-  vector<glsl::vec2> m_normalBuffer;
 
   BaseBuilderParams m_params;
   glsl::vec2 const m_colorCoord;
@@ -168,7 +169,7 @@ class SolidLineBuilder : public BaseLineBuilder<gpu::LineVertex>
     TTexCoord m_color;
   };
 
-  using TCapBuffer = vector<CapVertex>;
+  using TCapBuffer = std::vector<CapVertex>;
 
 public:
   using BuilderParams = BaseBuilderParams;
@@ -177,10 +178,11 @@ public:
     : TBase(params, pointsInSpline * 2, (pointsInSpline - 2) * 8)
   {}
 
-  dp::GLState GetState() override
+  dp::RenderState GetState() override
   {
-    dp::GLState state(gpu::LINE_PROGRAM, dp::GLState::GeometryLayer);
+    auto state = CreateRenderState(gpu::Program::Line, m_params.m_depthLayer);
     state.SetColorTexture(m_params.m_color.GetTexture());
+    state.SetDepthTestEnabled(m_params.m_depthTestEnabled);
     return state;
   }
 
@@ -189,7 +191,7 @@ public:
     if (m_params.m_cap == dp::ButtCap)
       return TBase::GetCapBindingInfo();
 
-    static unique_ptr<dp::BindingInfo> s_capInfo;
+    static std::unique_ptr<dp::BindingInfo> s_capInfo;
     if (s_capInfo == nullptr)
     {
       dp::BindingFiller<CapVertex> filler(3);
@@ -203,14 +205,15 @@ public:
     return *s_capInfo;
   }
 
-  dp::GLState GetCapState() override
+  dp::RenderState GetCapState() override
   {
     if (m_params.m_cap == dp::ButtCap)
       return TBase::GetCapState();
 
-    dp::GLState state(gpu::CAP_JOIN_PROGRAM, dp::GLState::GeometryLayer);
+    auto state = CreateRenderState(gpu::Program::CapJoin, m_params.m_depthLayer);
+    state.SetDepthTestEnabled(m_params.m_depthTestEnabled);
     state.SetColorTexture(m_params.m_color.GetTexture());
-    state.SetDepthFunction(gl_const::GLLess);
+    state.SetDepthFunction(dp::TestFunction::Less);
     return state;
   }
 
@@ -219,9 +222,9 @@ public:
     return make_ref<void>(m_capGeometry.data());
   }
 
-  size_t GetCapSize() override
+  uint32_t GetCapSize() override
   {
-    return m_capGeometry.size();
+    return static_cast<uint32_t>(m_capGeometry.size());
   }
 
   void SubmitVertex(glsl::vec3 const & pivot, glsl::vec2 const & normal, bool isLeft)
@@ -245,21 +248,19 @@ public:
 private:
   void CreateRoundCap(glsl::vec2 const & pos)
   {
-    m_capGeometry.reserve(8);
-
+    // Here we use an equilateral triangle to render circle (incircle of a triangle).
+    static float const kSqrt3 = sqrt(3.0f);
     float const radius = GetHalfWidth();
 
+    m_capGeometry.reserve(3);
     m_capGeometry.push_back(CapVertex(CapVertex::TPosition(pos, m_params.m_depth),
-                                      CapVertex::TNormal(-radius, radius, radius),
+                                      CapVertex::TNormal(-radius * kSqrt3, -radius, radius),
                                       CapVertex::TTexCoord(m_colorCoord)));
     m_capGeometry.push_back(CapVertex(CapVertex::TPosition(pos, m_params.m_depth),
-                                      CapVertex::TNormal(-radius, -radius, radius),
+                                      CapVertex::TNormal(radius * kSqrt3, -radius, radius),
                                       CapVertex::TTexCoord(m_colorCoord)));
     m_capGeometry.push_back(CapVertex(CapVertex::TPosition(pos, m_params.m_depth),
-                                      CapVertex::TNormal(radius, radius, radius),
-                                      CapVertex::TTexCoord(m_colorCoord)));
-    m_capGeometry.push_back(CapVertex(CapVertex::TPosition(pos, m_params.m_depth),
-                                      CapVertex::TNormal(radius, -radius, radius),
+                                      CapVertex::TNormal(0, 2.0f * radius, radius),
                                       CapVertex::TTexCoord(m_colorCoord)));
   }
 
@@ -279,9 +280,10 @@ public:
     , m_lineWidth(lineWidth)
   {}
 
-  dp::GLState GetState() override
+  dp::RenderState GetState() override
   {
-    dp::GLState state(gpu::AREA_OUTLINE_PROGRAM, dp::GLState::GeometryLayer);
+    auto state = CreateRenderState(gpu::Program::AreaOutline, m_params.m_depthLayer);
+    state.SetDepthTestEnabled(m_params.m_depthTestEnabled);
     state.SetColorTexture(m_params.m_color.GetTexture());
     state.SetDrawAsLine(true);
     state.SetLineWidth(m_lineWidth);
@@ -322,9 +324,10 @@ public:
     return static_cast<int>((pixelLen + m_texCoordGen.GetMaskLength() - 1) / m_texCoordGen.GetMaskLength());
   }
 
-  dp::GLState GetState() override
+  dp::RenderState GetState() override
   {
-    dp::GLState state(gpu::DASHED_LINE_PROGRAM, dp::GLState::GeometryLayer);
+    auto state = CreateRenderState(gpu::Program::DashedLine, m_params.m_depthLayer);
+    state.SetDepthTestEnabled(m_params.m_depthTestEnabled);
     state.SetColorTexture(m_params.m_color.GetTexture());
     state.SetMaskTexture(m_texCoordGen.GetRegion().GetTexture());
     return state;
@@ -341,8 +344,7 @@ private:
   TextureCoordGenerator m_texCoordGen;
   float const m_baseGtoPScale;
 };
-
-} // namespace
+}  // namespace
 
 LineShape::LineShape(m2::SharedSpline const & spline, LineViewParams const & params)
   : m_params(params)
@@ -362,7 +364,7 @@ void LineShape::Construct(TBuilder & builder) const
 template <>
 void LineShape::Construct<DashedLineBuilder>(DashedLineBuilder & builder) const
 {
-  vector<m2::PointD> const & path = m_spline->GetPath();
+  std::vector<m2::PointD> const & path = m_spline->GetPath();
   ASSERT_GREATER(path.size(), 1, ());
 
   // build geometry
@@ -378,7 +380,7 @@ void LineShape::Construct<DashedLineBuilder>(DashedLineBuilder & builder) const
 
     // calculate number of steps to cover line segment
     float const initialGlobalLength = static_cast<float>((path[i] - path[i - 1]).Length());
-    int const steps = max(1, builder.GetDashesCount(initialGlobalLength));
+    int const steps = std::max(1, builder.GetDashesCount(initialGlobalLength));
     float const maskSize = glsl::length(p2 - p1) / steps;
     float const offsetSize = initialGlobalLength / steps;
 
@@ -404,7 +406,7 @@ void LineShape::Construct<DashedLineBuilder>(DashedLineBuilder & builder) const
 template <>
 void LineShape::Construct<SolidLineBuilder>(SolidLineBuilder & builder) const
 {
-  vector<m2::PointD> const & path = m_spline->GetPath();
+  std::vector<m2::PointD> const & path = m_spline->GetPath();
   ASSERT_GREATER(path.size(), 1, ());
 
   // skip joins generation
@@ -454,7 +456,7 @@ void LineShape::Construct<SolidLineBuilder>(SolidLineBuilder & builder) const
 template <>
 void LineShape::Construct<SimpleSolidLineBuilder>(SimpleSolidLineBuilder & builder) const
 {
-  vector<m2::PointD> const & path = m_spline->GetPath();
+  std::vector<m2::PointD> const & path = m_spline->GetPath();
   ASSERT_GREATER(path.size(), 1, ());
 
   // Build geometry.
@@ -471,10 +473,10 @@ bool LineShape::CanBeSimplified(int & lineWidth) const
   if (m_params.m_zoomLevel > 0 && m_params.m_zoomLevel <= scales::GetUpperCountryScale())
     return false;
 
-  static float width = min(2.5f, static_cast<float>(dp::SupportManager::Instance().GetMaxLineWidth()));
+  static float width = std::min(2.5f, dp::SupportManager::Instance().GetMaxLineWidth());
   if (m_params.m_width <= width)
   {
-    lineWidth = max(1, static_cast<int>(m_params.m_width));
+    lineWidth = std::max(1, static_cast<int>(m_params.m_width));
     return true;
   }
 
@@ -493,7 +495,9 @@ void LineShape::Prepare(ref_ptr<dp::TextureManager> textures) const
   {
     p.m_cap = m_params.m_cap;
     p.m_color = colorRegion;
+    p.m_depthTestEnabled = m_params.m_depthTestEnabled;
     p.m_depth = m_params.m_depth;
+    p.m_depthLayer = m_params.m_depthLayer;
     p.m_join = m_params.m_join;
     p.m_pxHalfWidth = pxHalfWidth;
   };
@@ -507,7 +511,8 @@ void LineShape::Prepare(ref_ptr<dp::TextureManager> textures) const
       SimpleSolidLineBuilder::BuilderParams p;
       commonParamsBuilder(p);
 
-      auto builder = make_unique<SimpleSolidLineBuilder>(p, m_spline->GetPath().size(), lineWidth);
+      auto builder =
+          std::make_unique<SimpleSolidLineBuilder>(p, m_spline->GetPath().size(), lineWidth);
       Construct<SimpleSolidLineBuilder>(*builder);
       m_lineShapeInfo = move(builder);
     }
@@ -515,7 +520,7 @@ void LineShape::Prepare(ref_ptr<dp::TextureManager> textures) const
     {
       SolidLineBuilder::BuilderParams p;
       commonParamsBuilder(p);
-      auto builder = make_unique<SolidLineBuilder>(p, m_spline->GetPath().size());
+      auto builder = std::make_unique<SolidLineBuilder>(p, m_spline->GetPath().size());
       Construct<SolidLineBuilder>(*builder);
       m_lineShapeInfo = move(builder);
     }
@@ -531,46 +536,46 @@ void LineShape::Prepare(ref_ptr<dp::TextureManager> textures) const
     p.m_baseGtoP = m_params.m_baseGtoPScale;
     p.m_glbHalfWidth = pxHalfWidth / m_params.m_baseGtoPScale;
 
-    auto builder = make_unique<DashedLineBuilder>(p, m_spline->GetPath().size());
+    auto builder = std::make_unique<DashedLineBuilder>(p, m_spline->GetPath().size());
     Construct<DashedLineBuilder>(*builder);
     m_lineShapeInfo = move(builder);
   }
 }
 
-void LineShape::Draw(ref_ptr<dp::Batcher> batcher, ref_ptr<dp::TextureManager> textures) const
+void LineShape::Draw(ref_ptr<dp::GraphicsContext> context, ref_ptr<dp::Batcher> batcher,
+                     ref_ptr<dp::TextureManager> textures) const
 {
   if (!m_lineShapeInfo)
     Prepare(textures);
 
   ASSERT(m_lineShapeInfo != nullptr, ());
-  dp::GLState state = m_lineShapeInfo->GetState();
+  dp::RenderState state = m_lineShapeInfo->GetState();
   dp::AttributeProvider provider(1, m_lineShapeInfo->GetLineSize());
   provider.InitStream(0, m_lineShapeInfo->GetBindingInfo(), m_lineShapeInfo->GetLineData());
   if (!m_isSimple)
   {
-    batcher->InsertListOfStrip(state, make_ref(&provider), dp::Batcher::VertexPerQuad);
+    batcher->InsertListOfStrip(context, state, make_ref(&provider), dp::Batcher::VertexPerQuad);
 
-    size_t const joinSize = m_lineShapeInfo->GetJoinSize();
+    uint32_t const joinSize = m_lineShapeInfo->GetJoinSize();
     if (joinSize > 0)
     {
       dp::AttributeProvider joinsProvider(1, joinSize);
       joinsProvider.InitStream(0, m_lineShapeInfo->GetBindingInfo(), m_lineShapeInfo->GetJoinData());
-      batcher->InsertTriangleList(state, make_ref(&joinsProvider));
+      batcher->InsertTriangleList(context, state, make_ref(&joinsProvider));
     }
 
-    size_t const capSize = m_lineShapeInfo->GetCapSize();
+    uint32_t const capSize = m_lineShapeInfo->GetCapSize();
     if (capSize > 0)
     {
       dp::AttributeProvider capProvider(1, capSize);
       capProvider.InitStream(0, m_lineShapeInfo->GetCapBindingInfo(), m_lineShapeInfo->GetCapData());
-      batcher->InsertListOfStrip(m_lineShapeInfo->GetCapState(), make_ref(&capProvider), dp::Batcher::VertexPerQuad);
+      batcher->InsertTriangleList(context, m_lineShapeInfo->GetCapState(), make_ref(&capProvider));
     }
   }
   else
   {
-    batcher->InsertLineStrip(state, make_ref(&provider));
+    batcher->InsertLineStrip(context, state, make_ref(&provider));
   }
 }
-
-} // namespace df
+}  // namespace df
 

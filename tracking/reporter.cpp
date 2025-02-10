@@ -1,43 +1,45 @@
-#include "reporter.hpp"
+#include "tracking/reporter.hpp"
 
 #include "platform/location.hpp"
+#include "platform/platform.hpp"
 #include "platform/socket.hpp"
+
+#include "3party/Alohalytics/src/alohalytics.h"
 
 #include "base/logging.hpp"
 #include "base/timer.hpp"
 
 #include "std/target_os.hpp"
 
+#include <cmath>
+
+using namespace std;
+using namespace std::chrono;
+
 namespace
 {
 double constexpr kRequiredHorizontalAccuracy = 10.0;
 double constexpr kMinDelaySeconds = 1.0;
-double constexpr kReconnectDelaySeconds = 60.0;
-size_t constexpr kRealTimeBufferSize = 60;
+double constexpr kReconnectDelaySeconds = 40.0;
+double constexpr kNotChargingEventPeriod = 5 * 60.0;
+
+static_assert(kMinDelaySeconds != 0, "");
 } // namespace
 
 namespace tracking
 {
-// static
-// Apple and Android applications use different keys for settings.ini.
-// Keys saved for existing users, so can' fix it easy, need migration.
-// Use this hack until change to special traffic key.
-#if defined(OMIM_OS_IPHONE)
 const char Reporter::kEnableTrackingKey[] = "StatisticsEnabled";
-#elif defined(OMIM_OS_ANDROID)
-const char Reporter::kEnableTrackingKey[] = "AllowStat";
-#else
-const char Reporter::kEnableTrackingKey[] = "AllowStat";
-#endif
 
 // static
-milliseconds const Reporter::kPushDelayMs = milliseconds(10000);
+milliseconds const Reporter::kPushDelayMs = milliseconds(20000);
 
+// Set m_points size to be enough to keep all points even if one reconnect attempt failed.
 Reporter::Reporter(unique_ptr<platform::Socket> socket, string const & host, uint16_t port,
                    milliseconds pushDelay)
-  : m_realtimeSender(move(socket), host, port, false)
+  : m_allowSendingPoints(true)
+  , m_realtimeSender(move(socket), host, port, false)
   , m_pushDelay(pushDelay)
-  , m_points(kRealTimeBufferSize)
+  , m_points(ceil(duration_cast<seconds>(pushDelay).count() + kReconnectDelaySeconds) / kMinDelaySeconds)
   , m_thread([this] { Run(); })
 {
 }
@@ -52,7 +54,7 @@ Reporter::~Reporter()
   m_thread.join();
 }
 
-void Reporter::AddLocation(location::GpsInfo const & info)
+void Reporter::AddLocation(location::GpsInfo const & info, traffic::SpeedGroup traffic)
 {
   lock_guard<mutex> lg(m_mutex);
 
@@ -62,8 +64,23 @@ void Reporter::AddLocation(location::GpsInfo const & info)
   if (info.m_timestamp < m_lastGpsTime + kMinDelaySeconds)
     return;
 
+  if (Platform::GetChargingStatus() != Platform::ChargingStatus::Plugged)
+  {
+    double const currentTime = base::Timer::LocalTime();
+    if (currentTime < m_lastNotChargingEvent + kNotChargingEventPeriod)
+      return;
+
+    alohalytics::Stats::Instance().LogEvent(
+        "Routing_DataSending_restricted",
+        {{"reason", "Device is not charging"}, {"mode", "vehicle"}});
+    m_lastNotChargingEvent = currentTime;
+    return;
+  }
+
   m_lastGpsTime = info.m_timestamp;
-  m_input.push_back(DataPoint(info.m_timestamp, ms::LatLon(info.m_latitude, info.m_longitude)));
+  m_input.push_back(
+      DataPoint(info.m_timestamp, ms::LatLon(info.m_latitude, info.m_longitude),
+                static_cast<std::underlying_type<traffic::SpeedGroup>::type>(traffic)));
 }
 
 void Reporter::Run()
@@ -102,6 +119,16 @@ void Reporter::Run()
 
 bool Reporter::SendPoints()
 {
+  if (!m_allowSendingPoints)
+  {
+    if (m_wasConnected)
+    {
+      m_realtimeSender.Shutdown();
+      m_wasConnected = false;
+    }
+    return true;
+  }
+
   if (m_points.empty())
     return true;
 
@@ -111,7 +138,7 @@ bool Reporter::SendPoints()
   if (m_wasConnected)
     return true;
 
-  double const currentTime = my::Timer::LocalTime();
+  double const currentTime = base::Timer::LocalTime();
   if (currentTime < m_lastConnectionAttempt + kReconnectDelaySeconds)
     return false;
 

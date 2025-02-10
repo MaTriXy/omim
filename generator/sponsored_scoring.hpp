@@ -1,15 +1,18 @@
 #pragma once
 
-#include "std/string.hpp"
+#include <string>
 
-class FeatureBuilder1;
+namespace feature
+{
+class FeatureBuilder;
+}  // namespace feature
 
 namespace generator
 {
 namespace impl
 {
 double GetLinearNormDistanceScore(double distance, double maxDistance);
-double GetNameSimilarityScore(string const & booking_name, string const & osm_name);
+double GetNameSimilarityScore(std::string const & booking_name, std::string const & osm_name);
 }  // namespace impl
 
 namespace sponsored_scoring
@@ -29,6 +32,6 @@ struct MatchStats
 
 /// Matches a given sponsored object against a given OSM object.
 template <typename SponsoredObject>
-MatchStats<SponsoredObject> Match(SponsoredObject const & o, FeatureBuilder1 const & fb);
+MatchStats<SponsoredObject> Match(SponsoredObject const & o, feature::FeatureBuilder const & fb);
 }  // namespace booking_scoring
 }  // namespace generator

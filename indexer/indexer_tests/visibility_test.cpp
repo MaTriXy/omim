@@ -8,10 +8,16 @@
 
 #include "base/logging.hpp"
 
+#include <cstdint>
+#include <set>
+#include <string>
+#include <utility>
+#include <vector>
+
+using namespace std;
 
 namespace
 {
-
 class DoGetMaxLowMinHighZoom
 {
   Classificator const & m_classif;
@@ -26,13 +32,12 @@ class DoGetMaxLowMinHighZoom
   }
 
 public:
-  DoGetMaxLowMinHighZoom(Classificator const & c)
+  explicit DoGetMaxLowMinHighZoom(Classificator const & c)
     : m_classif(classif()), m_res(-1, 1000)
   {
     char const * arr[][2] = {
       {"highway", "bus_stop"},
       {"highway", "speed_camera"},
-      {"highway", "platform"},
       {"highway", "world_level"},
       {"highway", "world_towns_level"},
     };

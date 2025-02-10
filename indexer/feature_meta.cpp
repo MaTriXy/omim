@@ -1,11 +1,13 @@
 #include "indexer/feature_meta.hpp"
 
-#include "std/algorithm.hpp"
 #include "std/target_os.hpp"
+
+#include <sstream>
+
+using namespace std;
 
 namespace feature
 {
-
 namespace
 {
 char constexpr const * kBaseWikiUrl =
@@ -15,6 +17,17 @@ char constexpr const * kBaseWikiUrl =
     ".wikipedia.org/wiki/";
 #endif
 } // namespace
+
+std::vector<Metadata::EType> Metadata::GetKeys() const
+{
+  std::vector<Metadata::EType> types;
+  types.reserve(m_metadata.size());
+
+  for (auto const & item : m_metadata)
+    types.push_back(static_cast<Metadata::EType>(item.first));
+
+  return types;
+}
 
 string Metadata::GetWikiURL() const
 {
@@ -44,9 +57,7 @@ string Metadata::GetWikiURL() const
 // static
 bool Metadata::TypeFromString(string const & k, Metadata::EType & outType)
 {
-  if (k == "cuisine")
-    outType = Metadata::FMD_CUISINE;
-  else if (k == "opening_hours")
+  if (k == "opening_hours")
     outType = Metadata::FMD_OPEN_HOURS;
   else if (k == "phone" || k == "contact:phone")
     outType = Metadata::FMD_PHONE_NUMBER;
@@ -57,10 +68,10 @@ bool Metadata::TypeFromString(string const & k, Metadata::EType & outType)
   else if (k == "operator")
     outType = Metadata::FMD_OPERATOR;
   else if (k == "url")  // TODO: Should we match url to website here?
-    outType = Metadata::FMD_URL;
+    outType = Metadata::FMD_WEBSITE;
   else if (k == "website" || k == "contact:website")
     outType = Metadata::FMD_WEBSITE;
-  else if (k == "internet_access")
+  else if (k == "internet_access" || k == "wifi")
     outType = Metadata::FMD_INTERNET;
   else if (k == "ele")
     outType = Metadata::FMD_ELE;
@@ -76,8 +87,6 @@ bool Metadata::TypeFromString(string const & k, Metadata::EType & outType)
     outType = Metadata::FMD_POSTCODE;
   else if (k == "wikipedia")
     outType = Metadata::FMD_WIKIPEDIA;
-  else if (k == "maxspeed")
-    outType = Metadata::FMD_MAXSPEED;
   else if (k == "addr:flats")
     outType = Metadata::FMD_FLATS;
   else if (k == "height")
@@ -88,16 +97,33 @@ bool Metadata::TypeFromString(string const & k, Metadata::EType & outType)
     outType = Metadata::FMD_BUILDING_LEVELS;
   else if (k == "denomination")
     outType = Metadata::FMD_DENOMINATION;
-  else if (k == "ref:sponsored")
-    outType = Metadata::FMD_SPONSORED_ID;
-  else if (k == "price_rate")
-    outType = Metadata::FMD_PRICE_RATE;
-  else if (k == "rating:sponsored")
-    outType = Metadata::FMD_RATING;
+  else if (k == "banner_url")
+    outType = Metadata::FMD_BANNER_URL;
+  else if (k == "level")
+    outType = Metadata::FMD_LEVEL;
+  else if (k == "iata")
+    outType = Metadata::FMD_AIRPORT_IATA;
+  else if (k == "duration")
+    outType = Metadata::FMD_DURATION;
   else
     return false;
 
   return true;
+}
+
+// static
+bool Metadata::IsSponsoredType(Metadata::EType const & type)
+{
+  switch (type)
+  {
+  case Metadata::FMD_SPONSORED_ID:
+  case Metadata::FMD_PRICE_RATE:
+  case Metadata::FMD_RATING:
+  case Metadata::FMD_BANNER_URL:
+    return true;
+  default:
+    return false;
+  }
 }
 
 void RegionData::SetLanguages(vector<string> const & codes)
@@ -143,12 +169,10 @@ void RegionData::AddPublicHoliday(int8_t month, int8_t offset)
   value.push_back(offset);
   Set(RegionData::Type::RD_PUBLIC_HOLIDAYS, value);
 }
-}  // namespace feature
 
 // Warning: exact osm tag keys should be returned for valid enum values.
-string DebugPrint(feature::Metadata::EType type)
+string ToString(Metadata::EType type)
 {
-  using feature::Metadata;
   switch (type)
   {
   case Metadata::FMD_CUISINE: return "cuisine";
@@ -167,18 +191,55 @@ string DebugPrint(feature::Metadata::EType type)
   case Metadata::FMD_EMAIL: return "email";
   case Metadata::FMD_POSTCODE: return "addr:postcode";
   case Metadata::FMD_WIKIPEDIA: return "wikipedia";
-  case Metadata::FMD_MAXSPEED: return "maxspeed";
   case Metadata::FMD_FLATS: return "addr:flats";
   case Metadata::FMD_HEIGHT: return "height";
   case Metadata::FMD_MIN_HEIGHT: return "min_height";
   case Metadata::FMD_DENOMINATION: return "denomination";
   case Metadata::FMD_BUILDING_LEVELS: return "building:levels";
+  case Metadata::FMD_TEST_ID: return "test_id";
   case Metadata::FMD_SPONSORED_ID: return "ref:sponsored";
   case Metadata::FMD_PRICE_RATE: return "price_rate";
   case Metadata::FMD_RATING: return "rating:sponsored";
-  case Metadata::FMD_TEST_ID: return "test_id";
+  case Metadata::FMD_BANNER_URL: return "banner_url";
+  case Metadata::FMD_LEVEL: return "level";
+  case Metadata::FMD_AIRPORT_IATA: return "iata";
+  case Metadata::FMD_BRAND: return "brand";
+  case Metadata::FMD_DURATION: return "duration";
   case Metadata::FMD_COUNT: CHECK(false, ("FMD_COUNT can not be used as a type."));
   };
 
   return string();
 }
+
+string DebugPrint(Metadata const & metadata)
+{
+  ostringstream oss;
+  bool first = true;
+  oss << "Metadata [";
+  for (uint8_t i = 0; i < static_cast<uint8_t>(Metadata::FMD_COUNT); ++i)
+  {
+    auto const t = static_cast<Metadata::EType>(i);
+    string s;
+    if (metadata.Get(t, s))
+    {
+      if (first)
+        first = false;
+      else
+        oss << "; ";
+
+      oss << DebugPrint(t) << "=" << s;
+    }
+  }
+  oss << "]";
+  return oss.str();
+}
+
+string DebugPrint(feature::AddressData const & addressData)
+{
+  ostringstream oss;
+  oss << "AddressData [";
+  oss << "Street = \"" << addressData.Get(AddressData::Type::Street) << "\"; ";
+  oss << "Postcode = \"" << addressData.Get(AddressData::Type::Postcode) << "\"]";
+  return oss.str();
+}
+}  // namespace feature

@@ -1,7 +1,9 @@
 package com.mapswithme.maps.downloader;
 
-import android.support.annotation.NonNull;
 import android.text.TextUtils;
+
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
 
 /**
  * Class representing a single item in countries hierarchy.
@@ -20,12 +22,13 @@ public final class CountryItem implements Comparable<CountryItem>
   // Must correspond to NodeStatus in storage_defines.hpp
   public static final int STATUS_UNKNOWN = 0;
   public static final int STATUS_PROGRESS = 1;       // Downloading a new mwm or updating an old one.
-  public static final int STATUS_ENQUEUED = 2;       // An mwm is waiting for downloading in the queue.
-  public static final int STATUS_FAILED = 3;         // An error happened while downloading
-  public static final int STATUS_UPDATABLE = 4;      // An update for a downloaded mwm is ready according to counties.txt.
-  public static final int STATUS_DONE = 5;           // Downloaded mwm(s) is up to date. No need to update it.
-  public static final int STATUS_DOWNLOADABLE = 6;   // An mwm can be downloaded but not downloaded yet.
-  public static final int STATUS_PARTLY = 7;         // Leafs of group node has a mix of STATUS_DONE and STATUS_DOWNLOADABLE.
+  public static final int STATUS_APPLYING = 2;       // Applying downloaded diff for an old mwm.
+  public static final int STATUS_ENQUEUED = 3;       // An mwm is waiting for downloading in the queue.
+  public static final int STATUS_FAILED = 4;         // An error happened while downloading
+  public static final int STATUS_UPDATABLE = 5;      // An update for a downloaded mwm is ready according to counties.txt.
+  public static final int STATUS_DONE = 6;           // Downloaded mwm(s) is up to date. No need to update it.
+  public static final int STATUS_DOWNLOADABLE = 7;   // An mwm can be downloaded but not downloaded yet.
+  public static final int STATUS_PARTLY = 8;         // Leafs of group node has a mix of STATUS_DONE and STATUS_DOWNLOADABLE.
 
   // Must correspond to NodeErrorCode in storage_defines.hpp
   public static final int ERROR_NONE = 0;
@@ -54,12 +57,15 @@ public final class CountryItem implements Comparable<CountryItem>
   public int errorCode;
   public boolean present;
 
-  // Percent
+  // Progress
   public int progress;
+  public long downloadedBytes;
+  public long bytesToDownload;
 
   // Internal ID for grouping under headers in the list
   int headerId;
   // Internal field to store search result name
+  @Nullable
   String searchResultName;
 
   private static void ensureRootIdKnown()
@@ -111,6 +117,7 @@ public final class CountryItem implements Comparable<CountryItem>
       directParentId = "";
   }
 
+  @NonNull
   public static CountryItem fill(String countryId)
   {
     CountryItem res = new CountryItem(countryId);

@@ -1,13 +1,23 @@
 @protocol MWMPlacePageObject;
+@class PlacePageData;
 
+NS_ASSUME_NONNULL_BEGIN
+
+NS_SWIFT_NAME(ActivityViewController)
 @interface MWMActivityViewController : UIActivityViewController
 
-+ (instancetype)shareControllerForEditorViral;
++ (nullable instancetype)shareControllerForEditorViral;
 
-+ (instancetype)shareControllerForMyPosition:(CLLocationCoordinate2D const &)location;
++ (nullable instancetype)shareControllerForMyPosition:(CLLocationCoordinate2D)location;
 
-+ (instancetype)shareControllerForPlacePageObject:(id<MWMPlacePageObject>)object;
++ (nullable instancetype)shareControllerForPlacePage:(PlacePageData *)data;
 
-- (void)presentInParentViewController:(UIViewController *)parentVC anchorView:(UIView *)anchorView;
++ (nullable instancetype)shareControllerForURL:(nullable NSURL *)url
+                              message:(NSString *)message
+                    completionHandler:(nullable UIActivityViewControllerCompletionWithItemsHandler)completionHandler;
+
+- (void)presentInParentViewController:(UIViewController *)parentVC anchorView:(nullable UIView *)anchorView;
 
 @end
+
+NS_ASSUME_NONNULL_END

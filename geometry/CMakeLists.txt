@@ -1,3 +1,5 @@
+project(geometry)
+
 set(
   SRC
   algorithm.cpp
@@ -5,24 +7,46 @@ set(
   angles.cpp
   angles.hpp
   any_rect2d.hpp
+  area_on_earth.cpp
+  area_on_earth.hpp
   avg_vector.hpp
+  bounding_box.cpp
+  bounding_box.hpp
+  calipers_box.cpp
+  calipers_box.hpp
   cellid.hpp
+  circle_on_earth.cpp
+  circle_on_earth.hpp
   clipping.cpp
   clipping.hpp
+  convex_hull.cpp
+  convex_hull.hpp
   covering.hpp
   covering_utils.hpp
-  distance.hpp
+  diamond_box.cpp
+  diamond_box.hpp
   distance_on_sphere.cpp
   distance_on_sphere.hpp
   latlon.cpp
   latlon.hpp
+  line2d.cpp
+  line2d.hpp
   mercator.cpp
   mercator.hpp
+  meter.hpp
+  nearby_points_sweeper.cpp
+  nearby_points_sweeper.hpp
+  oblate_spheroid.cpp
+  oblate_spheroid.hpp
   packer.cpp
   packer.hpp
+  parametrized_segment.hpp
   point2d.hpp
-  pointu_to_uint64.hpp
+  point3d.hpp
+  point_with_altitude.cpp
+  point_with_altitude.hpp
   polygon.hpp
+  intersection_score.hpp
   polyline2d.hpp
   rect2d.hpp
   rect_intersect.hpp
@@ -34,6 +58,8 @@ set(
   segment2d.cpp
   segment2d.hpp
   simplification.hpp
+  smoothing.cpp
+  smoothing.hpp
   spline.cpp
   spline.hpp
   transformations.hpp
@@ -46,6 +72,6 @@ set(
   region2d/boost_concept.hpp
 )
 
-add_library(geometry ${SRC})
+omim_add_library(${PROJECT_NAME} ${SRC})
 
-add_subdirectory(geometry_tests)
+omim_add_test_subdirectory(geometry_tests)

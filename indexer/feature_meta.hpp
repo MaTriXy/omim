@@ -1,22 +1,87 @@
 #pragma once
 
-#include "coding/multilang_utf8_string.hpp"
+#include "indexer/metadata_serdes.hpp"
+
 #include "coding/reader.hpp"
+#include "coding/string_utf8_multilang.hpp"
 
-#include "std/algorithm.hpp"
-#include "std/limits.hpp"
-#include "std/map.hpp"
-#include "std/string.hpp"
-#include "std/vector.hpp"
+#include "base/stl_helpers.hpp"
 
+#include <algorithm>
+#include <map>
+#include <string>
+#include <vector>
 
 namespace feature
 {
 class MetadataBase
 {
+public:
+  bool Has(uint8_t type) const
+  {
+    auto const it = m_metadata.find(type);
+    return it != m_metadata.end();
+  }
+
+  std::string Get(uint8_t type) const
+  {
+    auto const it = m_metadata.find(type);
+    return (it == m_metadata.end()) ? std::string() : it->second;
+  }
+
+  bool Get(uint8_t type, std::string & value) const
+  {
+    value = Get(type);
+    return !value.empty();
+  }
+
+  std::vector<uint8_t> GetPresentTypes() const
+  {
+    std::vector<uint8_t> types;
+    types.reserve(m_metadata.size());
+
+    for (auto const & item : m_metadata)
+      types.push_back(item.first);
+
+    return types;
+  }
+
+  inline bool Empty() const { return m_metadata.empty(); }
+  inline size_t Size() const { return m_metadata.size(); }
+
+  template <class Sink>
+  void SerializeForMwmTmp(Sink & sink) const
+  {
+    auto const sz = static_cast<uint32_t>(m_metadata.size());
+    WriteVarUint(sink, sz);
+    for (auto const & it : m_metadata)
+    {
+      WriteVarUint(sink, static_cast<uint32_t>(it.first));
+      utils::WriteString(sink, it.second);
+    }
+  }
+
+  template <class Source>
+  void DeserializeFromMwmTmp(Source & src)
+  {
+    auto const sz = ReadVarUint<uint32_t>(src);
+    for (size_t i = 0; i < sz; ++i)
+    {
+      auto const key = ReadVarUint<uint32_t>(src);
+      utils::ReadString(src, m_metadata[key]);
+    }
+  }
+
+  inline bool Equals(MetadataBase const & other) const
+  {
+    return m_metadata == other.m_metadata;
+  }
+
 protected:
+  friend bool indexer::MetadataDeserializer::Get(uint32_t id, MetadataBase & meta);
+
   // TODO: Change uint8_t to appropriate type when FMD_COUNT reaches 256.
-  void Set(uint8_t type, string const & value)
+  void Set(uint8_t type, std::string const & value)
   {
     auto found = m_metadata.find(type);
     if (found == m_metadata.end())
@@ -33,63 +98,7 @@ protected:
     }
   }
 
-public:
-  bool Has(uint8_t type) const
-  {
-    auto const it = m_metadata.find(type);
-    return it != m_metadata.end();
-  }
-
-  string Get(uint8_t type) const
-  {
-    auto const it = m_metadata.find(type);
-    return (it == m_metadata.end()) ? string() : it->second;
-  }
-
-  vector<uint8_t> GetPresentTypes() const
-  {
-    vector<uint8_t> types;
-    types.reserve(m_metadata.size());
-
-    for (auto const & item : m_metadata)
-      types.push_back(item.first);
-
-    return types;
-  }
-
-  inline bool Empty() const { return m_metadata.empty(); }
-  inline size_t Size() const { return m_metadata.size(); }
-
-  template <class TSink>
-  void Serialize(TSink & sink) const
-  {
-    auto const sz = static_cast<uint32_t>(m_metadata.size());
-    WriteVarUint(sink, sz);
-    for (auto const & it : m_metadata)
-    {
-      WriteVarUint(sink, static_cast<uint32_t>(it.first));
-      utils::WriteString(sink, it.second);
-    }
-  }
-
-  template <class TSource>
-  void Deserialize(TSource & src)
-  {
-    auto const sz = ReadVarUint<uint32_t>(src);
-    for (size_t i = 0; i < sz; ++i)
-    {
-      auto const key = ReadVarUint<uint32_t>(src);
-      utils::ReadString(src, m_metadata[key]);
-    }
-  }
-
-  inline bool Equals(MetadataBase const & other) const
-  {
-    return m_metadata == other.m_metadata;
-  }
-
-protected:
-  map<uint8_t, string> m_metadata;
+  std::map<uint8_t, std::string> m_metadata;
 };
 
 class Metadata : public MetadataBase
@@ -97,7 +106,9 @@ class Metadata : public MetadataBase
 public:
   /// @note! Do not change values here.
   /// Add new types to the end of list, before FMD_COUNT.
-  /// Please also modify MetadataTagProcessor::TypeFromString().
+  /// Add new types to the corresponding list in Java.
+  /// Add new types to the corresponding list in generator/pygen/pygen.cpp.
+  /// For types parsed from OSM get corresponding OSM tag to MetadataTagProcessor::TypeFromString().
   enum EType : int8_t
   {
     FMD_CUISINE = 1,
@@ -116,7 +127,7 @@ public:
     FMD_EMAIL = 14,
     FMD_POSTCODE = 15,
     FMD_WIKIPEDIA = 16,
-    FMD_MAXSPEED = 17,
+    // FMD_MAXSPEED used to be 17 but now it is stored in a section of its own.
     FMD_FLATS = 18,
     FMD_HEIGHT = 19,
     FMD_MIN_HEIGHT = 20,
@@ -126,60 +137,52 @@ public:
     FMD_SPONSORED_ID = 24,
     FMD_PRICE_RATE = 25,
     FMD_RATING = 26,
+    FMD_BANNER_URL = 27,
+    FMD_LEVEL = 28,
+    FMD_AIRPORT_IATA = 29,
+    FMD_BRAND = 30,
+    // Duration of routes by ferries and other rare means of transportation.
+    // The number of ferries having the duration key in OSM is low so we
+    // store the parsed tag value in Metadata instead of building a separate section for it.
+    // See https://wiki.openstreetmap.org/wiki/Key:duration
+    FMD_DURATION = 31,
     FMD_COUNT
   };
 
   /// Used to normalize tags like "contact:phone" and "phone" to a common metadata enum value.
-  static bool TypeFromString(string const & osmTagKey, feature::Metadata::EType & outType);
+  static bool TypeFromString(std::string const & osmTagKey, EType & outType);
+  static bool IsSponsoredType(EType const & type);
 
-  void Set(EType type, string const & value) { MetadataBase::Set(type, value); }
-  void Drop(EType type) { Set(type, string()); }
-  string GetWikiURL() const;
+  std::vector<Metadata::EType> GetKeys() const;
 
-  // TODO: Commented code below is now longer neded, but I leave it here
-  // as a hint to what is going on in DeserializeFromMWMv7OrLower.
-  // Please, remove it when DeserializeFromMWMv7OrLower is no longer neded.
-  // template <class TWriter>
-  // void SerializeToMWM(TWriter & writer) const
-  // {
-  //   for (auto const & e : m_metadata)
-  //   {
-  //     // Set high bit if it's the last element.
-  //     uint8_t const mark = (&e == &(*m_metadata.crbegin()) ? 0x80 : 0);
-  //     uint8_t elem[2] = {static_cast<uint8_t>(e.first | mark),
-  //                        static_cast<uint8_t>(min(e.second.size(), (size_t)kMaxStringLength))};
-  //     writer.Write(elem, sizeof(elem));
-  //     writer.Write(e.second.data(), elem[1]);
-  //   }
-  // }
+  using MetadataBase::Has;
+  using MetadataBase::Get;
+  bool Has(EType type) const { return MetadataBase::Has(static_cast<uint8_t>(type)); }
+  std::string Get(EType type) const { return MetadataBase::Get(static_cast<uint8_t>(type)); }
+  bool Get(EType type, std::string & value) const { return MetadataBase::Get(static_cast<uint8_t>(type), value);  }
 
-  template <class TSource>
-  void DeserializeFromMWMv7OrLower(TSource & src)
-  {
-    uint8_t header[2] = {0};
-    char buffer[kMaxStringLength] = {0};
-    do
-    {
-      src.Read(header, sizeof(header));
-      src.Read(buffer, header[1]);
-      m_metadata[header[0] & 0x7F].assign(buffer, header[1]);
-    } while (!(header[0] & 0x80));
-  }
-
-private:
-  enum { kMaxStringLength = 255 };
+  using MetadataBase::Set;
+  void Set(EType type, std::string const & value) { MetadataBase::Set(static_cast<uint8_t>(type), value); }
+  void Drop(EType type) { Set(type, std::string()); }
+  std::string GetWikiURL() const;
 };
 
 class AddressData : public MetadataBase
 {
 public:
-  enum Type { PLACE, STREET, POSTCODE };
+  enum class Type : uint8_t
+  {
+    Street,
+    Postcode
+  };
 
-  void Add(Type type, string const & s)
+  void Add(Type type, std::string const & s)
   {
     /// @todo Probably, we need to add separator here and store multiple values.
-    MetadataBase::Set(type, s);
+    MetadataBase::Set(base::Underlying(type), s);
   }
+
+  std::string Get(Type type) const { return MetadataBase::Get(base::Underlying(type)); }
 };
 
 class RegionData : public MetadataBase
@@ -194,7 +197,8 @@ public:
     RD_PHONE_FORMAT,     // list of strings in "+N NNN NN-NN-NN" format
     RD_POSTCODE_FORMAT,  // list of strings in "AAA ANN" format
     RD_PUBLIC_HOLIDAYS,  // fixed PH dates
-    RD_ALLOW_HOUSENAMES  // 'y' if housenames are commonly used
+    RD_ALLOW_HOUSENAMES, // 'y' if housenames are commonly used
+    RD_LEAP_WEIGHT_SPEED // speed factor for leap weight computation
   };
 
   // Special values for month references in public holiday definitions.
@@ -206,21 +210,50 @@ public:
     PH_CANADA_DAY = 23
   };
 
-  void Set(Type type, string const & s)
+  template <class Sink>
+  void Serialize(Sink & sink) const
+  {
+    MetadataBase::SerializeForMwmTmp(sink);
+  }
+
+  template <class Source>
+  void Deserialize(Source & src)
+  {
+    MetadataBase::DeserializeFromMwmTmp(src);
+  }
+
+  void Set(Type type, std::string const & s)
   {
     CHECK_NOT_EQUAL(type, Type::RD_LANGUAGES, ("Please use RegionData::SetLanguages method"));
     MetadataBase::Set(type, s);
   }
 
-  void SetLanguages(vector<string> const & codes);
-  void GetLanguages(vector<int8_t> & langs) const;
+  void SetLanguages(std::vector<std::string> const & codes);
+  void GetLanguages(std::vector<int8_t> & langs) const;
   bool HasLanguage(int8_t const lang) const;
   bool IsSingleLanguage(int8_t const lang) const;
 
   void AddPublicHoliday(int8_t month, int8_t offset);
   // No public holidays getters until we know what to do with these.
+
+  void SetLeapWeightSpeed(double speedValue)
+  {
+    std::string strValue = std::to_string(speedValue);
+    MetadataBase::Set(Type::RD_LEAP_WEIGHT_SPEED, strValue);
+  }
+
+  double GetLeapWeightSpeed(double defaultValue) const
+  {
+    if (Has(Type::RD_LEAP_WEIGHT_SPEED))
+      return std::stod(Get(Type::RD_LEAP_WEIGHT_SPEED));
+    return defaultValue;
+  }
 };
-}  // namespace feature
 
 // Prints types in osm-friendly format.
-string DebugPrint(feature::Metadata::EType type);
+std::string ToString(feature::Metadata::EType type);
+inline std::string DebugPrint(feature::Metadata::EType type) { return ToString(type); }
+
+std::string DebugPrint(feature::Metadata const & metadata);
+std::string DebugPrint(feature::AddressData const & addressData);
+}  // namespace feature

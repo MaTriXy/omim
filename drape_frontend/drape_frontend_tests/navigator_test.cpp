@@ -5,9 +5,7 @@
 
 #include "geometry/screenbase.hpp"
 
-#include "std/cmath.hpp"
-#include "std/bind.hpp"
-
+#include <cmath>
 
 // -3 -2 -1  0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15
 //
@@ -63,8 +61,8 @@ namespace
       P const & pxP = arr[i];
       P const gP = nav.PtoG(pxP);
       P const pxP2 = nav.GtoP(gP);
-      TEST(my::AlmostEqualAbs(pxP.x, pxP2.x, 0.00001), (pxP.x, pxP2.x));
-      TEST(my::AlmostEqualAbs(pxP.y, pxP2.y, 0.00001), (pxP.y, pxP2.y));
+      TEST(base::AlmostEqualAbs(pxP.x, pxP2.x, 0.00001), (pxP.x, pxP2.x));
+      TEST(base::AlmostEqualAbs(pxP.y, pxP2.y, 0.00001), (pxP.y, pxP2.y));
     }
   }
 }

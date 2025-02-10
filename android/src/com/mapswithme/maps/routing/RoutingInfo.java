@@ -1,11 +1,11 @@
 package com.mapswithme.maps.routing;
 
-import android.location.Location;
-import android.support.annotation.DrawableRes;
+import androidx.annotation.DrawableRes;
+import androidx.annotation.NonNull;
+
 import android.widget.ImageView;
 
 import com.mapswithme.maps.R;
-import com.mapswithme.maps.bookmarks.data.DistanceAndAzimut;
 
 public class RoutingInfo
 {
@@ -23,18 +23,19 @@ public class RoutingInfo
   public final String nextStreet;
   public final double completionPercent;
   // For vehicle routing.
-  public final VehicleTurnDirection vehicleTurnDirection;
-  public final VehicleTurnDirection vehicleNextTurnDirection;
+  public final CarDirection carDirection;
+  public final CarDirection nextCarDirection;
   public final int exitNum;
   public final SingleLaneInfo[] lanes;
   // For pedestrian routing.
   public final PedestrianTurnDirection pedestrianTurnDirection;
-  public final Location pedestrianNextDirection;
+  private final boolean speedLimitExceeded;
+  private final boolean shouldPlayWarningSignal;
 
   /**
-   * IMPORTANT : Order of enum values MUST BE the same as native TurnDirection enum.
+   * IMPORTANT : Order of enum values MUST BE the same as native CarDirection enum.
    */
-  public enum VehicleTurnDirection
+  public enum CarDirection
   {
     NO_TURN(R.drawable.ic_turn_straight, 0),
     GO_STRAIGHT(R.drawable.ic_turn_straight, 0),
@@ -49,31 +50,38 @@ public class RoutingInfo
 
     U_TURN_LEFT(R.drawable.ic_turn_uleft, R.drawable.ic_then_uleft),
     U_TURN_RIGHT(R.drawable.ic_turn_uright, R.drawable.ic_then_uright),
-    TAKE_THE_EXIT(R.drawable.ic_turn_finish, R.drawable.ic_then_finish),
 
     ENTER_ROUND_ABOUT(R.drawable.ic_turn_round, R.drawable.ic_then_round),
     LEAVE_ROUND_ABOUT(R.drawable.ic_turn_round, R.drawable.ic_then_round),
     STAY_ON_ROUND_ABOUT(R.drawable.ic_turn_round, R.drawable.ic_then_round),
 
     START_AT_THE_END_OF_STREET(0, 0),
-    REACHED_YOUR_DESTINATION(R.drawable.ic_turn_finish, R.drawable.ic_then_finish);
+    REACHED_YOUR_DESTINATION(R.drawable.ic_turn_finish, R.drawable.ic_then_finish),
+
+    EXIT_HIGHWAY_TO_LEFT(R.drawable.ic_exit_highway_to_left, R.drawable.ic_then_exit_highway_to_left),
+    EXIT_HIGHWAY_TO_RIGHT(R.drawable.ic_exit_highway_to_right, R.drawable.ic_then_exit_highway_to_right);
 
     private final int mTurnRes;
     private final int mNextTurnRes;
 
-    VehicleTurnDirection(@DrawableRes int mainResId, @DrawableRes int nextResId)
+    CarDirection(@DrawableRes int mainResId, @DrawableRes int nextResId)
     {
       mTurnRes = mainResId;
       mNextTurnRes = nextResId;
     }
 
-    public void setTurnDrawable(ImageView imageView)
+    public int getTurnRes()
+    {
+      return mTurnRes;
+    }
+
+    public void setTurnDrawable(@NonNull ImageView imageView)
     {
       imageView.setImageResource(mTurnRes);
       imageView.setRotation(0.0f);
     }
 
-    public void setNextTurnDrawable(ImageView imageView)
+    public void setNextTurnDrawable(@NonNull ImageView imageView)
     {
       imageView.setImageResource(mNextTurnRes);
     }
@@ -83,7 +91,7 @@ public class RoutingInfo
       return mNextTurnRes != 0;
     }
 
-    public static boolean isRoundAbout(VehicleTurnDirection turn)
+    public static boolean isRoundAbout(CarDirection turn)
     {
       return turn == ENTER_ROUND_ABOUT || turn == LEAVE_ROUND_ABOUT || turn == STAY_ON_ROUND_ABOUT;
     }
@@ -91,17 +99,37 @@ public class RoutingInfo
 
   enum PedestrianTurnDirection
   {
-    NONE,
-    UPSTAIRS,
-    DOWNSTAIRS,
-    LIFT_GATE,
-    GATE,
-    REACHED_YOUR_DESTINATION;
+    NO_TURN(R.drawable.ic_turn_straight, 0),
+    GO_STRAIGHT(R.drawable.ic_turn_straight, 0),
 
-    public static void setTurnDrawable(ImageView view, DistanceAndAzimut distanceAndAzimut)
+    TURN_RIGHT(R.drawable.ic_turn_right, R.drawable.ic_then_right),
+    TURN_LEFT(R.drawable.ic_turn_left, R.drawable.ic_then_left),
+
+    REACHED_YOUR_DESTINATION(R.drawable.ic_turn_finish, R.drawable.ic_then_finish);
+
+    private final int mTurnRes;
+    private final int mNextTurnRes;
+
+    PedestrianTurnDirection(@DrawableRes int mainResId, @DrawableRes int nextResId)
     {
-      view.setImageResource(R.drawable.ic_turn_direction);
-      view.setRotation((float) Math.toDegrees(distanceAndAzimut.getAzimuth()));
+      mTurnRes = mainResId;
+      mNextTurnRes = nextResId;
+    }
+
+    public void setTurnDrawable(@NonNull ImageView imageView)
+    {
+      imageView.setImageResource(mTurnRes);
+      imageView.setRotation(0.0f);
+    }
+
+    public void setNextTurnDrawable(@NonNull ImageView imageView)
+    {
+      imageView.setImageResource(mNextTurnRes);
+    }
+
+    public boolean containsNextTurn()
+    {
+      return mNextTurnRes != 0;
     }
   }
 
@@ -127,8 +155,9 @@ public class RoutingInfo
   }
 
   public RoutingInfo(String distToTarget, String units, String distTurn, String turnSuffix, String currentStreet, String nextStreet, double completionPercent,
-                     int vehicleTurnOrdinal, int vehicleNextTurnOrdinal, int pedestrianTurnOrdinal, double pedestrianDirectionLat, double pedestrianDirectionLon, int exitNum,
-                     int totalTime, SingleLaneInfo[] lanes)
+                     int vehicleTurnOrdinal, int vehicleNextTurnOrdinal, int pedestrianTurnOrdinal, int exitNum,
+                     int totalTime, SingleLaneInfo[] lanes, boolean speedLimitExceeded,
+                     boolean shouldPlayWarningSignal)
   {
     this.distToTarget = distToTarget;
     this.targetUnits = units;
@@ -138,13 +167,22 @@ public class RoutingInfo
     this.nextStreet = nextStreet;
     this.totalTimeInSeconds = totalTime;
     this.completionPercent = completionPercent;
-    this.vehicleTurnDirection = VehicleTurnDirection.values()[vehicleTurnOrdinal];
-    this.vehicleNextTurnDirection = VehicleTurnDirection.values()[vehicleNextTurnOrdinal];
+    this.carDirection = CarDirection.values()[vehicleTurnOrdinal];
+    this.nextCarDirection = CarDirection.values()[vehicleNextTurnOrdinal];
     this.lanes = lanes;
     this.exitNum = exitNum;
     this.pedestrianTurnDirection = PedestrianTurnDirection.values()[pedestrianTurnOrdinal];
-    this.pedestrianNextDirection = new Location("");
-    this.pedestrianNextDirection.setLatitude(pedestrianDirectionLat);
-    this.pedestrianNextDirection.setLongitude(pedestrianDirectionLon);
+    this.speedLimitExceeded = speedLimitExceeded;
+    this.shouldPlayWarningSignal = shouldPlayWarningSignal;
+  }
+
+  public boolean isSpeedLimitExceeded()
+  {
+    return speedLimitExceeded;
+  }
+
+  public boolean shouldPlayWarningSignal()
+  {
+    return shouldPlayWarningSignal;
   }
 }

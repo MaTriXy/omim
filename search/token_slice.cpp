@@ -1,13 +1,15 @@
 #include "search/token_slice.hpp"
 
-#include "std/sstream.hpp"
+#include <sstream>
+
+using namespace std;
 
 namespace search
 {
 namespace
 {
-template <typename TSlice>
-string SliceToString(string const & name, TSlice const & slice)
+template <typename Slice>
+string SliceToString(string const & name, Slice const & slice)
 {
   ostringstream os;
   os << name << " [";
@@ -22,34 +24,25 @@ string SliceToString(string const & name, TSlice const & slice)
 }
 }  // namespace
 
-TokenSlice::TokenSlice(QueryParams const & params, size_t startToken, size_t endToken)
-  : m_params(params), m_offset(startToken), m_size(endToken - startToken)
+// TokenSlice --------------------------------------------------------------------------------------
+TokenSlice::TokenSlice(QueryParams const & params, TokenRange const & range)
+  : m_params(params), m_offset(range.Begin()), m_size(range.Size())
 {
-  ASSERT_LESS_OR_EQUAL(startToken, endToken, ());
+  ASSERT(range.IsValid(), (range));
 }
 
 bool TokenSlice::IsPrefix(size_t i) const
 {
   ASSERT_LESS(i, Size(), ());
-  return m_offset + i == m_params.m_tokens.size();
+  return m_params.IsPrefixToken(m_offset + i);
 }
 
-bool TokenSlice::IsLast(size_t i) const
-{
-  ASSERT_LESS(i, Size(), ());
-  if (m_params.m_prefixTokens.empty())
-    return m_offset + i + 1 == m_params.m_tokens.size();
-  return m_offset + i == m_params.m_tokens.size();
-}
-
-TokenSliceNoCategories::TokenSliceNoCategories(QueryParams const & params, size_t startToken,
-                                               size_t endToken)
+// TokenSliceNoCategories --------------------------------------------------------------------------
+TokenSliceNoCategories::TokenSliceNoCategories(QueryParams const & params, TokenRange const & range)
   : m_params(params)
 {
-  ASSERT_LESS_OR_EQUAL(startToken, endToken, ());
-
-  m_indexes.reserve(endToken - startToken);
-  for (size_t i = startToken; i < endToken; ++i)
+  m_indexes.reserve(range.Size());
+  for (size_t i : range)
   {
     if (!m_params.IsCategorySynonym(i))
       m_indexes.push_back(i);
@@ -62,5 +55,4 @@ string DebugPrint(TokenSliceNoCategories const & slice)
 {
   return SliceToString("TokenSliceNoCategories", slice);
 }
-
 }  // namespace search

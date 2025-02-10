@@ -22,9 +22,7 @@ public class AlohaHelper
   public static class Settings
   {
     public static final String WEB_SITE = "webSite";
-    public static final String WEB_BLOG = "webBlog";
     public static final String FEEDBACK_GENERAL = "generalFeedback";
-    public static final String MAIL_SUBSCRIBE = "subscribeToNews";
     public static final String REPORT_BUG = "reportABug";
     public static final String RATE = "rate";
     public static final String TELL_FRIEND = "tellFriend";
@@ -75,6 +73,7 @@ public class AlohaHelper
   public static final String ROUTING_PEDESTRIAN_SET = "routerSetPedestrian";
   public static final String ROUTING_BICYCLE_SET = "routerSetBicycle";
   public static final String ROUTING_TAXI_SET = "routerSetTaxi";
+  public static final String ROUTING_TRANSIT_SET = "routerSetTransit";
   public static final String ROUTING_SWAP_POINTS = "routeSwapPoints";
   public static final String ROUTING_TOGGLE = "routeToggle";
   public static final String ROUTING_SEARCH_POINT = "routSearchPoint";

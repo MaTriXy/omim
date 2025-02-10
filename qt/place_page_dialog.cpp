@@ -1,8 +1,8 @@
 #include "qt/place_page_dialog.hpp"
 
 #include "map/place_page_info.hpp"
-// For search::AddressInfo.
-#include "search/result.hpp"
+
+#include <string>
 
 #include <QtWidgets/QDialogButtonBox>
 #include <QtWidgets/QGridLayout>
@@ -10,6 +10,8 @@
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QVBoxLayout>
+
+using namespace std;
 
 string GenerateStars(int count)
 {
@@ -20,23 +22,23 @@ string GenerateStars(int count)
 }
 
 PlacePageDialog::PlacePageDialog(QWidget * parent, place_page::Info const & info,
-                                 search::AddressInfo const & address)
+                                 search::ReverseGeocoder::Address const & address)
   : QDialog(parent)
 {
   QGridLayout * grid = new QGridLayout();
   int row = 0;
   {  // Coordinates.
-    grid->addWidget(new QLabel("lat lon"), row, 0);
+    grid->addWidget(new QLabel("lat, lon"), row, 0);
     ms::LatLon const ll = info.GetLatLon();
     string const llstr =
-        strings::to_string_dac(ll.lat, 7) + " " + strings::to_string_dac(ll.lon, 7);
+        strings::to_string_dac(ll.m_lat, 7) + ", " + strings::to_string_dac(ll.m_lon, 7);
     QLabel * label = new QLabel(llstr.c_str());
     label->setTextInteractionFlags(Qt::TextSelectableByMouse);
     grid->addWidget(label, row++, 1);
   }
   {
     grid->addWidget(new QLabel("CountryId"), row, 0);
-    QLabel * label = new QLabel(QString::fromStdString(info.m_countryId));
+    QLabel * label = new QLabel(QString::fromStdString(info.GetCountryId()));
     label->setTextInteractionFlags(Qt::TextSelectableByMouse);
     grid->addWidget(label, row++, 1);
   }
@@ -79,10 +81,15 @@ PlacePageDialog::PlacePageDialog(QWidget * parent, place_page::Info const & info
   }
   if (info.IsFeature())
   {
+    grid->addWidget(new QLabel("Feature ID"), row, 0);
+    auto labelF = new QLabel(QString::fromStdString(DebugPrint(info.GetID())));
+    labelF->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    grid->addWidget(labelF, row++, 1);
+
     grid->addWidget(new QLabel("Raw Types"), row, 0);
-    QLabel * label = new QLabel(QString::fromStdString(DebugPrint(info.GetTypes())));
-    label->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    grid->addWidget(label, row++, 1);
+    QLabel * labelT = new QLabel(QString::fromStdString(DebugPrint(info.GetTypes())));
+    labelT->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    grid->addWidget(labelT, row++, 1);
   }
   for (auto const prop : info.AvailableProperties())
   {
@@ -145,6 +152,10 @@ PlacePageDialog::PlacePageDialog(QWidget * parent, place_page::Info const & info
     case osm::Props::BuildingLevels:
       k = "Building Levels";
       v = info.GetBuildingLevels();
+      break;
+    case osm::Props::Level:
+      k = "Level";
+      v = info.GetLevel();
       break;
     }
     grid->addWidget(new QLabel(k), row, 0);

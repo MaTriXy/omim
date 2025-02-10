@@ -1,48 +1,69 @@
-add_definitions(-DOMIM_UNIT_TEST_DISABLE_PLATFORM_INIT)
+project(coding_tests)
 
 set(
   SRC
-  base64_for_user_id_test.cpp
   base64_test.cpp
   bit_streams_test.cpp
-  coder_test.hpp
-  coder_util_test.cpp
+  bwt_coder_tests.cpp
+  bwt_tests.cpp
   compressed_bit_vector_test.cpp
+  csv_reader_test.cpp
   dd_vector_test.cpp
   diff_test.cpp
   elias_coder_test.cpp
   endianness_test.cpp
-  file_container_test.cpp
   file_data_test.cpp
   file_sort_test.cpp
-  file_utils_test.cpp
+  files_container_tests.cpp
   fixed_bits_ddvector_test.cpp
+  geometry_coding_test.cpp
   hex_test.cpp
   huffman_test.cpp
+  map_uint32_to_val_tests.cpp
   mem_file_reader_test.cpp
   mem_file_writer_test.cpp
-  multilang_utf8_string_test.cpp
+  move_to_front_tests.cpp
   png_decoder_test.cpp
+  point_coding_tests.cpp
   reader_cache_test.cpp
   reader_test.cpp
   reader_test.hpp
   reader_writer_ops_test.cpp
-  sha2_test.cpp
+  serdes_json_test.cpp
   simple_dense_coding_test.cpp
+  string_utf8_multilang_tests.cpp
   succinct_mapper_test.cpp
+  test_polylines.cpp
+  test_polylines.hpp
+  text_storage_tests.cpp
   traffic_test.cpp
-  uri_test.cpp
-  url_encode_test.cpp
+  url_tests.cpp
   value_opt_string_test.cpp
   var_record_reader_test.cpp
   var_serial_vector_test.cpp
   varint_test.cpp
-  #varint_vector_test.cpp
   writer_test.cpp
+  xml_parser_tests.cpp
   zip_creator_test.cpp
   zip_reader_test.cpp
+  zlib_test.cpp
 )
 
-omim_add_test(coding_tests ${SRC})
+omim_add_test(${PROJECT_NAME} ${SRC})
 
-omim_link_libraries(coding_tests coding base geometry minizip tomcrypt succinct ${LIBZ})
+omim_link_libraries(
+  ${PROJECT_NAME}
+  platform_tests_support
+  platform
+  coding
+  base
+  geometry
+  expat
+  jansson
+  minizip
+  succinct
+  stats_client
+  oauthcpp
+  ${Qt5Widgets_LIBRARIES}
+  ${LIBZ}
+)

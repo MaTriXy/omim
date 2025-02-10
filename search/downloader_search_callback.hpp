@@ -2,10 +2,9 @@
 
 #include "storage/downloader_search_params.hpp"
 
-#include "std/set.hpp"
-#include "std/string.hpp"
+#include <functional>
 
-class Index;
+class DataSource;
 
 namespace storage
 {
@@ -28,10 +27,10 @@ public:
   public:
     virtual ~Delegate() = default;
 
-    virtual void RunUITask(function<void()> fn) = 0;
+    virtual void RunUITask(std::function<void()> fn) = 0;
   };
 
-  DownloaderSearchCallback(Delegate & delegate, Index const & index,
+  DownloaderSearchCallback(Delegate & delegate, DataSource const & dataSource,
                            storage::CountryInfoGetter const & infoGetter,
                            storage::Storage const & storage,
                            storage::DownloaderSearchParams params);
@@ -39,10 +38,8 @@ public:
   void operator()(search::Results const & results);
 
 private:
-  set<storage::DownloaderSearchResult> m_uniqueResults;
-
   Delegate & m_delegate;
-  Index const & m_index;
+  DataSource const & m_dataSource;
   storage::CountryInfoGetter const & m_infoGetter;
   storage::Storage const & m_storage;
   storage::DownloaderSearchParams m_params;

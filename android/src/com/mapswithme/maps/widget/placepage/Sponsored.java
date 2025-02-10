@@ -1,15 +1,17 @@
 package com.mapswithme.maps.widget.placepage;
 
-import android.support.annotation.IntDef;
-import android.support.annotation.NonNull;
-import android.support.annotation.Nullable;
-import android.support.annotation.UiThread;
+import androidx.annotation.IntDef;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import androidx.annotation.UiThread;
 import android.text.TextUtils;
 
 import com.mapswithme.maps.bookmarks.data.MapObject;
 import com.mapswithme.maps.bookmarks.data.Metadata;
 import com.mapswithme.maps.gallery.Image;
 import com.mapswithme.maps.review.Review;
+import com.mapswithme.maps.ugc.UGC;
+import com.mapswithme.util.NetworkPolicy;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
@@ -20,28 +22,20 @@ import java.util.Map;
 @UiThread
 public final class Sponsored
 {
-  static final int TYPE_NONE = 0;
-  static final int TYPE_BOOKING = 1;
-  static final int TYPE_OPENTABLE = 2;
-  static final int TYPE_GEOCHAT = 3;
+  // Order is important, must match place_page_info.hpp/SponsoredType.
+  public static final int TYPE_NONE = 0;
+  public static final int TYPE_BOOKING = 1;
+  public static final int TYPE_OPENTABLE = 2;
+  public static final int TYPE_PARTNER = 3;
+  public static final int TYPE_HOLIDAY = 4;
+  public static final int TYPE_PROMO_CATALOG_CITY = 5;
+  public static final int TYPE_PROMO_CATALOG_SIGHTSEEINGS = 6;
+  public static final int TYPE_PROMO_CATALOG_OUTDOOR = 7;
 
   @Retention(RetentionPolicy.SOURCE)
-  @IntDef({TYPE_NONE, TYPE_BOOKING, TYPE_OPENTABLE, TYPE_GEOCHAT})
-  @interface SponsoredType {}
-
-  private static class Price
-  {
-    @NonNull
-    final String mPrice;
-    @NonNull
-    final String mCurrency;
-
-    private Price(@NonNull String price, @NonNull String currency)
-    {
-      mPrice = price;
-      mCurrency = currency;
-    }
-  }
+  @IntDef({ TYPE_NONE, TYPE_BOOKING, TYPE_OPENTABLE, TYPE_PARTNER, TYPE_HOLIDAY,
+            TYPE_PROMO_CATALOG_CITY, TYPE_PROMO_CATALOG_SIGHTSEEINGS, TYPE_PROMO_CATALOG_OUTDOOR })
+  public @interface SponsoredType {}
 
   static class FacilityType
   {
@@ -131,16 +125,19 @@ public final class Sponsored
     final Review[] mReviews;
     @Nullable
     final NearbyObject[] mNearby;
+    final long mReviewsAmount;
+
 
     public HotelInfo(@Nullable String description, @Nullable Image[] photos,
                      @Nullable FacilityType[] facilities, @Nullable Review[] reviews,
-                     @Nullable NearbyObject[] nearby)
+                     @Nullable NearbyObject[] nearby, long reviewsAmount)
     {
       mDescription = description;
       mPhotos = photos;
       mFacilities = facilities;
       mReviews = reviews;
       mNearby = nearby;
+      mReviewsAmount = reviewsAmount;
     }
   }
 
@@ -150,12 +147,10 @@ public final class Sponsored
      * This method is called from the native core on the UI thread
      * when the Hotel price will be obtained
      *
-     * @param id A hotel id
-     * @param price A price
-     * @param currency A price currency
+     * @param priceInfo
      */
     @UiThread
-    void onPriceReceived(@NonNull String id, @NonNull String price, @NonNull String currency);
+    void onPriceReceived(@NonNull HotelPriceInfo priceInfo);
   }
 
   interface OnHotelInfoReceivedListener
@@ -173,7 +168,7 @@ public final class Sponsored
 
   // Hotel ID -> Price
   @NonNull
-  private static final Map<String, Price> sPriceCache = new HashMap<>();
+  private static final Map<String, HotelPriceInfo> sPriceCache = new HashMap<>();
   // Hotel ID -> Description
   @NonNull
   private static final Map<String, HotelInfo> sInfoCache = new HashMap<>();
@@ -186,24 +181,43 @@ public final class Sponsored
   private String mId;
 
   @NonNull
-  final String mRating;
+  private final String mRating;
+  @UGC.Impress
+  private final int mImpress;
   @NonNull
-  final String mPrice;
+  private final String mPrice;
   @NonNull
-  final String mUrl;
+  private final String mUrl;
   @NonNull
-  final String mUrlDescription;
+  private final String mDeepLink;
+  @NonNull
+  private final String mDescriptionUrl;
+  @NonNull
+  private final String mMoreUrl;
+  @NonNull
+  private final String mReviewUrl;
   @SponsoredType
   private final int mType;
+  private final int mPartnerIndex;
+  @NonNull
+  private final String mPartnerName;
 
-  public Sponsored(@NonNull String rating, @NonNull String price, @NonNull String url,
-                   @NonNull String urlDescription, @SponsoredType int type)
+  private Sponsored(@NonNull String rating, @UGC.Impress int impress, @NonNull String price,
+                    @NonNull String url, @NonNull String deepLink, @NonNull String descriptionUrl,
+                    @NonNull String moreUrl, @NonNull String reviewUrl, @SponsoredType int type,
+                    int partnerIndex, @NonNull String partnerName)
   {
     mRating = rating;
+    mImpress = impress;
     mPrice = price;
     mUrl = url;
-    mUrlDescription = urlDescription;
+    mDeepLink = deepLink;
+    mDescriptionUrl = descriptionUrl;
+    mMoreUrl = moreUrl;
+    mReviewUrl = reviewUrl;
     mType = type;
+    mPartnerIndex = partnerIndex;
+    mPartnerName = partnerName;
   }
 
   void updateId(MapObject point)
@@ -223,8 +237,14 @@ public final class Sponsored
     return mRating;
   }
 
+  @UGC.Impress
+  int getImpress()
+  {
+    return mImpress;
+  }
+
   @NonNull
-  public String getPrice()
+  String getPrice()
   {
     return mPrice;
   }
@@ -236,15 +256,44 @@ public final class Sponsored
   }
 
   @NonNull
-  public String getUrlDescription()
+  public String getDeepLink()
   {
-    return mUrlDescription;
+    return mDeepLink;
+  }
+
+  @NonNull
+  String getDescriptionUrl()
+  {
+    return mDescriptionUrl;
+  }
+
+  @NonNull
+  String getMoreUrl()
+  {
+    return mMoreUrl;
+  }
+
+  @NonNull
+  String getReviewUrl()
+  {
+    return mReviewUrl;
   }
 
   @SponsoredType
   public int getType()
   {
     return mType;
+  }
+
+  public int getPartnerIndex()
+  {
+    return mPartnerIndex;
+  }
+
+  @NonNull
+  public String getPartnerName()
+  {
+    return mPartnerName;
   }
 
   static void setPriceListener(@NonNull OnPriceReceivedListener listener)
@@ -260,22 +309,24 @@ public final class Sponsored
   /**
    * Make request to obtain hotel price information.
    * This method also checks cache for requested hotel id
-   * and if cache exists - call {@link #onPriceReceived(String, String, String) onPriceReceived} immediately
-   *
-   * @param id A Hotel id
+   * and if cache exists - call {@link #onPriceReceived(HotelPriceInfo) onPriceReceived} immediately
+   *  @param id A Hotel id
    * @param currencyCode A user currency
+   * @param policy A network policy
    */
-  static void requestPrice(String id, String currencyCode)
+  static void requestPrice(@NonNull String id, @NonNull String currencyCode,
+                           @NonNull NetworkPolicy policy)
   {
-    Price p = sPriceCache.get(id);
+    HotelPriceInfo p = sPriceCache.get(id);
     if (p != null)
-      onPriceReceived(id, p.mPrice, p.mCurrency);
+      onPriceReceived(p);
 
-    nativeRequestPrice(id, currencyCode);
+    nativeRequestPrice(policy, id, currencyCode);
   }
 
 
-  static void requestInfo(Sponsored sponsored, String locale)
+  static void requestInfo(@NonNull Sponsored sponsored,
+                          @NonNull String locale, @NonNull NetworkPolicy policy)
   {
     String id = sponsored.getId();
     if (id == null)
@@ -284,10 +335,7 @@ public final class Sponsored
     switch (sponsored.getType())
     {
       case TYPE_BOOKING:
-        requestHotelInfo(id, locale);
-        break;
-      case TYPE_GEOCHAT:
-//        TODO: request geochat info
+        requestHotelInfo(id, locale, policy);
         break;
       case TYPE_OPENTABLE:
 //        TODO: request opentable info
@@ -301,31 +349,31 @@ public final class Sponsored
    * Make request to obtain hotel information.
    * This method also checks cache for requested hotel id
    * and if cache exists - call {@link #onHotelInfoReceived(String, HotelInfo) onHotelInfoReceived} immediately
-   *
-   * @param id A Hotel id
+   *  @param id A Hotel id
    * @param locale A user locale
+   * @param policy A network policy
    */
-  private static void requestHotelInfo(String id, String locale)
+  private static void requestHotelInfo(@NonNull String id, @NonNull String locale,
+                                       @NonNull NetworkPolicy policy)
   {
     HotelInfo info = sInfoCache.get(id);
     if (info != null)
       onHotelInfoReceived(id, info);
 
-    nativeRequestHotelInfo(id, locale);
+    nativeRequestHotelInfo(policy, id, locale);
   }
 
-  private static void onPriceReceived(@NonNull String id, @NonNull String price,
-                                      @NonNull String currency)
+  private static void onPriceReceived(@NonNull HotelPriceInfo priceInfo)
   {
-    if (TextUtils.isEmpty(price))
+    if (TextUtils.isEmpty(priceInfo.getPrice()))
       return;
 
-    sPriceCache.put(id, new Price(price, currency));
+    sPriceCache.put(priceInfo.getId(), priceInfo);
 
 
     OnPriceReceivedListener listener = sPriceListener.get();
     if (listener != null)
-      listener.onPriceReceived(id, price, currency);
+      listener.onPriceReceived(priceInfo);
   }
 
   private static void onHotelInfoReceived(@NonNull String id, @NonNull HotelInfo info)
@@ -337,10 +385,24 @@ public final class Sponsored
       listener.onHotelInfoReceived(id, info);
   }
 
+  @NonNull
+  static String getPackageName(@SponsoredType int type)
+  {
+    switch (type)
+    {
+      case Sponsored.TYPE_BOOKING:
+        return "com.booking";
+      default:
+        throw new AssertionError("Unsupported sponsored type: " + type);
+    }
+  }
+
   @Nullable
   public static native Sponsored nativeGetCurrent();
 
-  private static native void nativeRequestPrice(@NonNull String id, @NonNull String currencyCode);
+  private static native void nativeRequestPrice(@NonNull NetworkPolicy policy,
+                                                @NonNull String id, @NonNull String currencyCode);
 
-  private static native void nativeRequestHotelInfo(@NonNull String id, @NonNull String locale);
+  private static native void nativeRequestHotelInfo(@NonNull NetworkPolicy policy,
+                                                    @NonNull String id, @NonNull String locale);
 }

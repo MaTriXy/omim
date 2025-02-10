@@ -40,6 +40,21 @@ struct Area3dVertex : BaseVertex
   static dp::BindingInfo const & GetBindingInfo();
 };
 
+struct HatchingAreaVertex : BaseVertex
+{
+  using TMaskTexCoord = glsl::vec2;
+
+  HatchingAreaVertex();
+  HatchingAreaVertex(TPosition const & position, TTexCoord const & colorTexCoord,
+                     TMaskTexCoord const & maskTexCoord);
+
+  TPosition m_position;
+  TTexCoord m_colorTexCoord;
+  TMaskTexCoord m_maskTexCoord;
+
+  static dp::BindingInfo const & GetBindingInfo();
+};
+
 struct SolidTexturingVertex : BaseVertex
 {
   SolidTexturingVertex();
@@ -143,14 +158,50 @@ struct DashedLineVertex : BaseVertex
 
 struct RouteVertex : BaseVertex
 {
-  typedef glsl::vec3 TLength;
+  using TLength = glsl::vec3;
+  using TColor = glsl::vec4;
 
   RouteVertex();
-  RouteVertex(TPosition const & position, TNormal const & normal, TLength const & length);
+  RouteVertex(TPosition const & position, TNormal const & normal,
+              TLength const & length, TColor const & color);
 
   TPosition m_position;
   TNormal m_normal;
   TLength m_length;
+  TColor m_color;
+
+  static dp::BindingInfo const & GetBindingInfo();
+};
+
+struct RouteMarkerVertex : BaseVertex
+{
+  using TPosition = glsl::vec4;
+  using TNormal = glsl::vec3;
+  using TColor = glsl::vec4;
+
+  RouteMarkerVertex();
+  RouteMarkerVertex(TPosition const & position, TNormal const & normal,
+                    TColor const & color);
+
+  TPosition m_position;
+  TNormal m_normal;
+  TColor m_color;
+
+  static dp::BindingInfo const & GetBindingInfo();
+};
+
+struct ColoredSymbolVertex : BaseVertex
+{
+  using TNormal = glsl::vec4;
+  using TTexCoord = glsl::vec4;
+
+  ColoredSymbolVertex();
+  ColoredSymbolVertex(TPosition const & position, TNormal const & normal,
+                      TTexCoord const & colorTexCoord);
+
+  TPosition m_position;
+  TNormal m_normal;
+  TTexCoord m_colorTexCoord;
 
   static dp::BindingInfo const & GetBindingInfo();
 };

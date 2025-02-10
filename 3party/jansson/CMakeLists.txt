@@ -1,16 +1,6 @@
-cmake_minimum_required(VERSION 3.2)
-
-project(jansson C CXX)
+project(jansson)
 
 include_directories(src ../../)
-
-add_compile_options(
-  "-Wall"
-  "-Wno-unused-function"
-)
-
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11")
-
 
 set(
   SRC
@@ -22,11 +12,15 @@ set(
   src/error.c
   src/hashtable.c
   src/hashtable.h
-  src/jansson.h
+  src/hashtable_seed.c
   src/jansson_config.h
+  src/jansson.h
+  src/jansson_private_config.h
   src/jansson_private.h
   src/load.c
+  src/lookup3.h
   src/memory.c
+  src/pack_unpack.c
   src/strbuffer.c
   src/strbuffer.h
   src/strconv.c
@@ -35,4 +29,4 @@ set(
   src/value.c
 )
 
-add_library(jansson ${SRC})
+add_library(${PROJECT_NAME} ${SRC})

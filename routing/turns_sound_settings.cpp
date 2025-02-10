@@ -4,8 +4,9 @@
 
 #include "base/string_utils.hpp"
 
-#include "std/algorithm.hpp"
+#include <algorithm>
 
+using namespace std;
 using namespace measurement_utils;
 
 namespace routing
@@ -28,8 +29,7 @@ void Settings::SetState(uint32_t notificationTimeSeconds, uint32_t minNotificati
 
 bool Settings::IsValid() const
 {
-  return m_minDistanceUnits <= m_maxDistanceUnits &&
-         !m_soundedDistancesUnits.empty() &&
+  return m_minDistanceUnits <= m_maxDistanceUnits && !m_soundedDistancesUnits.empty() &&
          is_sorted(m_soundedDistancesUnits.cbegin(), m_soundedDistancesUnits.cend());
 }
 
@@ -38,9 +38,9 @@ uint32_t Settings::ComputeTurnDistanceM(double speedMetersPerSecond) const
   ASSERT(IsValid(), ());
 
   double const turnNotificationDistanceM = m_timeSeconds * speedMetersPerSecond;
-  return static_cast<uint32_t>(my::clamp(turnNotificationDistanceM,
-                                         ConvertUnitsToMeters(m_minDistanceUnits),
-                                         ConvertUnitsToMeters(m_maxDistanceUnits)));
+  return static_cast<uint32_t>(base::Clamp(turnNotificationDistanceM,
+                                           ConvertUnitsToMeters(m_minDistanceUnits),
+                                           ConvertUnitsToMeters(m_maxDistanceUnits)));
 }
 
 bool Settings::TooCloseForFisrtNotification(double distToTurnMeters) const
@@ -98,22 +98,28 @@ double Settings::ConvertMetersToUnits(double distanceInMeters) const
   return 0.;
 }
 
-uint32_t Settings::ComputeDistToPronounceDistM(double speedMetersPerSecond) const
+uint32_t Settings::ComputeDistToPronounceDistM(double speedMetersPerSecond, bool pedestrian) const
 {
   ASSERT_LESS_OR_EQUAL(0, speedMetersPerSecond, ());
+
+  auto const startBeforeSeconds = pedestrian ? m_startBeforeSecondsPedestrian : m_startBeforeSecondsVehicle;
+  auto const minStartBeforeMeters = pedestrian ? m_minStartBeforeMetersPedestrian : m_minStartBeforeMetersVehicle;
+  auto const maxStartBeforeMeters = pedestrian ? m_maxStartBeforeMetersPedestrian : m_maxStartBeforeMetersVehicle;
+
   uint32_t const startBeforeMeters =
-      static_cast<uint32_t>(speedMetersPerSecond * m_startBeforeSeconds);
-  return my::clamp(startBeforeMeters, m_minStartBeforeMeters, m_maxStartBeforeMeters);
+      static_cast<uint32_t>(speedMetersPerSecond * startBeforeSeconds);
+
+  return base::Clamp(startBeforeMeters, minStartBeforeMeters, maxStartBeforeMeters);
 }
 
 string DebugPrint(Notification const & notification)
 {
-  string units;
   stringstream out;
   out << "Notification [ m_distanceUnits == " << notification.m_distanceUnits
       << ", m_exitNum == " << notification.m_exitNum
       << ", m_useThenInsteadOfDistance == " << notification.m_useThenInsteadOfDistance
       << ", m_turnDir == " << DebugPrint(notification.m_turnDir)
+      << ", m_turnDirPedestrian == " << DebugPrint(notification.m_turnDirPedestrian)
       << ", m_lengthUnits == " << DebugPrint(notification.m_lengthUnits) << " ]" << endl;
   return out.str();
 }

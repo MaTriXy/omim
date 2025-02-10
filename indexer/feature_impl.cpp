@@ -4,6 +4,9 @@
 #include "base/logging.hpp"
 #include "base/math.hpp"
 
+#include <algorithm>
+
+using namespace std;
 
 namespace feature
 {
@@ -26,27 +29,14 @@ bool IsNumber(strings::UniString const & s)
 
 bool IsStreetNumber(strings::UniString const & s)
 {
-  size_t count = s.size();
-  if (count >= 2)
+  if (s.size() < 2)
+    return false;
+
+  /// add different localities in future, if it's a problem.
+  for (auto const & streetEnding : {"st", "nd", "rd", "th"})
   {
-    /// add different localities in future, if it's a problem.
-    string streetEndings [] = {"st", "nd", "rd", "th"};
-    for (size_t i = 0; i < ARRAY_SIZE(streetEndings); ++i)
-    {
-      size_t start = count - streetEndings[i].size();
-      bool flag = false;
-      for (size_t j = 0; j < streetEndings[i].size(); ++j)
-      {
-        if (streetEndings[i][j] != s[start + j])
-        {
-          flag = true;
-          break;
-        }
-      }
-      if (flag)
-        return false;
-    }
-    return true;
+    if (strings::EndsWith(strings::ToUtf8(s), streetEnding))
+      return true;
   }
   return false;
 }
@@ -75,7 +65,7 @@ bool IsHouseNumber(strings::UniString const & s)
 
 uint8_t PopulationToRank(uint64_t p)
 {
-  return static_cast<uint8_t>(min(0xFF, my::rounds(log(double(p)) / log(1.1))));
+  return static_cast<uint8_t>(min(0xFF, base::SignedRound(log(double(p)) / log(1.1))));
 }
 
 uint64_t RankToPopulation(uint8_t r)

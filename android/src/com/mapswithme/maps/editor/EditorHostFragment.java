@@ -1,33 +1,39 @@
 package com.mapswithme.maps.editor;
 
 import android.app.Activity;
+import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
 import android.os.Bundle;
-import android.support.annotation.NonNull;
-import android.support.annotation.Nullable;
-import android.support.annotation.StringRes;
-import android.support.v4.app.Fragment;
-import android.support.v7.app.AlertDialog;
+import android.text.TextUtils;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
 
+import androidx.annotation.CallSuper;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import androidx.annotation.StringRes;
+import androidx.appcompat.app.AlertDialog;
+import androidx.fragment.app.Fragment;
 import com.mapswithme.maps.MwmActivity;
 import com.mapswithme.maps.MwmApplication;
 import com.mapswithme.maps.R;
 import com.mapswithme.maps.base.BaseMwmToolbarFragment;
 import com.mapswithme.maps.base.OnBackPressListener;
+import com.mapswithme.maps.dialog.DialogUtils;
 import com.mapswithme.maps.editor.data.Language;
 import com.mapswithme.maps.editor.data.LocalizedName;
 import com.mapswithme.maps.editor.data.LocalizedStreet;
+import com.mapswithme.maps.editor.data.NamesDataSource;
+import com.mapswithme.maps.intent.Factory;
 import com.mapswithme.maps.widget.SearchToolbarController;
 import com.mapswithme.maps.widget.ToolbarController;
 import com.mapswithme.util.ConnectionState;
+import com.mapswithme.util.KeyValue;
 import com.mapswithme.util.UiUtils;
 import com.mapswithme.util.Utils;
 import com.mapswithme.util.statistics.Statistics;
-import com.mapswithme.maps.editor.data.NamesDataSource;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -103,6 +109,14 @@ public class EditorHostFragment extends BaseMwmToolbarFragment
     mMandatoryNamesCount = mandatoryNamesCount;
   }
 
+  private void fillNames(boolean needFakes)
+  {
+    NamesDataSource namesDataSource = Editor.nativeGetNamesDataSource(needFakes);
+    setNames(namesDataSource.getNames());
+    setMandatoryNamesCount(namesDataSource.getMandatoryNamesCount());
+    editMapObject();
+  }
+
   @Nullable
   @Override
   public View onCreateView(LayoutInflater inflater, @Nullable ViewGroup container, @Nullable Bundle savedInstanceState)
@@ -110,28 +124,21 @@ public class EditorHostFragment extends BaseMwmToolbarFragment
     return inflater.inflate(R.layout.fragment_editor_host, container, false);
   }
 
+  @CallSuper
   @Override
-  public void onViewCreated(View view, @Nullable Bundle savedInstanceState)
+  public void onViewCreated(@NonNull View view, @Nullable Bundle savedInstanceState)
   {
     super.onViewCreated(view, savedInstanceState);
-    mToolbarController.findViewById(R.id.save).setOnClickListener(this);
-    mToolbarController.getToolbar().setNavigationOnClickListener(new View.OnClickListener()
-    {
-      @Override
-      public void onClick(View v)
-      {
-        onBackPressed();
-      }
-    });
+
+    getToolbarController().getToolbar().findViewById(R.id.save).setOnClickListener(this);
+    UiUtils.setupHomeUpButtonAsNavigationIcon(getToolbarController().getToolbar(),
+                                              v -> onBackPressed());
 
     if (getArguments() != null)
       mIsNewObject = getArguments().getBoolean(EditorActivity.EXTRA_NEW_OBJECT, false);
-    mToolbarController.setTitle(getTitle());
+    getToolbarController().setTitle(getTitle());
 
-    NamesDataSource namesDataSource = Editor.nativeGetNamesDataSource();
-    setNames(namesDataSource.getNames());
-    setMandatoryNamesCount(namesDataSource.getMandatoryNamesCount());
-    editMapObject();
+    fillNames(true /* addFakes */);
   }
 
   @StringRes
@@ -140,15 +147,18 @@ public class EditorHostFragment extends BaseMwmToolbarFragment
     return mIsNewObject ? R.string.editor_add_place_title : R.string.editor_edit_place_title;
   }
 
+  @NonNull
   @Override
   protected ToolbarController onCreateToolbarController(@NonNull View root)
   {
-    return new SearchToolbarController(root, getActivity())
+    return new SearchToolbarController(root, requireActivity())
     {
       @Override
       protected void onTextChanged(String query)
       {
-        ((CuisineFragment) getChildFragmentManager().findFragmentByTag(CuisineFragment.class.getName())).setFilter(query);
+        Fragment fragment = getChildFragmentManager().findFragmentByTag(CuisineFragment.class.getName());
+        if (fragment != null)
+          ((CuisineFragment) fragment).setFilter(query);
       }
     };
   }
@@ -178,9 +188,9 @@ public class EditorHostFragment extends BaseMwmToolbarFragment
   protected void editMapObject(boolean focusToLastName)
   {
     mMode = Mode.MAP_OBJECT;
-    ((SearchToolbarController) mToolbarController).showControls(false);
-    mToolbarController.setTitle(getTitle());
-    UiUtils.show(mToolbarController.findViewById(R.id.save));
+    ((SearchToolbarController) getToolbarController()).showSearchControls(false);
+    getToolbarController().setTitle(getTitle());
+    UiUtils.show(getToolbarController().getToolbar().findViewById(R.id.save));
     Bundle args = new Bundle();
     if (focusToLastName)
       args.putInt(EditorFragment.LAST_INDEX_OF_NAMES_ARRAY, sNames.size() - 1);
@@ -193,8 +203,8 @@ public class EditorHostFragment extends BaseMwmToolbarFragment
   protected void editTimetable()
   {
     final Bundle args = new Bundle();
-    args.putString(TimetableFragment.EXTRA_TIME, Editor.nativeGetOpeningHours());
-    editWithFragment(Mode.OPENING_HOURS, R.string.editor_time_title, args, TimetableFragment.class, false);
+    args.putString(TimetableContainerFragment.EXTRA_TIME, Editor.nativeGetOpeningHours());
+    editWithFragment(Mode.OPENING_HOURS, R.string.editor_time_title, args, TimetableContainerFragment.class, false);
   }
 
   protected void editStreet()
@@ -214,7 +224,6 @@ public class EditorHostFragment extends BaseMwmToolbarFragment
     for (LocalizedName name : sNames)
       languages.add(name.lang);
     args.putStringArrayList(LanguagesFragment.EXISTING_LOCALIZED_NAMES, languages);
-    UiUtils.hide(mToolbarController.findViewById(R.id.save));
     editWithFragment(Mode.LANGUAGE, R.string.choose_language, args, LanguagesFragment.class, false);
   }
 
@@ -224,8 +233,8 @@ public class EditorHostFragment extends BaseMwmToolbarFragment
       return;
 
     mMode = newMode;
-    mToolbarController.setTitle(toolbarTitle);
-    ((SearchToolbarController) mToolbarController).showControls(showSearch);
+    getToolbarController().setTitle(toolbarTitle);
+    ((SearchToolbarController) getToolbarController()).showSearchControls(showSearch);
     final Fragment fragment = Fragment.instantiate(getActivity(), fragmentClass.getName(), args);
     getChildFragmentManager().beginTransaction()
                              .replace(R.id.fragment_container, fragment, fragmentClass.getName())
@@ -255,7 +264,7 @@ public class EditorHostFragment extends BaseMwmToolbarFragment
       switch (mMode)
       {
       case OPENING_HOURS:
-        final String timetables = ((TimetableFragment) getChildFragmentManager().findFragmentByTag(TimetableFragment.class.getName())).getTimetable();
+        final String timetables = ((TimetableContainerFragment) getChildFragmentManager().findFragmentByTag(TimetableContainerFragment.class.getName())).getTimetable();
         if (OpeningHours.nativeIsTimetableStringValid(timetables))
         {
           Editor.nativeSetOpeningHours(timetables);
@@ -275,28 +284,23 @@ public class EditorHostFragment extends BaseMwmToolbarFragment
         Editor.nativeSetSelectedCuisines(cuisines);
         editMapObject();
         break;
+      case LANGUAGE:
+        editMapObject();
+        break;
       case MAP_OBJECT:
         if (!setEdits())
           return;
 
-        // Save note
-        final String note = ((EditorFragment) getChildFragmentManager().findFragmentByTag(EditorFragment.class.getName())).getDescription();
-        if (note.length() != 0)
-          Editor.nativeCreateNote(note);
         // Save object edits
-        if (!MwmApplication.prefs().contains(NOOB_ALERT_SHOWN))
+        if (!MwmApplication.prefs(requireContext()).contains(NOOB_ALERT_SHOWN))
         {
-          MwmApplication.prefs().edit()
-            .putBoolean(NOOB_ALERT_SHOWN, true)
-            .apply();
-
           showNoobDialog();
         }
         else
         {
+          saveNote();
           saveMapObjectEdits();
         }
-
         break;
       }
     }
@@ -305,29 +309,65 @@ public class EditorHostFragment extends BaseMwmToolbarFragment
   private void saveMapObjectEdits()
   {
     if (Editor.nativeSaveEditedFeature())
-    {
-      Statistics.INSTANCE.trackEditorSuccess(mIsNewObject);
-      if (OsmOAuth.isAuthorized() || !ConnectionState.isConnected())
-        Utils.navigateToParent(getActivity());
-      else
-      {
-        final Activity parent = getActivity();
-        Intent intent = new Intent(parent, MwmActivity.class);
-        intent.addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION);
-        intent.putExtra(MwmActivity.EXTRA_TASK, new MwmActivity.ShowAuthorizationTask());
-        parent.startActivity(intent);
-
-        if (parent instanceof MwmActivity)
-          ((MwmActivity) parent).customOnNavigateUp();
-        else
-          parent.finish();
-      }
-    }
+      processEditedFeatures();
     else
+      processNoFeatures();
+  }
+
+  private void processNoFeatures()
+  {
+    Statistics.INSTANCE.trackEditorError(mIsNewObject,
+                                         String.valueOf(OsmOAuth.isAuthorized(requireContext())));
+    DialogUtils.showAlertDialog(getActivity(), R.string.downloader_no_space_title);
+  }
+
+  private void processEditedFeatures()
+  {
+    Context context = requireContext();
+    Statistics.INSTANCE.trackEditorSuccess(mIsNewObject,
+                                           String.valueOf(OsmOAuth.isAuthorized(context)));
+    if (OsmOAuth.isAuthorized(context) || !ConnectionState.INSTANCE.isConnected())
     {
-      Statistics.INSTANCE.trackEditorError(mIsNewObject);
-      UiUtils.showAlertDialog(getActivity(), R.string.downloader_no_space_title);
+      Utils.navigateToParent(getActivity());
+      return;
     }
+
+    final Intent intent = makeParentActivityIntent();
+    final Activity parent = getActivity();
+    parent.startActivity(intent);
+
+    if (parent instanceof MwmActivity)
+      ((MwmActivity) parent).customOnNavigateUp();
+    else
+      parent.finish();
+  }
+
+  private Intent makeParentActivityIntent()
+  {
+    Activity parent = getActivity();
+    Factory.ShowDialogTask task = new Factory.ShowDialogTask(AuthDialogFragment.class.getName(),
+                                                             makeParams());
+    return new Intent(parent, MwmActivity.class)
+        .addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION)
+        .putExtra(MwmActivity.EXTRA_TASK, task);
+  }
+
+  private ArrayList<KeyValue> makeParams()
+  {
+    ArrayList<KeyValue> params = new ArrayList<>();
+    params.add(new KeyValue(Statistics.EventParam.FROM, mIsNewObject
+                                                        ? Statistics.ParamValue.NEW_OBJECT
+                                                        : Statistics.ParamValue.EDIT_OBJECT));
+    return params;
+  }
+
+  private void saveNote()
+  {
+    String tag = EditorFragment.class.getName();
+    EditorFragment fragment = (EditorFragment) getChildFragmentManager().findFragmentByTag(tag);
+    String note = fragment.getDescription();
+    if (!TextUtils.isEmpty(note))
+      Editor.nativeCreateNote(note);
   }
 
   private void showMistakeDialog(@StringRes int resId)
@@ -349,6 +389,10 @@ public class EditorHostFragment extends BaseMwmToolbarFragment
         @Override
         public void onClick(DialogInterface dlg, int which)
         {
+          MwmApplication.prefs(requireContext()).edit()
+                        .putBoolean(NOOB_ALERT_SHOWN, true)
+                        .apply();
+          saveNote();
           saveMapObjectEdits();
         }
       })
@@ -373,6 +417,7 @@ public class EditorHostFragment extends BaseMwmToolbarFragment
     String name = "";
     if (lang.code.equals(Language.DEFAULT_LANG_CODE))
     {
+      fillNames(false /* addFakes */);
       name = Editor.nativeGetDefaultName();
       Editor.nativeEnableNamesAdvancedMode();
     }

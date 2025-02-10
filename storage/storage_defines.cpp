@@ -1,32 +1,44 @@
 #include "storage/storage_defines.hpp"
 
-#include "std/sstream.hpp"
+#include "base/assert.hpp"
+
+#include <sstream>
+
+using namespace std;
+using namespace string_literals;
 
 namespace storage
 {
+storage::CountryId const kInvalidCountryId;
+
+bool IsCountryIdValid(CountryId const & countryId) { return countryId != kInvalidCountryId; }
+
 string DebugPrint(Status status)
 {
   switch (status)
   {
-  case Status::EUndefined:
-    return string("EUndefined");
-  case Status::EOnDisk:
-    return string("OnDisk");
-  case Status::ENotDownloaded:
-    return string("NotDownloaded");
-  case Status::EDownloadFailed:
-    return string("DownloadFailed");
-  case Status::EDownloading:
-    return string("Downloading");
-  case Status::EInQueue:
-    return string("InQueue");
-  case Status::EUnknown:
-    return string("Unknown");
-  case Status::EOnDiskOutOfDate:
-    return string("OnDiskOutOfDate");
-  case Status::EOutOfMemFailed:
-    return string("OutOfMemFailed");
+  case Status::Undefined:
+    return "EUndefined"s;
+  case Status::OnDisk:
+    return "OnDisk"s;
+  case Status::NotDownloaded:
+    return "NotDownloaded"s;
+  case Status::DownloadFailed:
+    return "DownloadFailed"s;
+  case Status::Downloading:
+    return "Downloading"s;
+  case Status::Applying:
+    return "Applying"s;
+  case Status::InQueue:
+    return "InQueue"s;
+  case Status::UnknownError:
+    return "Unknown"s;
+  case Status::OnDiskOutOfDate:
+    return "OnDiskOutOfDate"s;
+  case Status::OutOfMemFailed:
+    return "OutOfMemFailed"s;
   }
+  UNREACHABLE();
 }
 
 string DebugPrint(NodeStatus status)
@@ -34,22 +46,25 @@ string DebugPrint(NodeStatus status)
   switch (status)
   {
   case NodeStatus::Undefined:
-    return string("Undefined");
+    return "Undefined"s;
   case NodeStatus::Error:
-    return string("Error");
+    return "Error"s;
   case NodeStatus::OnDisk:
-    return string("OnDisk");
+    return "OnDisk"s;
   case NodeStatus::NotDownloaded:
-    return string("NotDownloaded");
+    return "NotDownloaded"s;
   case NodeStatus::Downloading:
-    return string("Downloading");
+    return "Downloading"s;
+  case NodeStatus::Applying:
+    return "Applying"s;
   case NodeStatus::InQueue:
-    return string("InQueue");
+    return "InQueue"s;
   case NodeStatus::OnDiskOutOfDate:
-    return string("OnDiskOutOfDate");
+    return "OnDiskOutOfDate"s;
   case NodeStatus::Partly:
-    return string("Partly");
+    return "Partly"s;
   }
+  UNREACHABLE();
 }
 
 string DebugPrint(NodeErrorCode status)
@@ -57,39 +72,43 @@ string DebugPrint(NodeErrorCode status)
   switch (status)
   {
   case NodeErrorCode::NoError:
-    return string("NoError");
+    return "NoError"s;
   case NodeErrorCode::UnknownError:
-    return string("UnknownError");
+    return "UnknownError"s;
   case NodeErrorCode::OutOfMemFailed:
-    return string("OutOfMemFailed");
+    return "OutOfMemFailed"s;
   case NodeErrorCode::NoInetConnection:
-    return string("NoInetConnection");
+    return "NoInetConnection"s;
   }
+  UNREACHABLE();
 }
 
 StatusAndError ParseStatus(Status innerStatus)
 {
   switch (innerStatus)
   {
-  case Status::EUndefined:
+  case Status::Undefined:
     return StatusAndError(NodeStatus::Undefined, NodeErrorCode::NoError);
-  case Status::EOnDisk:
+  case Status::OnDisk:
     return StatusAndError(NodeStatus::OnDisk, NodeErrorCode::NoError);
-  case Status::ENotDownloaded:
+  case Status::NotDownloaded:
     return StatusAndError(NodeStatus::NotDownloaded, NodeErrorCode::NoError);
-  case Status::EDownloadFailed:
+  case Status::DownloadFailed:
     return StatusAndError(NodeStatus::Error, NodeErrorCode::NoInetConnection);
-  case Status::EDownloading:
+  case Status::Downloading:
     return StatusAndError(NodeStatus::Downloading, NodeErrorCode::NoError);
-  case Status::EInQueue:
+  case Status::Applying:
+    return StatusAndError(NodeStatus::Applying, NodeErrorCode::NoError);
+  case Status::InQueue:
     return StatusAndError(NodeStatus::InQueue, NodeErrorCode::NoError);
-  case Status::EUnknown:
+  case Status::UnknownError:
     return StatusAndError(NodeStatus::Error, NodeErrorCode::UnknownError);
-  case Status::EOnDiskOutOfDate:
+  case Status::OnDiskOutOfDate:
     return StatusAndError(NodeStatus::OnDiskOutOfDate, NodeErrorCode::NoError);
-  case Status::EOutOfMemFailed:
+  case Status::OutOfMemFailed:
     return StatusAndError(NodeStatus::Error, NodeErrorCode::OutOfMemFailed);
   }
+  UNREACHABLE();
 }
 
 string DebugPrint(StatusAndError statusAndError)

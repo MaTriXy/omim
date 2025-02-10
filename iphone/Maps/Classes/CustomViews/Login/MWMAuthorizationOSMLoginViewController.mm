@@ -4,7 +4,6 @@
 #import "MWMCircularProgress.h"
 #import "MWMSettingsViewController.h"
 #import "Statistics.h"
-#import "UIColor+MapsMeColor.h"
 #import "UITextField+RuntimeAttributes.h"
 
 #include "base/logging.hpp"
@@ -129,14 +128,14 @@ using namespace osm;
   {
     [self startSpinner];
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
-      string const username = self.loginTextField.text.UTF8String;
-      string const password = self.passwordTextField.text.UTF8String;
+      std::string const username = self.loginTextField.text.UTF8String;
+      std::string const password = self.passwordTextField.text.UTF8String;
       OsmOAuth auth = OsmOAuth::ServerAuth();
       try
       {
         auth.AuthorizePassword(username, password);
       }
-      catch (exception const & ex)
+      catch (std::exception const & ex)
       {
         LOG(LWARNING, ("Error login", ex.what()));
         [Statistics logEvent:@"Editor_Auth_request_result"

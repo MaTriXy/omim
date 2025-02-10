@@ -1,22 +1,37 @@
 #include "generator/osm2meta.hpp"
 
+#include "routing/routing_helpers.hpp"
+
+#include "indexer/classificator.hpp"
+#include "indexer/ftypes_matcher.hpp"
+
 #include "platform/measurement_utils.hpp"
 
-#include "coding/url_encode.hpp"
+#include "coding/url.hpp"
 
 #include "base/logging.hpp"
+#include "base/math.hpp"
 #include "base/string_utils.hpp"
 
-#include "std/algorithm.hpp"
-#include "std/cctype.hpp"
-#include "std/cmath.hpp"
-#include "std/cstdlib.hpp"
-#include "std/unordered_set.hpp"
+#include <algorithm>
+#include <cctype>
+#include <cmath>
+#include <cstdlib>
+#include <optional>
+#include <sstream>
+#include <unordered_map>
+#include <unordered_set>
+
+using namespace std;
 
 namespace
 {
 
 constexpr char const * kOSMMultivalueDelimiter = ";";
+
+// https://en.wikipedia.org/wiki/List_of_tallest_buildings_in_the_world
+auto constexpr kMaxBuildingLevelsInTheWorld = 167;
+auto constexpr kMinBuildingLevel = -6;
 
 template <class T>
 void RemoveDuplicatesAndKeepOrder(vector<T> & vec)
@@ -29,7 +44,7 @@ void RemoveDuplicatesAndKeepOrder(vector<T> & vec)
     seen.insert(value);
     return false;
   };
-  vec.erase(std::remove_if(vec.begin(), vec.end(), predicate), vec.end());
+  vec.erase(remove_if(vec.begin(), vec.end(), predicate), vec.end());
 }
 
 // Also filters out duplicates.
@@ -54,20 +69,13 @@ private:
   vector<string> m_values;
 };
 
-void CollapseMultipleConsecutiveCharsIntoOne(char c, string & str)
+bool IsNoNameNoAddressBuilding(FeatureParams const & params)
 {
-  auto const comparator = [c](char lhs, char rhs) { return lhs == rhs && lhs == c; };
-  str.erase(unique(str.begin(), str.end(), comparator), str.end());
+  static uint32_t const buildingType = classif().GetTypeByPath({"building"});
+  return params.m_types.size() == 1 && params.m_types[0] == buildingType &&
+         params.house.Get().empty() && params.name.IsEmpty();
 }
 }  // namespace
-
-string MetadataTagProcessorImpl::ValidateAndFormat_maxspeed(string const & v) const
-{
-  if (!ftypes::IsSpeedCamChecker::Instance()(m_params.m_Types))
-    return string();
-
-  return v;
-}
 
 string MetadataTagProcessorImpl::ValidateAndFormat_stars(string const & v) const
 {
@@ -85,27 +93,23 @@ string MetadataTagProcessorImpl::ValidateAndFormat_stars(string const & v) const
   return string(1, v[0]);
 }
 
-string MetadataTagProcessorImpl::ValidateAndFormat_price_rate(string const & v) const
-{
-  if (v.size() != 1)
-    return string();
-
-  // Price rate is a single digit from 0 to 5.
-  if (v[0] < '0' || v[0] > '5')
-    return string();
-
-  return v;
-}
-
 string MetadataTagProcessorImpl::ValidateAndFormat_operator(string const & v) const
 {
-  auto const & isATM = ftypes::IsATMChecker::Instance();
-  auto const & isFuelStation = ftypes::IsFuelStationChecker::Instance();
+  auto const & t = m_params.m_types;
+  if (ftypes::IsATMChecker::Instance()(t) ||
+      ftypes::IsPaymentTerminalChecker::Instance()(t) ||
+      ftypes::IsMoneyExchangeChecker::Instance()(t) ||
+      ftypes::IsFuelStationChecker::Instance()(t) ||
+      ftypes::IsRecyclingCentreChecker::Instance()(t) ||
+      ftypes::IsPostOfficeChecker::Instance()(t) ||
+      ftypes::IsCarSharingChecker::Instance()(t) ||
+      ftypes::IsCarRentalChecker::Instance()(t) ||
+      ftypes::IsBicycleRentalChecker::Instance()(t))
+  {
+    return v;
+  }
 
-  if (!(isATM(m_params.m_Types) || isFuelStation(m_params.m_Types)))
-    return string();
-
-  return v;
+  return {};
 }
 
 string MetadataTagProcessorImpl::ValidateAndFormat_url(string const & v) const
@@ -125,6 +129,9 @@ string MetadataTagProcessorImpl::ValidateAndFormat_opening_hours(string const & 
 
 string MetadataTagProcessorImpl::ValidateAndFormat_ele(string const & v) const
 {
+  if (IsNoNameNoAddressBuilding(m_params))
+    return {};
+
   return measurement_utils::OSMDistanceToMetersString(v);
 }
 
@@ -148,10 +155,7 @@ string MetadataTagProcessorImpl::ValidateAndFormat_email(string const & v) const
   return v;
 }
 
-string MetadataTagProcessorImpl::ValidateAndFormat_postcode(string const & v) const
-{
-  return v;
-}
+string MetadataTagProcessorImpl::ValidateAndFormat_postcode(string const & v) const { return v; }
 
 string MetadataTagProcessorImpl::ValidateAndFormat_flats(string const & v) const
 {
@@ -164,6 +168,9 @@ string MetadataTagProcessorImpl::ValidateAndFormat_internet(string v) const
   strings::AsciiToLower(v);
   if (v == "wlan" || v == "wired" || v == "yes" || v == "no")
     return v;
+  // Process wifi=free tag.
+  if (v == "free")
+    return "wlan";
   return {};
 }
 
@@ -174,8 +181,6 @@ string MetadataTagProcessorImpl::ValidateAndFormat_height(string const & v) cons
 
 string MetadataTagProcessorImpl::ValidateAndFormat_building_levels(string v) const
 {
-  // https://en.wikipedia.org/wiki/List_of_tallest_buildings_in_the_world
-  auto constexpr kMaxBuildingLevelsInTheWorld = 167;
   // Some mappers use full width unicode digits. We can handle that.
   strings::NormalizeDigits(v);
   char * stop;
@@ -187,52 +192,25 @@ string MetadataTagProcessorImpl::ValidateAndFormat_building_levels(string v) con
   return {};
 }
 
-string MetadataTagProcessorImpl::ValidateAndFormat_sponsored_id(string const & v) const
+string MetadataTagProcessorImpl::ValidateAndFormat_level(string v) const
 {
-  uint64_t id;
-  if (!strings::to_uint64(v, id))
-    return string();
-  return v;
-}
+  // Some mappers use full width unicode digits. We can handle that.
+  strings::NormalizeDigits(v);
+  char * stop;
+  char const * s = v.c_str();
+  double const levels = strtod(s, &stop);
+  if (s != stop && isfinite(levels) && levels >= kMinBuildingLevel &&
+      levels <= kMaxBuildingLevelsInTheWorld)
+  {
+    return strings::to_string(levels);
+  }
 
-string MetadataTagProcessorImpl::ValidateAndFormat_rating(string const & v) const
-{
-  double rating;
-  if (!strings::to_double(v, rating))
-    return string();
-  if (rating > 0 && rating <= 10)
-    return strings::to_string_dac(rating, 1);
-  return string();
+  return {};
 }
 
 string MetadataTagProcessorImpl::ValidateAndFormat_denomination(string const & v) const
 {
   return v;
-}
-
-string MetadataTagProcessorImpl::ValidateAndFormat_cuisine(string v) const
-{
-  strings::MakeLowerCaseInplace(v);
-  strings::SimpleTokenizer iter(v, ",;");
-  MultivalueCollector collector;
-  while (iter) {
-    string normalized = *iter;
-    strings::Trim(normalized, " ");
-    CollapseMultipleConsecutiveCharsIntoOne(' ', normalized);
-    replace(normalized.begin(), normalized.end(), ' ', '_');
-    // Avoid duplication for some cuisines.
-    if (normalized == "bbq" || normalized == "barbeque")
-      normalized = "barbecue";
-    if (normalized == "doughnut")
-      normalized = "donut";
-    if (normalized == "steak")
-      normalized = "steak_house";
-    if (normalized == "coffee")
-      normalized = "coffee_shop";
-    collector(normalized);
-    ++iter;
-  }
-  return collector.GetString();
 }
 
 string MetadataTagProcessorImpl::ValidateAndFormat_wikipedia(string v) const
@@ -252,7 +230,7 @@ string MetadataTagProcessorImpl::ValidateAndFormat_wikipedia(string v) const
       if (slashIndex != string::npos && slashIndex + 1 != baseIndex)
       {
         // Normalize article title according to OSM standards.
-        string title = UrlDecode(v.substr(baseIndex + baseSize));
+        string title = url::UrlDecode(v.substr(baseIndex + baseSize));
         replace(title.begin(), title.end(), '_', ' ');
         return v.substr(slashIndex + 1, baseIndex - slashIndex - 1) + ":" + title;
       }
@@ -279,3 +257,128 @@ string MetadataTagProcessorImpl::ValidateAndFormat_wikipedia(string v) const
   replace(normalized.begin() + colonIndex, normalized.end(), '_', ' ');
   return normalized;
 }
+
+string MetadataTagProcessorImpl::ValidateAndFormat_airport_iata(string const & v) const
+{
+  if (!ftypes::IsAirportChecker::Instance()(m_params.m_types))
+    return {};
+
+  if (v.size() != 3)
+    return {};
+
+  auto str = v;
+  for (auto & c : str)
+  {
+    if (!isalpha(c))
+      return {};
+    c = toupper(c);
+  }
+  return str;
+}
+
+string MetadataTagProcessorImpl::ValidateAndFormat_duration(string const & v) const
+{
+  if (!ftypes::IsFerryChecker::Instance()(m_params.m_types))
+    return {};
+
+  auto const format = [](double hours) -> string {
+    if (base::AlmostEqualAbs(hours, 0.0, 1e-5))
+      return {};
+
+    stringstream ss;
+    ss << setprecision(5);
+    ss << hours;
+    return ss.str();
+  };
+
+  auto const readNumber = [&v](size_t & pos) -> optional<uint32_t> {
+    uint32_t number = 0;
+    size_t const startPos = pos;
+    while (pos < v.size() && isdigit(v[pos]))
+    {
+      number *= 10;
+      number += v[pos] - '0';
+      ++pos;
+    }
+
+    if (startPos == pos)
+      return {};
+
+    return {number};
+  };
+
+  auto const convert = [](char type, uint32_t number) -> optional<double> {
+    switch (type)
+    {
+    case 'H': return number;
+    case 'M': return number / 60.0;
+    case 'S': return number / 3600.0;
+    }
+
+    return {};
+  };
+
+  if (v.empty())
+    return {};
+
+  double hours = 0.0;
+  size_t pos = 0;
+  optional<uint32_t> op;
+
+  if (strings::StartsWith(v, "PT"))
+  {
+    if (v.size() < 4)
+      return {};
+
+    pos = 2;
+    while (pos < v.size() && (op = readNumber(pos)))
+    {
+      if (pos >= v.size())
+        return {};
+
+      char const type = v[pos];
+      auto const addHours = convert(type, *op);
+      if (addHours)
+        hours += *addHours;
+      else
+        return {};
+
+      ++pos;
+    }
+
+    if (!op)
+      return {};
+
+    return format(hours);
+  }
+
+  // "hh:mm:ss" or just "mm"
+  vector<uint32_t> numbers;
+  while (pos < v.size() && (op = readNumber(pos)))
+  {
+    numbers.emplace_back(*op);
+    if (pos >= v.size())
+      break;
+
+    if (v[pos] != ':')
+      return {};
+
+    ++pos;
+  }
+
+  if (numbers.size() > 3 || !op)
+    return {};
+
+  if (numbers.size() == 1)
+    return format(numbers.back() / 60.0);
+
+  double pow = 1.0;
+  for (auto number : numbers)
+  {
+    hours += number / pow;
+    pow *= 60.0;
+  }
+
+  return format(hours);
+}
+

@@ -2,14 +2,18 @@ package com.mapswithme.maps.background;
 
 import android.app.Activity;
 import android.app.Application;
+import android.content.Context;
 import android.os.Bundle;
 import android.util.SparseArray;
 
 import java.lang.ref.WeakReference;
 
+import androidx.annotation.NonNull;
 import com.mapswithme.maps.MwmApplication;
 import com.mapswithme.util.Listeners;
 import com.mapswithme.util.concurrency.UiThread;
+import com.mapswithme.util.log.Logger;
+import com.mapswithme.util.log.LoggerFactory;
 
 /**
  * Helper class that detects when the application goes to background and back to foreground.
@@ -17,11 +21,14 @@ import com.mapswithme.util.concurrency.UiThread;
  */
 public final class AppBackgroundTracker
 {
+  private static final Logger LOGGER = LoggerFactory.INSTANCE.getLogger(LoggerFactory.Type.MISC);
+  private static final String TAG = AppBackgroundTracker.class.getSimpleName();
   private static final int TRANSITION_DELAY_MS = 1000;
 
-  private final Listeners<OnTransitionListener> mListeners = new Listeners<>();
+  private final Listeners<OnTransitionListener> mTransitionListeners = new Listeners<>();
+  private final Listeners<OnVisibleAppLaunchListener> mVisibleAppLaunchListeners = new Listeners<>();
   private SparseArray<WeakReference<Activity>> mActivities = new SparseArray<>();
-  private boolean mForeground;
+  private volatile boolean mForeground;
 
   private final Runnable mTransitionProc = new Runnable()
   {
@@ -43,7 +50,7 @@ public final class AppBackgroundTracker
       mForeground = (mActivities.size() > 0);
 
       if (mForeground != old)
-        notifyListeners();
+        notifyTransitionListeners();
     }
   };
 
@@ -59,6 +66,9 @@ public final class AppBackgroundTracker
     @Override
     public void onActivityStarted(Activity activity)
     {
+      LOGGER.d(TAG, "onActivityStarted activity = " + activity);
+      if (mActivities.size() == 0)
+        notifyVisibleAppLaunchListeners();
       mActivities.put(activity.hashCode(), new WeakReference<>(activity));
       onActivityChanged();
     }
@@ -66,24 +76,40 @@ public final class AppBackgroundTracker
     @Override
     public void onActivityStopped(Activity activity)
     {
+      LOGGER.d(TAG, "onActivityStopped activity = " + activity);
       mActivities.remove(activity.hashCode());
       onActivityChanged();
     }
 
     @Override
-    public void onActivityCreated(Activity activity, Bundle savedInstanceState) {}
+    public void onActivityCreated(Activity activity, Bundle savedInstanceState)
+    {
+      LOGGER.d(TAG, "onActivityCreated activity = " + activity);
+    }
 
     @Override
-    public void onActivityDestroyed(Activity activity) {}
+    public void onActivityDestroyed(Activity activity)
+    {
+      LOGGER.d(TAG, "onActivityDestroyed activity = " + activity);
+    }
 
     @Override
-    public void onActivityResumed(Activity activity) {}
+    public void onActivityResumed(Activity activity)
+    {
+      LOGGER.d(TAG, "onActivityResumed activity = " + activity);
+    }
 
     @Override
-    public void onActivityPaused(Activity activity) {}
+    public void onActivityPaused(Activity activity)
+    {
+      LOGGER.d(TAG, "onActivityPaused activity = " + activity);
+    }
 
     @Override
-    public void onActivitySaveInstanceState(Activity activity, Bundle outState) {}
+    public void onActivitySaveInstanceState(Activity activity, Bundle outState)
+    {
+      LOGGER.d(TAG, "onActivitySaveInstanceState activity = " + activity);
+    }
   };
 
   public interface OnTransitionListener
@@ -91,9 +117,14 @@ public final class AppBackgroundTracker
     void onTransit(boolean foreground);
   }
 
-  public AppBackgroundTracker()
+  public interface OnVisibleAppLaunchListener
   {
-    MwmApplication.get().registerActivityLifecycleCallbacks(mAppLifecycleCallbacks);
+    void onVisibleAppLaunch();
+  }
+
+  public AppBackgroundTracker(@NonNull Context context)
+  {
+    MwmApplication.from(context).registerActivityLifecycleCallbacks(mAppLifecycleCallbacks);
   }
 
   public boolean isForeground()
@@ -101,24 +132,41 @@ public final class AppBackgroundTracker
     return mForeground;
   }
 
-  private void notifyListeners()
+  private void notifyTransitionListeners()
   {
-    for (OnTransitionListener listener : mListeners)
+    for (OnTransitionListener listener : mTransitionListeners)
       listener.onTransit(mForeground);
-    mListeners.finishIterate();
+    mTransitionListeners.finishIterate();
+  }
+
+  private void notifyVisibleAppLaunchListeners()
+  {
+    for (OnVisibleAppLaunchListener listener : mVisibleAppLaunchListeners)
+      listener.onVisibleAppLaunch();
+    mVisibleAppLaunchListeners.finishIterate();
   }
 
   public void addListener(OnTransitionListener listener)
   {
-    mListeners.register(listener);
+    mTransitionListeners.register(listener);
   }
 
   public void removeListener(OnTransitionListener listener)
   {
-    mListeners.unregister(listener);
+    mTransitionListeners.unregister(listener);
   }
 
-  @android.support.annotation.UiThread
+  public void addListener(OnVisibleAppLaunchListener listener)
+  {
+    mVisibleAppLaunchListeners.register(listener);
+  }
+
+  public void removeListener(OnVisibleAppLaunchListener listener)
+  {
+    mVisibleAppLaunchListeners.unregister(listener);
+  }
+
+  @androidx.annotation.UiThread
   public Activity getTopActivity()
   {
     return (mActivities.size() == 0 ? null : mActivities.get(mActivities.keyAt(0)).get());

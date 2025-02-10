@@ -1,10 +1,13 @@
 #pragma once
 
 #include "search/model.hpp"
+#include "search/token_range.hpp"
 
 #include "base/string_utils.hpp"
 
-#include "std/vector.hpp"
+#include <cstdint>
+#include <string>
+#include <vector>
 
 namespace search
 {
@@ -18,13 +21,12 @@ struct FeaturesLayer
   void Clear();
 
   // Non-owning ptr to a sorted vector of features.
-  vector<uint32_t> const * m_sortedFeatures;
+  std::vector<uint32_t> const * m_sortedFeatures;
 
   strings::UniString m_subQuery;
 
-  size_t m_startToken;
-  size_t m_endToken;
-  SearchModel::SearchType m_type;
+  TokenRange m_tokenRange;
+  Model::Type m_type;
 
   // *NOTE* This field is meaningful only when m_type equals to
   // SEARCH_TYPE_BUILDING.
@@ -38,6 +40,5 @@ struct FeaturesLayer
   bool m_lastTokenIsPrefix;
 };
 
-string DebugPrint(FeaturesLayer const & layer);
-
+std::string DebugPrint(FeaturesLayer const & layer);
 }  // namespace search

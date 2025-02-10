@@ -6,9 +6,11 @@
 #include "base/macros.hpp"
 #include "base/string_utils.hpp"
 
-#include "std/algorithm.hpp"
-#include "std/bind.hpp"
-#include "std/iterator.hpp"
+#include <algorithm>
+#include <functional>
+#include <iterator>
+
+using namespace std;
 
 namespace
 {
@@ -84,7 +86,7 @@ void ClassifObject::Sort()
 {
   sort(m_drawRule.begin(), m_drawRule.end(), less_scales());
   sort(m_objs.begin(), m_objs.end(), less_name_t());
-  for_each(m_objs.begin(), m_objs.end(), bind(&ClassifObject::Sort, _1));
+  for_each(m_objs.begin(), m_objs.end(), bind(&ClassifObject::Sort, placeholders::_1));
 }
 
 void ClassifObject::Swap(ClassifObject & r)
@@ -137,8 +139,8 @@ Classificator & classif()
 
 namespace ftype
 {
-  uint8_t const bits_count = 6;
-  uint8_t const levels_count = 5;
+  uint8_t const bits_count = 7;
+  uint8_t const levels_count = 4;
   uint8_t const max_value = (1 << bits_count) - 1;
 
   void set_value(uint32_t & type, uint8_t level, uint8_t value)
@@ -196,8 +198,6 @@ namespace ftype
 
   bool GetValue(uint32_t type, uint8_t level, uint8_t & value)
   {
-    ASSERT ( level < levels_count, ("invalid input level", level) );
-
     if (level < get_control_level(type))
     {
       value = get_value(type, level);
@@ -251,7 +251,7 @@ namespace
     vec_t const & m_rules;
     drule::KeysT & m_keys;
 
-    bool m_added;
+    bool m_added = false;
 
     void add_rule(int ft, iter_t i)
     {
@@ -283,9 +283,9 @@ namespace
   };
 } // namespace
 
-void ClassifObject::GetSuitable(int scale, feature::EGeomType ft, drule::KeysT & keys) const
+void ClassifObject::GetSuitable(int scale, feature::GeomType gt, drule::KeysT & keys) const
 {
-  ASSERT(ft >= 0 && ft <= 2, ());
+  ASSERT(static_cast<int>(gt) >= 0 && static_cast<int>(gt) <= 2, ());
 
   // 2. Check visibility criterion for scale first.
   if (!m_visibility[scale])
@@ -293,7 +293,7 @@ void ClassifObject::GetSuitable(int scale, feature::EGeomType ft, drule::KeysT &
 
   // find rules for 'scale'
   suitable_getter rulesGetter(m_drawRule, keys);
-  rulesGetter.find(ft, scale);
+  rulesGetter.find(static_cast<int>(gt), scale);
 }
 
 bool ClassifObject::IsDrawable(int scale) const
@@ -303,12 +303,12 @@ bool ClassifObject::IsDrawable(int scale) const
 
 bool ClassifObject::IsDrawableAny() const
 {
-  return (m_visibility != TVisibleMask() && !m_drawRule.empty());
+  return (m_visibility != VisibleMask() && !m_drawRule.empty());
 }
 
-bool ClassifObject::IsDrawableLike(feature::EGeomType ft, bool emptyName) const
+bool ClassifObject::IsDrawableLike(feature::GeomType gt, bool emptyName) const
 {
-  ASSERT(ft >= 0 && ft <= 2, ());
+  ASSERT(static_cast<int>(gt) >= 0 && static_cast<int>(gt) <= 2, ());
 
   // check the very common criterion first
   if (!IsDrawableAny())
@@ -325,7 +325,7 @@ bool ClassifObject::IsDrawableLike(feature::EGeomType ft, bool emptyName) const
     ASSERT_LESS(k.m_type, drule::count_of_rules, ());
 
     // In case when feature name is empty we don't take into account caption drawing rules.
-    if ((visible[ft][k.m_type] == 1) &&
+    if ((visible[static_cast<int>(gt)][k.m_type] == 1) &&
         (!emptyName || (k.m_type != drule::caption && k.m_type != drule::pathtext)))
     {
       return true;
@@ -373,12 +373,8 @@ void Classificator::ReadClassificator(istream & s)
   m_coastType = GetTypeByPath({ "natural", "coastline" });
 }
 
-void Classificator::SortClassificator()
-{
-  GetMutableRoot()->Sort();
-}
-
-template <class IterT> uint32_t Classificator::GetTypeByPathImpl(IterT beg, IterT end) const
+template <typename Iter>
+uint32_t Classificator::GetTypeByPathImpl(Iter beg, Iter end) const
 {
   ClassifObject const * p = GetRoot();
 
@@ -404,7 +400,7 @@ uint32_t Classificator::GetTypeByPathSafe(vector<string> const & path) const
 
 uint32_t Classificator::GetTypeByPath(vector<string> const & path) const
 {
-  uint32_t const type = GetTypeByPathImpl(path.begin(), path.end());
+  uint32_t const type = GetTypeByPathImpl(path.cbegin(), path.cend());
   ASSERT_NOT_EQUAL(type, 0, (path));
   return type;
 }
@@ -419,9 +415,7 @@ uint32_t Classificator::GetTypeByPath(initializer_list<char const *> const & lst
 uint32_t Classificator::GetTypeByReadableObjectName(string const & name) const
 {
   ASSERT(!name.empty(), ());
-  vector<string> v;
-  strings::Tokenize(name, "-", [&v] (string const & s) { v.push_back(s); } );
-  return GetTypeByPathSafe(v);
+  return GetTypeByPathSafe(strings::Tokenize(name, "-"));
 }
 
 void Classificator::ReadTypesMapping(istream & s)

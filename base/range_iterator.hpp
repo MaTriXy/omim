@@ -1,9 +1,9 @@
 #pragma once
 
-#include "std/iterator.hpp"
-#include "std/type_traits.hpp"
+#include <iterator>
+#include <type_traits>
 
-namespace my
+namespace base
 {
 // RagneItrator allows to write for loops as follows:
 // for (auto const i : range(N))
@@ -27,12 +27,12 @@ struct RangeIterator
 
   TCounter m_current;
 };
-}  // namespace my
+}  // namespace base
 
 namespace std
 {
 template <typename T>
-struct iterator_traits<my::RangeIterator<T>>
+struct iterator_traits<base::RangeIterator<T>>
 {
   using difference_type = T;
   using value_type = T;
@@ -42,15 +42,14 @@ struct iterator_traits<my::RangeIterator<T>>
 };
 } // namespace std
 
-namespace my
+namespace base
 {
 template <typename TCounter, bool forward>
 struct RangeWrapper
 {
-  using value_type = typename std::remove_cv<TCounter>::type;
+  using value_type = std::remove_cv_t<TCounter>;
   using iterator_base = RangeIterator<value_type>;
-  using iterator =
-      typename std::conditional<forward, iterator_base, std::reverse_iterator<iterator_base>>::type;
+  using iterator = std::conditional_t<forward, iterator_base, std::reverse_iterator<iterator_base>>;
 
   RangeWrapper(TCounter const from, TCounter const to):
       m_begin(from),
@@ -98,4 +97,4 @@ RangeIterator<TCounter> MakeRangeIterator(TCounter const counter)
 {
   return RangeIterator<TCounter>(counter);
 }
-}  // namespace my
+}  // namespace base

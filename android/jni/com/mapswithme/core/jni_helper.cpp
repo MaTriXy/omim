@@ -4,8 +4,8 @@
 
 #include "base/assert.hpp"
 #include "base/exception.hpp"
-#include "base/logging.hpp"
-#include "std/vector.hpp"
+
+#include <vector>
 
 static JavaVM * g_jvm = 0;
 extern JavaVM * GetJVM()
@@ -15,12 +15,24 @@ extern JavaVM * GetJVM()
 
 // Caching is necessary to create class from native threads.
 jclass g_mapObjectClazz;
+jclass g_featureIdClazz;
 jclass g_bookmarkClazz;
-jclass g_myTrackerClazz;
 jclass g_httpClientClazz;
 jclass g_httpParamsClazz;
-jclass g_socketWrapperClazz;
+jclass g_platformSocketClazz;
 jclass g_utilsClazz;
+jclass g_bannerClazz;
+jclass g_ratingClazz;
+jclass g_loggerFactoryClazz;
+jclass g_keyValueClazz;
+jclass g_httpUploaderClazz;
+jclass g_httpPayloadClazz;
+jclass g_httpBackgroundUploaderClazz;
+jclass g_httpUploaderResultClazz;
+jclass g_networkPolicyClazz;
+jclass g_storageUtilsClazz;
+jclass g_elevationInfoClazz;
+jclass g_parsingResultClazz;
 
 extern "C"
 {
@@ -33,12 +45,25 @@ JNI_OnLoad(JavaVM * jvm, void *)
 
   JNIEnv * env = jni::GetEnv();
   g_mapObjectClazz = jni::GetGlobalClassRef(env, "com/mapswithme/maps/bookmarks/data/MapObject");
+  g_featureIdClazz = jni::GetGlobalClassRef(env, "com/mapswithme/maps/bookmarks/data/FeatureId");
   g_bookmarkClazz = jni::GetGlobalClassRef(env, "com/mapswithme/maps/bookmarks/data/Bookmark");
-  g_myTrackerClazz = jni::GetGlobalClassRef(env, "com/my/tracker/MyTracker");
   g_httpClientClazz = jni::GetGlobalClassRef(env, "com/mapswithme/util/HttpClient");
   g_httpParamsClazz = jni::GetGlobalClassRef(env, "com/mapswithme/util/HttpClient$Params");
-  g_socketWrapperClazz = jni::GetGlobalClassRef(env, "com/mapswithme/maps/location/SocketWrapper");
+  g_platformSocketClazz = jni::GetGlobalClassRef(env, "com/mapswithme/maps/location/PlatformSocket");
   g_utilsClazz = jni::GetGlobalClassRef(env, "com/mapswithme/util/Utils");
+  g_bannerClazz = jni::GetGlobalClassRef(env, "com/mapswithme/maps/ads/Banner");
+  g_ratingClazz = jni::GetGlobalClassRef(env, "com/mapswithme/maps/ugc/UGC$Rating");
+  g_loggerFactoryClazz = jni::GetGlobalClassRef(env, "com/mapswithme/util/log/LoggerFactory");
+  g_keyValueClazz = jni::GetGlobalClassRef(env, "com/mapswithme/util/KeyValue");
+  g_httpUploaderClazz = jni::GetGlobalClassRef(env, "com/mapswithme/util/HttpUploader");
+  g_httpPayloadClazz = jni::GetGlobalClassRef(env, "com/mapswithme/util/HttpPayload");
+  g_httpBackgroundUploaderClazz =
+      jni::GetGlobalClassRef(env, "com/mapswithme/util/HttpBackgroundUploader");
+  g_httpUploaderResultClazz = jni::GetGlobalClassRef(env, "com/mapswithme/util/HttpUploader$Result");
+  g_networkPolicyClazz = jni::GetGlobalClassRef(env, "com/mapswithme/util/NetworkPolicy");
+  g_storageUtilsClazz = jni::GetGlobalClassRef(env, "com/mapswithme/util/StorageUtils");
+  g_elevationInfoClazz = jni::GetGlobalClassRef(env, "com/mapswithme/maps/bookmarks/data/ElevationInfo");
+  g_parsingResultClazz = jni::GetGlobalClassRef(env, "com/mapswithme/maps/api/ParsingResult");
 
   return JNI_VERSION_1_6;
 }
@@ -49,12 +74,24 @@ JNI_OnUnload(JavaVM *, void *)
   g_jvm = 0;
   JNIEnv * env = jni::GetEnv();
   env->DeleteGlobalRef(g_mapObjectClazz);
+  env->DeleteGlobalRef(g_featureIdClazz);
   env->DeleteGlobalRef(g_bookmarkClazz);
-  env->DeleteGlobalRef(g_myTrackerClazz);
   env->DeleteGlobalRef(g_httpClientClazz);
   env->DeleteGlobalRef(g_httpParamsClazz);
-  env->DeleteGlobalRef(g_socketWrapperClazz);
+  env->DeleteGlobalRef(g_platformSocketClazz);
   env->DeleteGlobalRef(g_utilsClazz);
+  env->DeleteGlobalRef(g_bannerClazz);
+  env->DeleteGlobalRef(g_ratingClazz);
+  env->DeleteGlobalRef(g_loggerFactoryClazz);
+  env->DeleteGlobalRef(g_keyValueClazz);
+  env->DeleteGlobalRef(g_httpUploaderClazz);
+  env->DeleteGlobalRef(g_httpPayloadClazz);
+  env->DeleteGlobalRef(g_httpBackgroundUploaderClazz);
+  env->DeleteGlobalRef(g_httpUploaderResultClazz);
+  env->DeleteGlobalRef(g_networkPolicyClazz);
+  env->DeleteGlobalRef(g_storageUtilsClazz);
+  env->DeleteGlobalRef(g_elevationInfoClazz);
+  env->DeleteGlobalRef(g_parsingResultClazz);
 }
 } // extern "C"
 
@@ -64,8 +101,10 @@ JNIEnv * GetEnv()
 {
   JNIEnv * env;
   if (JNI_OK != g_jvm->GetEnv((void **)&env, JNI_VERSION_1_6))
-    MYTHROW(RootException, ("Can't get JNIEnv. Was thread attached to JVM?"));
-
+  {
+    LOG(LERROR, ("Can't get JNIEnv. Is the thread attached to JVM?"));
+    MYTHROW(RootException, ("Can't get JNIEnv. Is the thread attached to JVM?"));
+  }
   return env;
 }
 
@@ -92,6 +131,13 @@ jmethodID GetStaticMethodID(JNIEnv * env, jclass clazz, char const * name, char 
   return mid;
 }
 
+jfieldID GetStaticFieldID(JNIEnv * env, jclass clazz, char const * name, char const * signature)
+{
+  jfieldID fid = env->GetStaticFieldID(clazz, name, signature);
+  ASSERT(fid, ("Can't get static field ID", name, signature, DescribeException()));
+  return fid;
+}
+
 jmethodID GetConstructorID(JNIEnv * env, jclass clazz, char const * signature)
 {
   jmethodID const ctorID = env->GetMethodID(clazz, "<init>", signature);
@@ -106,9 +152,9 @@ jclass GetGlobalClassRef(JNIEnv * env, char const * sig)
   return static_cast<jclass>(env->NewGlobalRef(klass));
 }
 
-string ToNativeString(JNIEnv * env, jstring str)
+std::string ToNativeString(JNIEnv * env, jstring str)
 {
-  string result;
+  std::string result;
   char const * utfBuffer = env->GetStringUTFChars(str, 0);
   if (utfBuffer)
   {
@@ -118,26 +164,17 @@ string ToNativeString(JNIEnv * env, jstring str)
   return result;
 }
 
-string ToNativeString(JNIEnv * env, jbyteArray const & bytes)
+std::string ToNativeString(JNIEnv * env, jbyteArray const & bytes)
 {
   int const len = env->GetArrayLength(bytes);
-  vector<char> buffer(len);
+  std::vector<char> buffer(len);
   env->GetByteArrayRegion(bytes, 0, len, reinterpret_cast<jbyte *>(buffer.data()));
-  return string(buffer.data(), len);
+  return std::string(buffer.data(), len);
 }
 
 jstring ToJavaString(JNIEnv * env, char const * s)
 {
   return env->NewStringUTF(s);
-}
-
-jobjectArray ToJavaStringArray(JNIEnv * env, vector<string> const & src)
-{
-  return ToJavaArray(env, GetStringClass(env), src,
-                     [](JNIEnv * env, string const & item)
-                     {
-                       return ToJavaString(env, item.c_str());
-                     });
 }
 
 jclass GetStringClass(JNIEnv * env)
@@ -159,34 +196,70 @@ struct global_ref_deleter
   }
 };
 
-shared_ptr<jobject> make_global_ref(jobject obj)
+std::shared_ptr<jobject> make_global_ref(jobject obj)
 {
   jobject * ref = new jobject;
   *ref = GetEnv()->NewGlobalRef(obj);
-  return shared_ptr<jobject>(ref, global_ref_deleter());
+  return std::shared_ptr<jobject>(ref, global_ref_deleter());
 }
 
-string DescribeException()
+std::string ToNativeString(JNIEnv * env, const jthrowable & e)
+{
+  jni::TScopedLocalClassRef logClassRef(env, env->FindClass("android/util/Log"));
+  ASSERT(logClassRef.get(), ());
+  static jmethodID const getStacktraceMethod =
+    jni::GetStaticMethodID(env, logClassRef.get(), "getStackTraceString",
+                           "(Ljava/lang/Throwable;)Ljava/lang/String;");
+  ASSERT(getStacktraceMethod, ());
+  TScopedLocalRef resultRef(env, env->CallStaticObjectMethod(logClassRef.get(), getStacktraceMethod, e));
+  return ToNativeString(env, (jstring) resultRef.get());
+}
+
+
+bool HandleJavaException(JNIEnv * env)
+{
+  if (env->ExceptionCheck())
+   {
+     jni::ScopedLocalRef<jthrowable> const e(env, env->ExceptionOccurred());
+     env->ExceptionDescribe();
+     env->ExceptionClear();
+     base::LogLevel level = GetLogLevelForException(env, e.get());
+     LOG(level, (ToNativeString(env, e.get())));
+     return true;
+   }
+   return false;
+}
+
+base::LogLevel GetLogLevelForException(JNIEnv * env, const jthrowable & e)
+{
+  static jclass const errorClass = jni::GetGlobalClassRef(env, "java/lang/Error");
+  ASSERT(errorClass, (jni::DescribeException()));
+  static jclass const runtimeExceptionClass =
+    jni::GetGlobalClassRef(env, "java/lang/RuntimeException");
+  ASSERT(runtimeExceptionClass, (jni::DescribeException()));
+  // If Unchecked Exception or Error is occurred during Java call the app should fail immediately.
+  // In other cases, just a warning message about exception (Checked Exception)
+  // will be written into LogCat.
+  if (env->IsInstanceOf(e, errorClass) || env->IsInstanceOf(e, runtimeExceptionClass))
+    return LERROR;
+
+  return LWARNING;
+}
+
+std::string DescribeException()
 {
   JNIEnv * env = GetEnv();
 
   if (env->ExceptionCheck())
   {
-    jthrowable e = env->ExceptionOccurred();
+    jni::ScopedLocalRef<jthrowable> const e(env, env->ExceptionOccurred());
 
     // have to clear the exception before JNI will work again.
     env->ExceptionClear();
 
-    jclass eclass = env->GetObjectClass(e);
-
-    jmethodID mid = env->GetMethodID(eclass, "toString", "()Ljava/lang/String;");
-
-    jstring jErrorMsg = (jstring) env->CallObjectMethod(e, mid);
-
-    return ToNativeString(env, jErrorMsg);
+    return ToNativeString(env, e.get());
   }
-
-  return "";
+  return {};
 }
 
 jobject GetNewParcelablePointD(JNIEnv * env, m2::PointD const & point)
@@ -224,5 +297,31 @@ void DumpDalvikReferenceTables()
   jmethodID dump_mid = env->GetStaticMethodID(vm_class, "dumpReferenceTables", "()V");
   env->CallStaticVoidMethod(vm_class, dump_mid);
   env->DeleteLocalRef(vm_class);
+}
+
+jobject ToKeyValue(JNIEnv * env, std::pair<std::string, std::string> src)
+{
+  static jmethodID const keyValueInit = jni::GetConstructorID(
+    env, g_keyValueClazz, "(Ljava/lang/String;Ljava/lang/String;)V");
+
+  jni::TScopedLocalRef key(env, jni::ToJavaString(env, src.first));
+  jni::TScopedLocalRef value(env, jni::ToJavaString(env, src.second));
+
+  return env->NewObject(g_keyValueClazz, keyValueInit, key.get(), value.get());
+}
+
+std::pair<std::string, std::string> ToNativeKeyValue(JNIEnv * env, jobject pairOfStrings)
+{
+  static jfieldID const keyId = env->GetFieldID(g_keyValueClazz, "mKey",
+                                                  "Ljava/lang/String;");
+  static jfieldID const valueId = env->GetFieldID(g_keyValueClazz, "mValue",
+                                                   "Ljava/lang/String;");
+
+  jni::ScopedLocalRef<jstring> const key(
+    env, static_cast<jstring>(env->GetObjectField(pairOfStrings, keyId)));
+  jni::ScopedLocalRef<jstring> const value(
+    env, static_cast<jstring>(env->GetObjectField(pairOfStrings, valueId)));
+
+  return { jni::ToNativeString(env, key.get()), jni::ToNativeString(env, value.get()) };
 }
 }  // namespace jni

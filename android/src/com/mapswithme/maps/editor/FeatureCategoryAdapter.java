@@ -1,8 +1,8 @@
 package com.mapswithme.maps.editor;
 
-import android.support.annotation.NonNull;
-import android.support.annotation.Nullable;
-import android.support.v7.widget.RecyclerView;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import androidx.recyclerview.widget.RecyclerView;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
@@ -51,29 +51,26 @@ public class FeatureCategoryAdapter extends RecyclerView.Adapter<FeatureCategory
 
   protected class FeatureViewHolder extends RecyclerView.ViewHolder
   {
-    TextView name;
-    View selected;
+    @NonNull
+    private final TextView mName;
+    @NonNull
+    private final View mSelected;
 
-    public FeatureViewHolder(View itemView)
+    FeatureViewHolder(@NonNull View itemView)
     {
       super(itemView);
-      name = (TextView) itemView.findViewById(R.id.name);
-      selected = itemView.findViewById(R.id.selected);
-      UiUtils.hide(selected);
-      itemView.setOnClickListener(new View.OnClickListener()
-      {
-        @Override
-        public void onClick(View v)
-        {
-          onCategorySelected(getAdapterPosition());
-        }
-      });
+      mName = itemView.findViewById(R.id.name);
+      mSelected = itemView.findViewById(R.id.selected);
+      UiUtils.hide(mSelected);
+      itemView.setOnClickListener(v -> onCategorySelected(getAdapterPosition()));
     }
 
     public void bind(int position)
     {
-      name.setText(mCategories[position].name);
-      UiUtils.showIf(mSelectedCategory != null && mCategories[position].category == mSelectedCategory.category, selected);
+      mName.setText(mCategories[position].getLocalizedTypeName());
+      boolean showCondition = mSelectedCategory != null
+                              && mCategories[position].getType().equals(mSelectedCategory.getType());
+      UiUtils.showIf(showCondition, mSelected);
     }
   }
 

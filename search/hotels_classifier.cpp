@@ -1,31 +1,43 @@
 #include "search/hotels_classifier.hpp"
 
-#include "std/cstdint.hpp"
+#include "search/result.hpp"
+
+#include "indexer/ftypes_matcher.hpp"
+
+#include "base/logging.hpp"
+
+using namespace std;
 
 namespace search
 {
-// static
-bool HotelsClassifier::IsHotelResults(Results const & results)
+void HotelsClassifier::Add(Result const & result)
 {
-  HotelsClassifier classifier;
-  classifier.Add(results.begin(), results.end());
-  return classifier.IsHotelResults();
+  if (result.m_details.m_isHotel)
+    ++m_numHotels;
+
+  ++m_numResults;
 }
 
-void HotelsClassifier::Add(Results::Iter begin, Results::Iter end)
+void HotelsClassifier::PrecheckHotelQuery(vector<uint32_t> const & types)
 {
-  for (; begin != end; ++begin)
-  {
-    m_numHotels += (*begin).m_metadata.m_isHotel;
-    ++m_numResults;
-  }
+  m_looksLikeHotelQuery = ftypes::IsHotelChecker::Instance()(types);
+}
+
+void HotelsClassifier::Clear()
+{
+  m_numHotels = 0;
+  m_numResults = 0;
+  m_looksLikeHotelQuery = false;
 }
 
 bool HotelsClassifier::IsHotelResults() const
 {
+  if (m_looksLikeHotelQuery)
+    return true;
+
   // Threshold used to activate hotels mode. Probably is too strict,
   // but we don't have statistics now.
-  double const kThreshold = 0.95;
+  double const kThreshold = 0.75;
 
   return m_numResults == 0 ? false : m_numHotels >= kThreshold * m_numResults;
 }

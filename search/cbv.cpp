@@ -1,9 +1,9 @@
 #include "search/cbv.hpp"
 
-#include "std/limits.hpp"
-#include "std/vector.hpp"
+#include <limits>
+#include <vector>
 
-using namespace my;
+using namespace std;
 
 namespace search
 {
@@ -12,9 +12,18 @@ namespace
 uint64_t const kModulo = 18446744073709551557LLU;
 }  // namespace
 
+// static
+CBV const & CBV::GetFull()
+{
+  static CBV const fullCBV(true /*full*/);
+  return fullCBV;
+}
+
 CBV::CBV(unique_ptr<coding::CompressedBitVector> p) : m_p(move(p)) {}
 
 CBV::CBV(CBV && cbv) : m_p(move(cbv.m_p)), m_isFull(cbv.m_isFull) { cbv.m_isFull = false; }
+
+CBV::CBV(bool full) : m_isFull(full) {}
 
 CBV & CBV::operator=(unique_ptr<coding::CompressedBitVector> p)
 {
@@ -90,7 +99,7 @@ CBV CBV::Take(uint64_t n) const
     return *this;
   if (IsFull())
   {
-    vector<uint64_t> groups((n + 63) / 64, numeric_limits<uint64_t>::max());
+    vector<uint64_t> groups(static_cast<size_t>((n + 63) / 64), numeric_limits<uint64_t>::max());
     uint64_t const r = n % 64;
     if (r != 0)
     {

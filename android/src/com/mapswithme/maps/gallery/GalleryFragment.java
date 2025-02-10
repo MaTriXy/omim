@@ -2,10 +2,10 @@ package com.mapswithme.maps.gallery;
 
 import android.graphics.drawable.Drawable;
 import android.os.Bundle;
-import android.support.annotation.Nullable;
-import android.support.v4.content.ContextCompat;
-import android.support.v7.widget.GridLayoutManager;
-import android.support.v7.widget.RecyclerView;
+import androidx.annotation.Nullable;
+import androidx.core.content.ContextCompat;
+import androidx.recyclerview.widget.GridLayoutManager;
+import androidx.recyclerview.widget.RecyclerView;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
@@ -43,7 +43,7 @@ public class GalleryFragment extends BaseMwmFragment implements RecyclerClickLis
       RecyclerView rvGallery = (RecyclerView) view.findViewById(R.id.rv__gallery);
       rvGallery.setLayoutManager(new GridLayoutManager(getContext(), NUM_COLUMNS));
       rvGallery.setAdapter(new ImageAdapter(mImages, this));
-      Drawable divider = ContextCompat.getDrawable(getContext(), R.drawable.divider_transparent);
+      Drawable divider = ContextCompat.getDrawable(getContext(), R.drawable.divider_transparent_quarter);
       rvGallery.addItemDecoration(new GridDividerItemDecoration(divider, divider, NUM_COLUMNS));
     }
   }

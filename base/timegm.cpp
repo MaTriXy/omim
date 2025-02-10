@@ -3,7 +3,7 @@
 #include "base/assert.hpp"
 #include "base/timer.hpp"
 
-#include "std/chrono.hpp"
+#include <chrono>
 
 // There are issues with this implementation due to absence
 // of time_t fromat specification. There are no guarantees
@@ -69,7 +69,7 @@ time_t TimeGM(std::tm const & tm)
   minutes = hours * 60 + tm.tm_min;
   seconds = minutes * 60 + tm.tm_sec;
 
-  return my::SecondsSinceEpochToTimeT(seconds);
+  return base::SecondsSinceEpochToTimeT(seconds);
 }
 
 time_t TimeGM(int year, int month, int day, int hour, int min, int sec)

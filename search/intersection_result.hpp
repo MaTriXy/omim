@@ -2,8 +2,9 @@
 
 #include "search/model.hpp"
 
-#include "std/cstdint.hpp"
-#include "std/string.hpp"
+#include <cstdint>
+#include <limits>
+#include <string>
 
 namespace search
 {
@@ -11,13 +12,11 @@ namespace search
 // i.e. BUILDING and STREET for POI or STREET for BUILDING.
 struct IntersectionResult
 {
-  static uint32_t const kInvalidId;
+  static uint32_t constexpr kInvalidId = std::numeric_limits<uint32_t>::max();
 
-  IntersectionResult();
+  void Set(Model::Type type, uint32_t id);
 
-  void Set(SearchModel::SearchType type, uint32_t id);
-
-  // Returns the first valid feature among the [POI, BUILDING,
+  // Returns the first valid feature among the [SUBPOI, COMPLEX_POI, BUILDING,
   // STREET].
   uint32_t InnermostResult() const;
 
@@ -27,11 +26,12 @@ struct IntersectionResult
   // Clears all fields to an invalid state.
   void Clear();
 
-  uint32_t m_poi;
-  uint32_t m_building;
-  uint32_t m_street;
+  uint32_t m_subpoi = kInvalidId;
+  uint32_t m_complexPoi = kInvalidId;
+  uint32_t m_building = kInvalidId;
+  uint32_t m_street = kInvalidId;
+  uint32_t m_suburb = kInvalidId;
 };
 
-string DebugPrint(IntersectionResult const & result);
-
+std::string DebugPrint(IntersectionResult const & result);
 }  // namespace search

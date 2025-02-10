@@ -1,40 +1,43 @@
 #pragma once
+
+#include "search/bookmarks/processor.hpp"
+#include "search/bookmarks/types.hpp"
 #include "search/categories_cache.hpp"
 #include "search/categories_set.hpp"
+#include "search/cities_boundaries_table.hpp"
+#include "search/common.hpp"
 #include "search/emitter.hpp"
 #include "search/geocoder.hpp"
-#include "search/hotels_filter.hpp"
-#include "search/mode.hpp"
 #include "search/pre_ranker.hpp"
-#include "search/rank_table_cache.hpp"
 #include "search/ranker.hpp"
 #include "search/search_params.hpp"
 #include "search/search_trie.hpp"
 #include "search/suggest.hpp"
 #include "search/token_slice.hpp"
+#include "search/utils.hpp"
 
-#include "indexer/ftypes_matcher.hpp"
-#include "indexer/index.hpp"
-#include "indexer/rank_table.hpp"
 #include "indexer/string_slice.hpp"
+
+#include "coding/string_utf8_multilang.hpp"
 
 #include "geometry/rect2d.hpp"
 
-#include "base/buffer_vector.hpp"
 #include "base/cancellable.hpp"
-#include "base/limited_priority_queue.hpp"
+#include "base/mem_trie.hpp"
 #include "base/string_utils.hpp"
 
-#include "std/function.hpp"
-#include "std/map.hpp"
-#include "std/shared_ptr.hpp"
-#include "std/string.hpp"
-#include "std/unique_ptr.hpp"
-#include "std/unordered_set.hpp"
-#include "std/vector.hpp"
+#include <cstddef>
+#include <cstdint>
+#include <memory>
+#include <optional>
+#include <string>
+#include <utility>
+#include <vector>
 
 class FeatureType;
 class CategoriesHolder;
+class DataSource;
+class MwmInfo;
 
 namespace coding
 {
@@ -48,144 +51,136 @@ class CountryInfoGetter;
 
 namespace search
 {
-struct Locality;
-struct Region;
-struct QueryParams;
+class Geocoder;
+class QueryParams;
+class Ranker;
 class ReverseGeocoder;
 
-class Geocoder;
-class Ranker;
-// todo(@m) Merge with Ranker.
-class PreResult2Maker;
-
-class FeatureLoader;
-class DoFindLocality;
-class HouseCompFactory;
-
-class Processor : public my::Cancellable
+class Processor : public base::Cancellable
 {
 public:
   // Maximum result candidates count for each viewport/criteria.
   static size_t const kPreResultsCount;
 
-  static double const kMinViewportRadiusM;
-  static double const kMaxViewportRadiusM;
+  Processor(DataSource const & dataSource, CategoriesHolder const & categories,
+            std::vector<Suggest> const & suggests, storage::CountryInfoGetter const & infoGetter);
 
-  Processor(Index const & index, CategoriesHolder const & categories,
-            vector<Suggest> const & suggests, storage::CountryInfoGetter const & infoGetter);
+  void SetViewport(m2::RectD const & viewport);
+  void SetPreferredLocale(std::string const & locale);
+  void SetInputLocale(std::string const & locale);
+  void SetQuery(std::string const & query);
+  inline std::string const & GetPivotRegion() const { return m_region; }
 
-  inline void SupportOldFormat(bool b) { m_supportOldFormat = b; }
+  inline bool IsEmptyQuery() const { return m_prefix.empty() && m_tokens.empty(); }
 
-  void Init(bool viewportSearch);
+  void Search(SearchParams const & params);
 
-  /// @param[in]  forceUpdate Pass true (default) to recache feature's ids even
-  /// if viewport is a part of the old cached rect.
-  void SetViewport(m2::RectD const & viewport, bool forceUpdate);
-  void SetPreferredLocale(string const & locale);
-  void SetInputLocale(string const & locale);
-  void SetQuery(string const & query);
-  // TODO (@y): this function must be removed.
-  void SetRankPivot(m2::PointD const & pivot);
-  inline void SetMode(Mode mode) { m_mode = mode; }
-  inline void SetSuggestsEnabled(bool enabled) { m_suggestsEnabled = enabled; }
-  inline void SetPosition(m2::PointD const & position) { m_position = position; }
-  inline void SetMinDistanceOnMapBetweenResults(double distance)
-  {
-    m_minDistanceOnMapBetweenResults = distance;
-  }
-  inline void SetOnResults(SearchParams::TOnResults const & onResults) { m_onResults = onResults; }
-  inline string const & GetPivotRegion() const { return m_region; }
-  inline m2::PointD const & GetPosition() const { return m_position; }
-
-  /// Suggestions language code, not the same as we use in mwm data
-  int8_t m_inputLocaleCode, m_currentLocaleCode;
-
-  inline bool IsEmptyQuery() const { return (m_prefix.empty() && m_tokens.empty()); }
-  void Search(SearchParams const & params, m2::RectD const & viewport);
-
+  // Tries to parse a custom debugging command from |m_query|.
+  void SearchDebug();
   // Tries to generate a (lat, lon) result from |m_query|.
   void SearchCoordinates();
+  // Tries to parse a plus code from |m_query| and generate a (lat, lon) result.
+  void SearchPlusCode();
+  // Tries to parse a postcode from |m_query| and generate a (lat, lon) result based on
+  // POSTCODE_POINTS section.
+  void SearchPostcode();
 
-  void InitParams(QueryParams & params);
+  void SearchBookmarks(bookmarks::GroupId const & groupId);
 
-  void InitGeocoder(Geocoder::Params & params);
-  void InitPreRanker(Geocoder::Params const & geocoderParams);
-  void InitRanker(Geocoder::Params const & geocoderParams);
-  void InitEmitter();
+  void InitParams(QueryParams & params) const;
+
+  void InitGeocoder(Geocoder::Params & geocoderParams, SearchParams const & searchParams);
+  void InitPreRanker(Geocoder::Params const & geocoderParams, SearchParams const & searchParams);
+  void InitRanker(Geocoder::Params const & geocoderParams, SearchParams const & searchParams);
+  void InitEmitter(SearchParams const & searchParams);
 
   void ClearCaches();
+  void CacheWorldLocalities();
+  void LoadCitiesBoundaries();
+  void LoadCountriesTree();
+
+  void EnableIndexingOfBookmarksDescriptions(bool enable);
+  void EnableIndexingOfBookmarkGroup(bookmarks::GroupId const & groupId, bool enable);
+
+  void ResetBookmarks();
+
+  void OnBookmarksCreated(std::vector<std::pair<bookmarks::Id, bookmarks::Doc>> const & marks);
+  void OnBookmarksUpdated(std::vector<std::pair<bookmarks::Id, bookmarks::Doc>> const & marks);
+  void OnBookmarksDeleted(std::vector<bookmarks::Id> const & marks);
+  void OnBookmarksAttachedToGroup(bookmarks::GroupId const & groupId,
+                                  std::vector<bookmarks::Id> const & marks);
+  void OnBookmarksDetachedFromGroup(bookmarks::GroupId const & groupId,
+                                    std::vector<bookmarks::Id> const & marks);
+
+  // base::Cancellable overrides:
+  void Reset() override;
+  bool IsCancelled() const override;
 
 protected:
-  enum ViewportID
-  {
-    DEFAULT_V = -1,
-    CURRENT_V = 0,
-    LOCALITY_V = 1,
-    COUNT_V = 2  // Should always be the last
-  };
+  // Show feature by FeatureId. May try to guess as much as possible after the "fid=" prefix but
+  // at least supports the formats below.
+  // 0. fid=123 or ?fid=123 to search for the feature with index 123, results ordered by distance
+  //    from |m_position| or |m_viewport|, whichever is present and closer.
+  // 1. fid=MwmName,123 or fid=(MwmName,123) to search for the feature with
+  //    index 123 in the Mwm "MwmName" (for example, "Laos" or "Laos.mwm").
+  // 2. fid={ MwmId [Laos, 200623], 123 } or just { MwmId [Laos, 200623], 123 } or whatever current
+  //    format of the string returned by FeatureID's DebugPrint is.
+  void SearchByFeatureId();
 
-  friend string DebugPrint(ViewportID viewportId);
-
-  friend class BestNameFinder;
-  friend class DoFindLocality;
-  friend class FeatureLoader;
-  friend class HouseCompFactory;
-  friend class PreResult2Maker;
-  friend class Ranker;
-
-  using TMWMVector = vector<shared_ptr<MwmInfo>>;
-  using TOffsetsVector = map<MwmSet::MwmId, vector<uint32_t>>;
-  using TFHeader = feature::DataHeader;
-  using TLocales = buffer_vector<int8_t, 3>;
-
-  TLocales GetCategoryLocales() const;
+  Locales GetCategoryLocales() const;
 
   template <typename ToDo>
-  void ForEachCategoryType(StringSliceBase const & slice, ToDo && todo) const;
+  void ForEachCategoryType(StringSliceBase const & slice, ToDo && toDo) const;
 
-  m2::PointD GetPivotPoint() const;
-  m2::RectD GetPivotRect() const;
+  template <typename ToDo>
+  void ForEachCategoryTypeFuzzy(StringSliceBase const & slice, ToDo && toDo) const;
 
-  void SetViewportByIndex(m2::RectD const & viewport, size_t idx, bool forceUpdate);
-  void ClearCache(size_t ind);
+  m2::PointD GetPivotPoint(bool viewportSearch) const;
+  m2::RectD GetPivotRect(bool viewportSearch) const;
+
+  m2::RectD const & GetViewport() const;
+
+  void EmitFeatureIfExists(std::vector<std::shared_ptr<MwmInfo>> const & infos,
+                           storage::CountryId const & mwmName, std::optional<uint32_t> version,
+                           uint32_t fid);
+  // The results are sorted by distance (to a point from |m_viewport| or |m_position|)
+  // before being emitted.
+  void EmitFeaturesByIndexFromAllMwms(std::vector<std::shared_ptr<MwmInfo>> const & infos,
+                                      uint32_t fid);
 
   CategoriesHolder const & m_categories;
   storage::CountryInfoGetter const & m_infoGetter;
+  using CountriesTrie = base::MemTrie<storage::CountryId, base::VectorValues<bool>>;
+  CountriesTrie m_countriesTrie;
 
-  string m_region;
-  string m_query;
-  buffer_vector<strings::UniString, 32> m_tokens;
+  std::string m_region;
+  std::string m_query;
+  QueryTokens m_tokens;
   strings::UniString m_prefix;
-  set<uint32_t> m_preferredTypes;
+  bool m_isCategorialRequest;
+  std::vector<uint32_t> m_preferredTypes;
+  std::vector<uint32_t> m_cuisineTypes;
 
-  m2::RectD m_viewport[COUNT_V];
-  m2::PointD m_pivot;
-  m2::PointD m_position;
-  double m_minDistanceOnMapBetweenResults;
-  Mode m_mode;
-  bool m_suggestsEnabled;
-  shared_ptr<hotels_filter::Rule> m_hotelsFilter;
-  SearchParams::TOnResults m_onResults;
+  m2::RectD m_viewport;
+  std::optional<m2::PointD> m_position;
 
-  /// @name Get ranking params.
-  //@{
-  /// @return Rect for viewport-distance calculation.
-  m2::RectD const & GetViewport(ViewportID vID = DEFAULT_V) const;
-  //@}
+  bool m_lastUpdate = false;
 
-  void SetLanguage(int id, int8_t lang);
-  int8_t GetLanguage(int id) const;
+  // Suggestions language code, not the same as we use in mwm data
+  int8_t m_inputLocaleCode = StringUtf8Multilang::kUnsupportedLanguageCode;
+  int8_t m_currentLocaleCode = StringUtf8Multilang::kUnsupportedLanguageCode;
 
-  bool m_supportOldFormat;
+  DataSource const & m_dataSource;
 
-protected:
-  bool m_viewportSearch;
+  Geocoder::LocalitiesCaches m_localitiesCaches;
+  CitiesBoundariesTable m_citiesBoundaries;
 
-  VillagesCache m_villagesCache;
-
+  KeywordLangMatcher m_keywordsScorer;
   Emitter m_emitter;
   Ranker m_ranker;
   PreRanker m_preRanker;
   Geocoder m_geocoder;
+
+  bookmarks::Processor m_bookmarksProcessor;
 };
 }  // namespace search

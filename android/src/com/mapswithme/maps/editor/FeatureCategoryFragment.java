@@ -1,7 +1,9 @@
 package com.mapswithme.maps.editor;
 
 import android.os.Bundle;
-import android.support.v7.widget.RecyclerView;
+import androidx.annotation.CallSuper;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
@@ -12,8 +14,11 @@ import com.mapswithme.maps.editor.data.FeatureCategory;
 import com.mapswithme.maps.widget.SearchToolbarController;
 import com.mapswithme.maps.widget.ToolbarController;
 import com.mapswithme.util.Language;
+import com.mapswithme.util.Utils;
 
-public class FeatureCategoryFragment extends BaseMwmRecyclerFragment
+import java.util.Arrays;
+
+public class FeatureCategoryFragment extends BaseMwmRecyclerFragment<FeatureCategoryAdapter>
 {
   private FeatureCategory mSelectedCategory;
   protected ToolbarController mToolbarController;
@@ -29,8 +34,9 @@ public class FeatureCategoryFragment extends BaseMwmRecyclerFragment
     return inflater.inflate(R.layout.fragment_categories, container, false);
   }
 
+  @CallSuper
   @Override
-  public void onViewCreated(View view, Bundle savedInstanceState)
+  public void onViewCreated(@NonNull View view, @Nullable Bundle savedInstanceState)
   {
     super.onViewCreated(view, savedInstanceState);
 
@@ -48,14 +54,43 @@ public class FeatureCategoryFragment extends BaseMwmRecyclerFragment
 
   private void setFilter(String query)
   {
-    ((FeatureCategoryAdapter) getAdapter()).setCategories(query.isEmpty() ? Editor.nativeGetAllFeatureCategories(Language.getKeyboardLocale())
-                                                                          : Editor.nativeSearchFeatureCategories(query, Language.getKeyboardLocale()));
+    String locale = Language.getDefaultLocale();
+    String[] creatableTypes = query.isEmpty()
+                              ? Editor.nativeGetAllCreatableFeatureTypes(locale)
+                              : Editor.nativeSearchCreatableFeatureTypes(query, locale);
+
+    FeatureCategory[] categories = makeFeatureCategoriesFromTypes(creatableTypes);
+
+    getAdapter().setCategories(categories);
   }
 
+  @NonNull
   @Override
-  protected RecyclerView.Adapter createAdapter()
+  protected FeatureCategoryAdapter createAdapter()
   {
-    return new FeatureCategoryAdapter(this, Editor.nativeGetAllFeatureCategories(Language.getKeyboardLocale()), mSelectedCategory);
+    String locale = Language.getDefaultLocale();
+    String[] creatableTypes = Editor.nativeGetAllCreatableFeatureTypes(locale);
+
+    FeatureCategory[] categories = makeFeatureCategoriesFromTypes(creatableTypes);
+
+    return new FeatureCategoryAdapter(this, categories, mSelectedCategory);
+  }
+
+  @NonNull
+  private FeatureCategory[] makeFeatureCategoriesFromTypes(@NonNull String[] creatableTypes)
+  {
+    FeatureCategory[] categories = new FeatureCategory[creatableTypes.length];
+
+    for (int i = 0; i < creatableTypes.length; ++i)
+    {
+      String localizedType = Utils.getLocalizedFeatureType(getContext(), creatableTypes[i]);
+      categories[i] = new FeatureCategory(creatableTypes[i], localizedType);
+    }
+
+    Arrays.sort(categories, (lhs, rhs) ->
+      lhs.getLocalizedTypeName().compareTo(rhs.getLocalizedTypeName()));
+
+    return categories;
   }
 
   public void selectCategory(FeatureCategory category)

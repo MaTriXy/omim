@@ -17,7 +17,7 @@ EXPECTED_PERMISSIONS = {
     "uses-permission: android.permission.CHANGE_WIFI_STATE",
     "uses-permission: android.permission.ACCESS_NETWORK_STATE",
     "uses-permission: android.permission.WAKE_LOCK",
-    "uses-permission: android.permission.GET_ACCOUNTS",
+    "uses-permission: android.permission.BATTERY_STATS",
     "uses-permission: com.google.android.c2dm.permission.RECEIVE",
     "permission: com.mapswithme.maps.pro.permission.C2D_MESSAGE",
     "uses-permission: com.mapswithme.maps.pro.permission.C2D_MESSAGE",
@@ -83,7 +83,6 @@ class TestPermissions(unittest.TestCase):
     def contains_correct_files(self, my_path):
         dir_contents = listdir(my_path)
         return (
-            "strings.txt" in dir_contents or
             "android" in dir_contents or
             "drape_frontend" in dir_contents
         )

@@ -1,9 +1,20 @@
 <?xml version="1.0" encoding="utf-8"?>
-<FrameLayout
+<LinearLayout
   xmlns:android="http://schemas.android.com/apk/res/android"
   xmlns:tools="http://schemas.android.com/tools"
   android:layout_width="match_parent"
-  android:layout_height="wrap_content">
+  android:layout_height="wrap_content"
+  android:background="?windowBackgroundForced"
+  android:orientation="vertical">
+
+  <include layout="@layout/place_page_fat_shadow"/>
+
+  <include layout="@layout/catalog_promo_container"
+    tools:visibility="gone"/>
+
+  <include
+    android:id="@+id/place_page_promo_divider"
+    layout="@layout/divider_horizontal"/>
 
   <LinearLayout
     android:layout_width="match_parent"
@@ -12,22 +23,37 @@
     android:orientation="vertical">
 
     <include
-      layout="@layout/divider_horizontal"/>
+      layout="@layout/place_page_description_header"
+      android:layout_width="match_parent"
+      android:visibility="gone"
+      android:layout_height="wrap_content"/>
 
     <include
       layout="@layout/place_page_bookmark_details"
       android:layout_width="match_parent"
       android:layout_height="wrap_content"
+      tools:visibility="visible"/>
+
+    <include
+      layout="@layout/place_page_description_layout"
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
       android:layout_marginBottom="@dimen/margin_half"
-      tools:visibility="gone"/>
+      tools:visibility="visible"/>
 
     <include layout="@layout/place_page_hotel_gallery"/>
 
-    <include layout="@layout/place_page_hotel_facilities"/>
-
     <include layout="@layout/place_page_hotel_description"/>
 
+    <include layout="@layout/place_page_hotel_facilities"/>
+
+    <include layout="@layout/place_page_hotel_nearby"/>
+
+    <include layout="@layout/place_page_hotel_rating"/>
+
     <include layout="@layout/place_page_placename"/>
+
+    <include layout="@layout/place_page_key_info_header"/>
 
     <include layout="@layout/place_page_opening_hours"/>
 
@@ -41,32 +67,49 @@
 
     <include layout="@layout/place_page_email"/>
 
-    <include layout="@layout/place_page_latlon"/>
-
     <include layout="@layout/place_page_wifi"/>
 
     <include layout="@layout/place_page_operator"/>
 
     <include layout="@layout/place_page_cuisine"/>
 
-    <include layout="@layout/place_page_hotel_nearby"/>
+    <include layout="@layout/place_page_latlon"/>
 
-    <include layout="@layout/place_page_hotel_rating"/>
-
-    <!--TODO: remove this after booking_api.cpp will be done-->
     <include layout="@layout/place_page_more"/>
 
-    <include layout="@layout/divider_horizontal"/>
-
-    <include layout="@layout/place_page_editor"/>
-
-    <include layout="@layout/place_page_add_business"/>
-
-    <include layout="@layout/place_page_add"/>
-
+    <include layout="@layout/place_page_local_ad"/>
   </LinearLayout>
 
-  <include layout="@layout/shadow_top"/>
+  <include
+    android:id="@+id/place_page_taxi_shadow"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    layout="@layout/place_page_fat_shadow"/>
 
-  <include layout="@layout/shadow_bottom"/>
-</FrameLayout>
+  <include
+    android:id="@+id/place_page_taxi_divider"
+    android:layout_width="match_parent"
+    android:layout_height="@dimen/divider_height"
+    layout="@layout/divider_horizontal"/>
+
+  <include layout="@layout/place_page_taxi"/>
+
+  <include layout="@layout/place_page_ugc"/>
+
+  <include
+    layout="@layout/place_page_fat_shadow"
+    android:id="@+id/edit_top_space"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"/>
+
+  <include layout="@layout/place_page_editor"/>
+
+  <include layout="@layout/place_page_add_business"/>
+
+  <include layout="@layout/place_page_add"/>
+
+  <androidx.legacy.widget.Space
+    android:layout_width="match_parent"
+    android:layout_height="@dimen/place_page_buttons_height"/>
+
+</LinearLayout>

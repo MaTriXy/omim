@@ -4,21 +4,29 @@
 #include "drape_frontend/tile_key.hpp"
 #include "drape_frontend/shape_view_params.hpp"
 
+#include "drape/drape_diagnostics.hpp"
 #include "drape/pointers.hpp"
 
-#include "indexer/point_to_int64.hpp"
+#include "indexer/ftypes_matcher.hpp"
+#include "indexer/road_shields_parser.hpp"
 
+#include "geometry/clipping.hpp"
 #include "geometry/point2d.hpp"
+#include "geometry/polyline2d.hpp"
 #include "geometry/spline.hpp"
 
-#include "std/unordered_map.hpp"
+#include <functional>
+#include <utility>
+#include <vector>
 
 class CaptionDefProto;
-class CircleRuleProto;
 class ShieldRuleProto;
 class SymbolRuleProto;
 
-//#define CALC_FILTERED_POINTS
+namespace dp
+{
+class TextureManager;
+} // namespace dp
 
 namespace df
 {
@@ -27,21 +35,21 @@ struct TextViewParams;
 class MapShape;
 struct BuildingOutline;
 
-using TInsertShapeFn = function<void(drape_ptr<MapShape> && shape)>;
+using TInsertShapeFn = std::function<void(drape_ptr<MapShape> && shape)>;
 
 class BaseApplyFeature
 {
 public:
-  BaseApplyFeature(m2::PointD const & tileCenter,
-                   TInsertShapeFn const & insertShape, FeatureID const & id,
-                   int minVisibleScale, uint8_t rank, CaptionDescription const & captions);
+  BaseApplyFeature(TileKey const & tileKey, TInsertShapeFn const & insertShape,
+                   FeatureID const & id, int minVisibleScale, uint8_t rank,
+                   CaptionDescription const & captions);
 
-  virtual ~BaseApplyFeature() {}
+  virtual ~BaseApplyFeature() = default;
 
   struct HotelData
   {
     bool m_isHotel = false;
-    string m_rating;
+    std::string m_rating;
     int m_stars = 0;
     int m_priceCategory = 0;
   };
@@ -51,8 +59,8 @@ public:
 protected:
   void ExtractCaptionParams(CaptionDefProto const * primaryProto,
                             CaptionDefProto const * secondaryProto,
-                            double depth, TextViewParams & params) const;
-  string ExtractHotelInfo() const;
+                            float depth, TextViewParams & params) const;
+  std::string ExtractHotelInfo() const;
 
   TInsertShapeFn m_insertShape;
   FeatureID m_id;
@@ -61,7 +69,8 @@ protected:
   uint8_t m_rank;
   HotelData m_hotelData;
 
-  m2::PointD m_tileCenter;
+  TileKey const m_tileKey;
+  m2::RectD const m_tileRect;
 };
 
 class ApplyPointFeature : public BaseApplyFeature
@@ -69,14 +78,14 @@ class ApplyPointFeature : public BaseApplyFeature
   using TBase = BaseApplyFeature;
 
 public:
-  ApplyPointFeature(m2::PointD const & tileCenter,
-                    TInsertShapeFn const & insertShape, FeatureID const & id,
-                    int minVisibleScale, uint8_t rank, CaptionDescription const & captions,
-                    float posZ);
+  ApplyPointFeature(TileKey const & tileKey, TInsertShapeFn const & insertShape,
+                    FeatureID const & id, int minVisibleScale, uint8_t rank,
+                    CaptionDescription const & captions, float posZ,
+                    int displacementMode, DepthLayer depthLayer);
 
-  void operator()(m2::PointD const & point, bool hasArea);
-  void ProcessRule(Stylist::TRuleWrapper const & rule);
-  void Finish();
+  void operator()(m2::PointD const & point, bool hasArea, bool isUGC);
+  void ProcessPointRule(Stylist::TRuleWrapper const & rule);
+  void Finish(ref_ptr<dp::TextureManager> texMng);
 
 protected:
   float const m_posZ;
@@ -86,11 +95,13 @@ private:
   bool m_hasArea;
   bool m_createdByEditor;
   bool m_obsoleteInEditor;
+  bool m_isUGC;
+  DepthLayer m_depthLayer;
   double m_symbolDepth;
-  double m_circleDepth;
   SymbolRuleProto const * m_symbolRule;
-  CircleRuleProto const * m_circleRule;
   m2::PointF m_centerPoint;
+  int m_displacementMode;
+  std::vector<TextViewParams> m_textParams;
 };
 
 class ApplyAreaFeature : public ApplyPointFeature
@@ -98,68 +109,128 @@ class ApplyAreaFeature : public ApplyPointFeature
   using TBase = ApplyPointFeature;
 
 public:
-  ApplyAreaFeature(m2::PointD const & tileCenter,
-                   TInsertShapeFn const & insertShape, FeatureID const & id,
-                   m2::RectD const & clipRect, bool isBuilding, float minPosZ,
-                   float posZ, int minVisibleScale, uint8_t rank,
-                   CaptionDescription const & captions);
+  ApplyAreaFeature(TileKey const & tileKey, TInsertShapeFn const & insertShape,
+                   FeatureID const & id, double currentScaleGtoP, bool isBuilding,
+                   bool skipAreaGeometry, float minPosZ, float posZ, int minVisibleScale,
+                   uint8_t rank, CaptionDescription const & captions, bool hatchingArea);
 
   using TBase::operator ();
 
   void operator()(m2::PointD const & p1, m2::PointD const & p2, m2::PointD const & p3);
-  void ProcessRule(Stylist::TRuleWrapper const & rule);
+  void ProcessAreaRule(Stylist::TRuleWrapper const & rule);
+
+  struct Edge
+  {
+    Edge() = default;
+    Edge(int startIndex, int endIndex) : m_startIndex(startIndex), m_endIndex(endIndex) {}
+
+    bool operator==(Edge const & edge) const
+    {
+      return (m_startIndex == edge.m_startIndex && m_endIndex == edge.m_endIndex) ||
+        (m_startIndex == edge.m_endIndex && m_endIndex == edge.m_startIndex);
+    }
+
+    int m_startIndex = -1;
+    int m_endIndex = -1;
+  };
+
+  struct ExtendedEdge
+  {
+    ExtendedEdge() = default;
+    ExtendedEdge(Edge && edge, int internalVertexIndex, bool twoSide)
+      : m_edge(std::move(edge))
+      , m_internalVertexIndex(internalVertexIndex)
+      , m_twoSide(twoSide)
+    {}
+
+    Edge m_edge;
+    int m_internalVertexIndex = -1;
+    bool m_twoSide = false;
+  };
 
 private:
-  using TEdge = pair<int, int>;
-
   void ProcessBuildingPolygon(m2::PointD const & p1, m2::PointD const & p2, m2::PointD const & p3);
   void CalculateBuildingOutline(bool calculateNormals, BuildingOutline & outline);
   int GetIndex(m2::PointD const & pt);
-  void BuildEdges(int vertexIndex1, int vertexIndex2, int vertexIndex3);
-  bool EqualEdges(TEdge const & edge1, TEdge const & edge2) const;
-  bool FindEdge(TEdge const & edge);
+  void BuildEdges(int vertexIndex1, int vertexIndex2, int vertexIndex3, bool twoSide);
+  bool IsDuplicatedEdge(Edge const & edge);
   m2::PointD CalculateNormal(m2::PointD const & p1, m2::PointD const & p2, m2::PointD const & p3) const;
 
-  vector<m2::PointD> m_triangles;
-
+  std::vector<m2::PointD> m_triangles;
   buffer_vector<m2::PointD, kBuildingOutlineSize> m_points;
-  buffer_vector<pair<TEdge, int>, kBuildingOutlineSize> m_edges;
+  buffer_vector<ExtendedEdge, kBuildingOutlineSize> m_edges;
+
   float const m_minPosZ;
   bool const m_isBuilding;
-  m2::RectD m_clipRect;
+  bool const m_skipAreaGeometry;
+  bool const m_hatchingArea;
+  double const m_currentScaleGtoP;
 };
 
-class ApplyLineFeature : public BaseApplyFeature
+class ApplyLineFeatureGeometry : public BaseApplyFeature
 {
   using TBase = BaseApplyFeature;
 
 public:
-  ApplyLineFeature(m2::PointD const & tileCenter, double currentScaleGtoP,
-                   TInsertShapeFn const & insertShape, FeatureID const & id,
-                   m2::RectD const & clipRect, int minVisibleScale, uint8_t rank,
-                   CaptionDescription const & captions, int zoomLevel, size_t pointsCount);
+  ApplyLineFeatureGeometry(TileKey const & tileKey, TInsertShapeFn const & insertShape,
+                           FeatureID const & id, double currentScaleGtoP, int minVisibleScale,
+                           uint8_t rank, size_t pointsCount, bool smooth);
 
   void operator() (m2::PointD const & point);
   bool HasGeometry() const;
-  void ProcessRule(Stylist::TRuleWrapper const & rule);
+  void ProcessLineRule(Stylist::TRuleWrapper const & rule);
   void Finish();
+
+  std::vector<m2::SharedSpline> const & GetClippedSplines() const { return m_clippedSplines; }
 
 private:
   m2::SharedSpline m_spline;
-  vector<m2::SharedSpline> m_clippedSplines;
-  double m_currentScaleGtoP;
+  std::vector<m2::SharedSpline> m_clippedSplines;
+  float m_currentScaleGtoP;
   double m_sqrScale;
   m2::PointD m_lastAddedPoint;
   bool m_simplify;
-  int m_zoomLevel;
+  bool m_smooth;
   size_t m_initialPointsCount;
-  double m_shieldDepth;
-  ShieldRuleProto const * m_shieldRule;
-  m2::RectD m_clipRect;
 
-#ifdef CALC_FILTERED_POINTS
-  int m_readedCount;
+#ifdef LINES_GENERATION_CALC_FILTERED_POINTS
+  int m_readCount;
 #endif
 };
 
+class ApplyLineFeatureAdditional : public BaseApplyFeature
+{
+  using TBase = BaseApplyFeature;
+
+public:
+  ApplyLineFeatureAdditional(TileKey const & tileKey, TInsertShapeFn const & insertShape,
+                             FeatureID const & id, double currentScaleGtoP, int minVisibleScale,
+                             uint8_t rank, CaptionDescription const & captions,
+                             std::vector<m2::SharedSpline> const & clippedSplines);
+
+  void ProcessLineRule(Stylist::TRuleWrapper const & rule);
+  void Finish(ref_ptr<dp::TextureManager> texMng, std::set<ftypes::RoadShield> && roadShields,
+              GeneratedRoadShields & generatedRoadShields);
+
+private:
+  void GetRoadShieldsViewParams(ref_ptr<dp::TextureManager> texMng,
+                                ftypes::RoadShield const & shield,
+                                uint8_t shieldIndex, uint8_t shieldCount,
+                                TextViewParams & textParams,
+                                ColoredSymbolViewParams & symbolParams,
+                                PoiSymbolViewParams & poiParams,
+                                m2::PointD & shieldPixelSize);
+  bool CheckShieldsNearby(m2::PointD const & shieldPos,
+                          m2::PointD const & shieldPixelSize,
+                          uint32_t minDistanceInPixels,
+                          std::vector<m2::RectD> & shields);
+
+  std::vector<m2::SharedSpline> m_clippedSplines;
+  float m_currentScaleGtoP;
+  float m_depth;
+  CaptionDefProto const * m_captionRule;
+  ShieldRuleProto const * m_shieldRule;
+};
+
+extern dp::Color ToDrapeColor(uint32_t src);
 } // namespace df

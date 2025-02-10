@@ -4,9 +4,10 @@
 #include "base/assert.hpp"
 #include "base/math.hpp"
 
+#include <algorithm>
+
 namespace df
 {
-
 BaseInterpolator::BaseInterpolator(double duration, double delay)
   : m_elapsedTime(0.0)
   , m_duration(duration)
@@ -36,7 +37,7 @@ double BaseInterpolator::GetT() const
   if (IsFinished())
     return 1.0;
 
-  return max(m_elapsedTime - m_delay, 0.0) / m_duration;
+  return std::max(m_elapsedTime - m_delay, 0.0) / m_duration;
 }
 
 double BaseInterpolator::GetElapsedTime() const
@@ -48,5 +49,4 @@ double BaseInterpolator::GetDuration() const
 {
   return m_duration;
 }
-
-}
+}  // namespace df

@@ -1,6 +1,6 @@
 package com.mapswithme.maps.downloader;
 
-import android.support.design.widget.FloatingActionButton;
+import com.google.android.material.floatingactionbutton.FloatingActionButton;
 import android.view.View;
 import android.widget.Button;
 
@@ -82,20 +82,22 @@ class BottomPanel
       @Override
       public void onClick(View v)
       {
-        mFragment.getAdapter().setAvailableMapsMode();
+        if (mFragment.getAdapter() != null )
+          mFragment.getAdapter().setAvailableMapsMode();
+        Statistics.INSTANCE.trackEvent(Statistics.EventName.DOWNLOADER_FAB_CLICK,
+                                       Statistics.params().add(Statistics.EventParam.BUTTON,
+                                                               Statistics.ParamValue.PLUS));
         update();
       }
     });
 
     mButton = (Button) frame.findViewById(R.id.action);
-
-    UiUtils.updateAccentButton(mButton);
   }
 
   private void setUpdateAllState(UpdateInfo info)
   {
     mButton.setText(String.format(Locale.US, "%s (%s)", mFragment.getString(R.string.downloader_update_all_button),
-                                                        StringUtils.getFileSizeString(info.totalSize)));
+                                  StringUtils.getFileSizeString(mFragment.requireContext(), info.totalSize)));
     mButton.setOnClickListener(mUpdateListener);
   }
 
@@ -122,9 +124,9 @@ class BottomPanel
     if (show)
     {
       String root = adapter.getCurrentRootId();
+      int status = MapManager.nativeGetStatus(root);
       if (adapter.isMyMapsMode())
       {
-        int status = MapManager.nativeGetStatus(root);
         switch (status)
         {
         case CountryItem.STATUS_UPDATABLE:
@@ -139,6 +141,7 @@ class BottomPanel
           break;
 
         case CountryItem.STATUS_PROGRESS:
+        case CountryItem.STATUS_APPLYING:
         case CountryItem.STATUS_ENQUEUED:
           setCancelState();
           break;
@@ -156,7 +159,6 @@ class BottomPanel
         show = !CountryItem.isRoot(root);
         if (show)
         {
-          int status = MapManager.nativeGetStatus(root);
           switch (status)
           {
           case CountryItem.STATUS_UPDATABLE:
@@ -169,6 +171,7 @@ class BottomPanel
             break;
 
           case CountryItem.STATUS_PROGRESS:
+          case CountryItem.STATUS_APPLYING:
           case CountryItem.STATUS_ENQUEUED:
             setCancelState();
             break;

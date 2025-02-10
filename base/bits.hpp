@@ -1,9 +1,9 @@
 #pragma once
 #include "base/assert.hpp"
 
-#include "std/cstdint.hpp"
-#include "std/limits.hpp"
-#include "std/type_traits.hpp"
+#include <cstdint>
+#include <limits>
+#include <type_traits>
 
 namespace bits
 {
@@ -63,16 +63,14 @@ namespace bits
 
   inline uint32_t PopCount(uint64_t x) noexcept
   {
-    x = (x & 0x5555555555555555) + ((x & 0xAAAAAAAAAAAAAAAA) >> 1);
-    x = (x & 0x3333333333333333) + ((x & 0xCCCCCCCCCCCCCCCC) >> 2);
-    x = (x & 0x0F0F0F0F0F0F0F0F) + ((x & 0xF0F0F0F0F0F0F0F0) >> 4);
-    x = (x & 0x00FF00FF00FF00FF) + ((x & 0xFF00FF00FF00FF00) >> 8);
-    x = (x & 0x0000FFFF0000FFFF) + ((x & 0xFFFF0000FFFF0000) >> 16);
-    x = x + (x >> 32);
+    x = x - ((x & 0xAAAAAAAAAAAAAAAA) >> 1);
+    x = (x & 0x3333333333333333) + ((x >> 2) & 0x3333333333333333);
+    x = (x + (x >> 4)) & 0x0F0F0F0F0F0F0F0F;
+    x = (x * 0x0101010101010101) >> 56;
     return static_cast<uint32_t>(x);
   }
 
-  inline uint8_t CeilLog(uint64_t x) noexcept
+  inline uint8_t FloorLog(uint64_t x) noexcept
   {
 #define CHECK_RSH(x, msb, offset) \
     if (x >> offset)              \
@@ -112,16 +110,18 @@ namespace bits
     return (x << 1) | (x >> (sizeof(T) * 8 - 1));
   }
 
-  template <typename T> inline typename make_unsigned<T>::type ZigZagEncode(T x)
+  template <typename T>
+  inline std::make_unsigned_t<T> ZigZagEncode(T x)
   {
-    static_assert(is_signed<T>::value, "Type should be signed");
+    static_assert(std::is_signed<T>::value, "Type should be signed");
     return (x << 1) ^ (x >> (sizeof(x) * 8 - 1));
   }
 
-  template <typename T> inline typename make_signed<T>::type ZigZagDecode(T x)
+  template <typename T>
+  inline std::make_signed_t<T> ZigZagDecode(T x)
   {
-    static_assert(is_unsigned<T>::value, "Type should be unsigned.");
-    return (x >> 1) ^ -static_cast<typename make_signed<T>::type>(x & 1);
+    static_assert(std::is_unsigned<T>::value, "Type should be unsigned.");
+    return (x >> 1) ^ -static_cast<std::make_signed_t<T>>(x & 1);
   }
 
   inline uint32_t PerfectShuffle(uint32_t x)
@@ -142,6 +142,12 @@ namespace bits
     return x;
   }
 
+  // Returns the integer that has the bits of |x| at even-numbered positions
+  // and the bits of |y| at odd-numbered positions without changing the
+  // relative order of bits coming from |x| and |y|.
+  // That is, if the bits of |x| are {x31, x30, ..., x0},
+  //         and the bits of |y| are {y31, y30, ..., y0},
+  // then the bits of the result are {y31, x31, y30, x30, ..., y0, x0}.
   inline uint64_t BitwiseMerge(uint32_t x, uint32_t y)
   {
     uint32_t const hi = PerfectShuffle((y & 0xFFFF0000) | (x >> 16));
@@ -205,7 +211,9 @@ namespace bits
   inline uint64_t GetFullMask(uint8_t numBits)
   {
     ASSERT_LESS_OR_EQUAL(numBits, 64, ());
-    return numBits == 64 ? numeric_limits<uint64_t>::max()
+    return numBits == 64 ? std::numeric_limits<uint64_t>::max()
                          : (static_cast<uint64_t>(1) << numBits) - 1;
   }
+
+  inline bool IsPow2Minus1(uint64_t n) { return (n & (n + 1)) == 0; }
 }  // namespace bits

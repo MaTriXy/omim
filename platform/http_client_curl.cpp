@@ -24,6 +24,8 @@
 #include "platform/http_client.hpp"
 #include "platform/platform.hpp"
 
+#include "coding/zlib.hpp"
+
 #include "base/assert.hpp"
 #include "base/exception.hpp"
 #include "base/logging.hpp"
@@ -32,10 +34,13 @@
 #include "boost/uuid/uuid_generators.hpp"
 #include "boost/uuid/uuid_io.hpp"
 
-#include "std/array.hpp"
-#include "std/fstream.hpp"
-#include "std/sstream.hpp"
-#include "std/vector.hpp"
+#include <array>
+#include <fstream>
+#include <iterator>
+#include <sstream>
+#include <string>
+#include <utility>
+#include <vector>
 
 #include <cstdio>    // popen, tmpnam
 
@@ -46,6 +51,8 @@
 #include <unistd.h>  // close
 #endif
 
+using namespace coding;
+
 namespace
 {
 DECLARE_EXCEPTION(PipeCallError, RootException);
@@ -53,7 +60,7 @@ DECLARE_EXCEPTION(PipeCallError, RootException);
 struct ScopedRemoveFile
 {
   ScopedRemoveFile() = default;
-  explicit ScopedRemoveFile(string const & fileName) : m_fileName(fileName) {}
+  explicit ScopedRemoveFile(std::string const & fileName) : m_fileName(fileName) {}
 
   ~ScopedRemoveFile()
   {
@@ -64,22 +71,22 @@ struct ScopedRemoveFile
   std::string m_fileName;
 };
 
-static string ReadFileAsString(string const & filePath)
+static std::string ReadFileAsString(std::string const & filePath)
 {
-  ifstream ifs(filePath, ifstream::in);
+  std::ifstream ifs(filePath, std::ifstream::in);
   if (!ifs.is_open())
     return {};
 
-  return {istreambuf_iterator<char>(ifs), istreambuf_iterator<char>()};
+  return {std::istreambuf_iterator<char>(ifs), std::istreambuf_iterator<char>()};
 }
 
 
-string RunCurl(string const & cmd)
+std::string RunCurl(std::string const & cmd)
 {
   FILE * pipe = ::popen(cmd.c_str(), "r");
   ASSERT(pipe, ());
-  array<char, 8 * 1024> arr;
-  string result;
+  std::array<char, 8 * 1024> arr;
+  std::string result;
   size_t read;
   do
   {
@@ -98,12 +105,12 @@ string RunCurl(string const & cmd)
   return result;
 }
 
-string GetTmpFileName()
+std::string GetTmpFileName()
 {  
   boost::uuids::random_generator gen;
   boost::uuids::uuid u = gen();
 
-  stringstream ss;
+  std::stringstream ss;
   ss << u;
 
   ASSERT(!ss.str().empty(), ());
@@ -111,29 +118,29 @@ string GetTmpFileName()
   return GetPlatform().TmpPathForFile(ss.str());
 }
 
-typedef vector<pair<string, string>> Headers;
+using HeadersVector = std::vector<std::pair<std::string, std::string>>;
 
-Headers ParseHeaders(string const & raw)
+HeadersVector ParseHeaders(std::string const & raw)
 {
-  istringstream stream(raw);
-  Headers headers;
-  string line;
+  std::istringstream stream(raw);
+  HeadersVector headers;
+  std::string line;
   while (getline(stream, line))
   {
     auto const cr = line.rfind('\r');
-    if (cr != string::npos)
+    if (cr != std::string::npos)
       line.erase(cr);
 
     auto const delims = line.find(": ");
-    if (delims != string::npos)
-      headers.push_back(make_pair(line.substr(0, delims), line.substr(delims + 2)));
+    if (delims != std::string::npos)
+      headers.emplace_back(line.substr(0, delims), line.substr(delims + 2));
   }
   return headers;
 }
 
-bool WriteToFile(string const & fileName, string const & data)
+bool WriteToFile(std::string const & fileName, std::string const & data)
 {
-  ofstream ofs(fileName);
+  std::ofstream ofs(fileName);
   if(!ofs.is_open())
   {
     LOG(LERROR, ("Failed to write into a temporary file."));
@@ -142,6 +149,29 @@ bool WriteToFile(string const & fileName, string const & data)
 
   ofs << data;
   return true;
+}
+
+std::string Decompress(std::string const & compressed, std::string const & encoding)
+{
+  std::string decompressed;
+
+  if (encoding == "deflate")
+  {
+    ZLib::Inflate inflate(ZLib::Inflate::Format::ZLib);
+
+    // We do not check return value of inflate here.
+    // It may return false if compressed data is broken or if there is some unconsumed data
+    // at the end of buffer. The second case considered as ok by some http clients.
+    // For example, server we use for AsyncGuiThread_GetHotelInfo test adds '\n' to the end of the buffer
+    // and MacOS client and some versions of curl return no error.
+    UNUSED_VALUE(inflate(compressed, back_inserter(decompressed)));
+  }
+  else
+  {
+    ASSERT(false, ("Unsupported Content-Encoding:", encoding));
+  }
+
+  return decompressed;
 }
 }  // namespace
 // Used as a test stub for basic HTTP client implementation.
@@ -158,19 +188,17 @@ bool HttpClient::RunHttpRequest()
   ScopedRemoveFile body_deleter;
   ScopedRemoveFile received_file_deleter;
 
-  string cmd = "curl -s -w '%{http_code}' -X " + m_httpMethod + " -D '" + headers_deleter.m_fileName + "' ";
+  std::string cmd = "curl -s -w '%{http_code}' -X " + m_httpMethod + " -D '" + headers_deleter.m_fileName + "' ";
 
-  if (!m_contentType.empty())
-    cmd += "-H 'Content-Type: " + m_contentType + "' ";
-
-  if (!m_contentEncoding.empty())
-    cmd += "-H 'Content-Encoding: " + m_contentEncoding + "' ";
-
-  if (!m_basicAuthUser.empty())
-    cmd += "-u '" + m_basicAuthUser + ":" + m_basicAuthPassword + "' ";
+  for (auto const & header : m_headers)
+  {
+    cmd += "-H '" + header.first + ": " + header.second + "' ";
+  }
 
   if (!m_cookies.empty())
     cmd += "-b '" + m_cookies + "' ";
+
+  cmd += "-m '" + strings::to_string(m_timeoutSec) + "' ";
 
   if (!m_bodyData.empty())
   {
@@ -188,7 +216,7 @@ bool HttpClient::RunHttpRequest()
 
   // Use temporary file to receive data from server.
   // If user has specified file name to save data, it is not temporary and is not deleted automatically.
-  string rfile = m_outputFile;
+  std::string rfile = m_outputFile;
   if (rfile.empty())
   {
     rfile = GetTmpFileName();
@@ -197,11 +225,7 @@ bool HttpClient::RunHttpRequest()
 
   cmd += "-o " + rfile + strings::to_string(" ") + "'" + m_urlRequested + "'";
 
-
-  if (m_debugMode)
-  {
-    LOG(LINFO, ("Executing", cmd));
-  }
+  LOG(LDEBUG, ("Executing", cmd));
 
   try
   {
@@ -213,27 +237,30 @@ bool HttpClient::RunHttpRequest()
     return false;
   }
 
-  Headers const headers = ParseHeaders(ReadFileAsString(headers_deleter.m_fileName));
+  m_headers.clear();
+  auto const headers = ParseHeaders(ReadFileAsString(headers_deleter.m_fileName));
+  std::string serverCookies;
+  std::string headerKey;
   for (auto const & header : headers)
   {
-    if (header.first == "Set-Cookie")
+    if (strings::EqualNoCase(header.first, "Set-Cookie"))
     {
-      m_serverCookies += header.second + ", ";
+      serverCookies += header.second + ", ";
     }
-    else if (header.first == "Content-Type")
+    else
     {
-      m_contentTypeReceived = header.second;
-    }
-    else if (header.first == "Content-Encoding")
-    {
-      m_contentEncodingReceived = header.second;
-    }
-    else if (header.first == "Location")
-    {
-      m_urlReceived = header.second;
+      if (strings::EqualNoCase(header.first, "Location"))
+        m_urlReceived = header.second;
+
+      if (m_loadHeaders)
+      {
+        headerKey = header.first;
+        strings::AsciiToLower(headerKey);
+        m_headers.emplace(headerKey, header.second);
+      }
     }
   }
-  m_serverCookies = NormalizeServerCookies(move(m_serverCookies));
+  m_headers.emplace("Set-Cookie", NormalizeServerCookies(move(serverCookies)));
 
   if (m_urlReceived.empty())
   {
@@ -247,8 +274,7 @@ bool HttpClient::RunHttpRequest()
   {
     // Handle HTTP redirect.
     // TODO(AlexZ): Should we check HTTP redirect code here?
-    if (m_debugMode)
-      LOG(LINFO, ("HTTP redirect", m_errorCode, "to", m_urlReceived));
+    LOG(LDEBUG, ("HTTP redirect", m_errorCode, "to", m_urlReceived));
 
     HttpClient redirect(m_urlReceived);
     redirect.SetCookies(CombinedCookies());
@@ -261,12 +287,20 @@ bool HttpClient::RunHttpRequest()
 
     m_errorCode = redirect.ErrorCode();
     m_urlReceived = redirect.UrlReceived();
-    m_serverCookies = move(redirect.m_serverCookies);
+    m_headers = move(redirect.m_headers);
     m_serverResponse = move(redirect.m_serverResponse);
-    m_contentTypeReceived = move(redirect.m_contentTypeReceived);
-    m_contentEncodingReceived = move(redirect.m_contentEncodingReceived);
   }
 
+  for (auto const & header : headers)
+  {
+    if (strings::EqualNoCase(header.first, "content-encoding") &&
+        !strings::EqualNoCase(header.second, "identity"))
+    {
+      m_serverResponse = Decompress(m_serverResponse, header.second);
+      LOG(LDEBUG, ("Response with", header.second, "is decompressed."));
+      break;
+    }
+  }
   return true;
 }
 }  // namespace platform
